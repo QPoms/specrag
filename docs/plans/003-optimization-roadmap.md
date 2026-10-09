@@ -12,14 +12,14 @@ validated long-term memory.
 
 | Milestone | Status | Current evidence | Next completion gate |
 | --- | --- | --- | --- |
-| 1. Engineering baseline | Complete | Clean package/data layout, structural guardrails, canonical quality gate, 5 passing tests, Git baseline | Maintain the gate while starting characterization tests |
-| 2. Core refactor | Not started | Mechanical package move completed; large historical modules remain | Characterization tests, then split without parallel versions |
+| 1. Engineering baseline | Complete | Clean package/data layout, structural guardrails, canonical quality gate, Git baseline | Maintain the gate throughout later milestones |
+| 2. Core refactor | In progress | 12 tests pass; hybrid and Researcher responsibilities split; two line-count exceptions removed | Characterize and split planner and hypothesis |
 | 3. Version-aware retrieval | Partial foundation | 146 versions retained; latest and Release-specific policies work | Exact, mixed-version, and cross-version query contracts |
 | 4. Retrieval tool system | Not started | Retrieval implementations exist but have no stable tool registry | Unified tool protocol and independently tested tools |
-| 5. Research Agent | Partial foundation | A bounded researcher loop was retained | Explicit state, budgets, stop reasons, router, replanning |
+| 5. Research Agent | Partial foundation | State, policy and loop separated; budgets and stop reasons tested | Router and explicit Observe → Re-plan state transitions |
 | 6. Evidence system | Not started | Historical evidence code was deliberately removed | Clean provenance, validation, sufficiency, gaps, synthesis |
 | 7. Long-term Memory | Not started | Data boundary reserved at `data/memory/` | Validated-only write path, search, update, conflict and expiry |
-| 8. Evaluation and demo | Not started | Structure checker and five tests only | Metrics, CLI demo, architecture diagram, examples, polished README |
+| 8. Evaluation and demo | Not started | Structure checker and 12 focused tests only | Metrics, CLI demo, architecture diagram, examples, polished README |
 
 ## 1. Engineering baseline
 
@@ -33,13 +33,14 @@ validated long-term memory.
 
 ## 2. Core refactor
 
-- [ ] Add characterization tests for the active retrieval behavior.
+- [x] Add characterization tests for corpus selection, chunk provenance,
+  lexical fallback, reranking, and bounded Researcher termination.
 - [ ] Split `retrieval/planner.py` by models, planning, execution, selection,
   and answer summarization.
 - [ ] Split `retrieval/hypothesis.py` into proposal models and execution.
-- [ ] Split `retrieval/hybrid.py` into corpus, index, lexical, semantic, and
+- [x] Split `retrieval/hybrid.py` into corpus, index, lexical, semantic, and
   fusion responsibilities.
-- [ ] Split `agents/researcher.py` into state, policy, and loop execution.
+- [x] Split `agents/researcher.py` into state, policy, and loop execution.
 - [ ] Remove all temporary line-count exceptions from the structure checker.
 
 ## 3. Version-aware retrieval

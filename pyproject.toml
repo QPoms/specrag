@@ -26,5 +26,6 @@ build-backend = "hatchling.build"
 packages = ["src/specrag"]
 
 [tool.pytest.ini_options]
+addopts = "--basetemp=.pytest_tmp"
 pythonpath = ["src"]
 testpaths = ["tests"]

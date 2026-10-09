@@ -57,8 +57,6 @@ DEFAULT_MAX_LINES = 600
 LINE_RATCHETS = {
     "src/specrag/retrieval/planner.py": 5066,
     "src/specrag/retrieval/hypothesis.py": 1525,
-    "src/specrag/retrieval/hybrid.py": 876,
-    "src/specrag/agents/researcher.py": 685,
 }
 
 ALLOWED_IMPORTS = {
@@ -115,7 +113,11 @@ def main() -> int:
         if (ROOT / relative).exists():
             errors.append(f"forbidden legacy path exists: {relative}")
 
-    actual_entries = {path.name for path in SOURCE_ROOT.iterdir()}
+    actual_entries = {
+        path.name
+        for path in SOURCE_ROOT.iterdir()
+        if path.name != "__pycache__"
+    }
     for name in sorted(actual_entries - ALLOWED_SOURCE_ENTRIES):
         errors.append(f"unapproved top-level source entry: src/specrag/{name}")
 

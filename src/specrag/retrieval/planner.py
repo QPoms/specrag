@@ -22,8 +22,8 @@ from .hybrid import (
     CorpusVersionPolicy,
     HybridMarkdownRetriever,
     MarkdownChunk,
-    _searchable_text,
 )
+from .index import searchable_text
 from ..infrastructure.structured_agent import CodexAgentReceipt, CodexStructuredAgent
 from .reranker import CrossEncoderReranker
 from .normalization import (
@@ -1473,7 +1473,7 @@ def _fold_protocol_text(text: str) -> str:
 def _exact_match_priority(chunk: MarkdownChunk, probe: RetrievalProbe) -> float:
     """Rank exact entity occurrences for the probe's requested evidence shape."""
 
-    searchable = _fold_protocol_text(_searchable_text(chunk))
+    searchable = _fold_protocol_text(searchable_text(chunk))
     heading = _fold_protocol_text(" ".join(chunk.heading_path))
     score = float(sum(
         max(
@@ -1534,7 +1534,7 @@ def _exact_anchor_results(
     for chunk in retriever.chunks:
         if chunk.source_collection != "3gpp_markdown":
             continue
-        searchable = _fold_protocol_text(_searchable_text(chunk))
+        searchable = _fold_protocol_text(searchable_text(chunk))
         if not any(protocol_identifier_in_text(anchor, searchable)
                    for anchor in anchors):
             continue
@@ -1568,7 +1568,7 @@ def _add_exact_results(
             candidate.route_score,
             0.004 * route_weights.get(chunk.specification or "", 0.5),
         )
-        searchable = _fold_protocol_text(_searchable_text(chunk))
+        searchable = _fold_protocol_text(searchable_text(chunk))
         heading = _fold_protocol_text(" ".join(chunk.heading_path))
         for anchor in probe.anchors:
             if protocol_identifier_in_text(anchor, searchable):
@@ -1616,7 +1616,7 @@ def _add_search_results(
             candidate.route_score,
             0.004 * route_weights.get(chunk.specification or "", 0.5),
         )
-        searchable = _searchable_text(chunk).casefold()
+        searchable = searchable_text(chunk).casefold()
         heading = " ".join(chunk.heading_path).casefold()
         for anchor in probe.anchors:
             if protocol_identifier_in_text(anchor, searchable):
@@ -1629,7 +1629,7 @@ def _references(chunk: MarkdownChunk) -> tuple[tuple[str, str | None, str], ...]
     candidates: list[tuple[int, int, str, str | None, str]] = []
     references: list[tuple[str, str | None, str]] = []
     seen: set[tuple[str, str | None]] = set()
-    searchable = _searchable_text(chunk)
+    searchable = searchable_text(chunk)
     for pattern in _SPEC_REFERENCE_PATTERNS:
         for match in pattern.finditer(searchable):
             candidates.append((
@@ -2376,7 +2376,7 @@ def _build_grounded_relation_evidence(
         }
         seed_scores: list[tuple[float, MarkdownChunk]] = []
         for chunk in corpus_chunks:
-            searchable = _fold_protocol_text(_searchable_text(chunk))
+            searchable = _fold_protocol_text(searchable_text(chunk))
             if not any(protocol_identifier_in_text(anchor, searchable)
                        for anchor in folded_anchors):
                 continue
@@ -2442,7 +2442,7 @@ def _build_grounded_relation_evidence(
             folded_term = _fold_protocol_text(term)
             matches: list[tuple[float, MarkdownChunk]] = []
             for chunk in corpus_chunks:
-                searchable = _fold_protocol_text(_searchable_text(chunk))
+                searchable = _fold_protocol_text(searchable_text(chunk))
                 if not protocol_identifier_in_text(folded_term, searchable):
                     continue
                 score = float(min(3, searchable.count(folded_term)))
@@ -2467,7 +2467,7 @@ def _build_grounded_relation_evidence(
             # Allocate the reverse-lookup budget uniformly from the available
             # question budget; no protocol term receives a special quota.
             for score, chunk in matches[:per_term_limit]:
-                searchable = _fold_protocol_text(_searchable_text(chunk))
+                searchable = _fold_protocol_text(searchable_text(chunk))
                 kind = (
                     "reverse_message_table"
                     if "message content" in searchable
@@ -2552,7 +2552,7 @@ def _build_grounded_relation_evidence(
         )
         for index, chunk in enumerate(ordered_chunks, 1):
             evidence_id = f"R-{item.query_id}:{index}"
-            searchable = _fold_protocol_text(_searchable_text(chunk))
+            searchable = _fold_protocol_text(searchable_text(chunk))
             matched = tuple(
                 anchor
                 for anchor in original_anchors
@@ -2661,7 +2661,7 @@ def _candidate_relation_class(
 ) -> tuple[EvidenceRelationClass, tuple[str, ...], float]:
     """Conservatively distinguish explicit relations from useful bridges."""
 
-    searchable = _searchable_text(chunk)
+    searchable = searchable_text(chunk)
     folded_searchable = _fold_protocol_text(searchable)
     folded_anchors = tuple(_fold_protocol_text(value) for value in original_anchors)
     matched = tuple(value for value in folded_anchors if value in folded_searchable)

@@ -1,337 +1,36 @@
-"""Bounded agent-controlled retrieval over the existing local toolchain."""
+"""Bounded Researcher loop over trusted local retrieval capabilities."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from specrag.config import AppConfig
-from specrag.retrieval.hypothesis import (
-    merge_parallel_retrieval_channels,
-)
+from specrag.infrastructure.structured_agent import CodexStructuredAgent
+from specrag.retrieval.hypothesis import merge_parallel_retrieval_channels
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
-from specrag.infrastructure.structured_agent import CodexAgentReceipt, CodexStructuredAgent
 from specrag.retrieval.planner import (
     DiscoveryRetrievalPlanV3,
-    PlannedDiscoveryRetrieval,
     PlannedRetrievalExecution,
     PlannedRetrievalHit,
     PlannedRetrievalTaskResult,
-    ReferenceExpansionPolicy,
-    RetrievalProbe,
-    SpecificationRoute,
     execute_planned_discovery_retrieval,
 )
 
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-AgentToolName = Literal["hybrid_search", "expand_same_section", "finish"]
-
-
-class AgentRetrievalAction(_StrictModel):
-    """One requested tool call; unused fields must be empty values."""
-
-    action_id: str = Field(min_length=1)
-    tool: AgentToolName
-    query_id: str
-    lexical_query: str
-    semantic_query: str
-    target_specifications: tuple[str, ...] = Field(max_length=6)
-    seed_evidence_ids: tuple[str, ...] = Field(max_length=4)
-    max_results: int = Field(ge=1, le=12)
-    rationale: str = Field(min_length=1)
-    expected_evidence: str = Field(min_length=1)
-
-
-class AgentRetrievalDecision(_StrictModel):
-    assessment: str = Field(min_length=1)
-    actions: tuple[AgentRetrievalAction, ...] = Field(
-        min_length=1,
-        max_length=3,
-    )
-
-
-class AgentActionOutcome(_StrictModel):
-    round_number: int = Field(ge=1)
-    action: AgentRetrievalAction
-    status: Literal["completed", "no_hits", "rejected", "unavailable"]
-    evidence_ids: tuple[str, ...] = ()
-    new_evidence_ids: tuple[str, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-class AgentRetrievalTurn(_StrictModel):
-    round_number: int = Field(ge=1)
-    assessment: str = Field(min_length=1)
-    receipt: CodexAgentReceipt
-    outcomes: tuple[AgentActionOutcome, ...]
-
-
-class AgenticRetrievalExecution(_StrictModel):
-    schema_version: Literal["agentic-retrieval-execution/v0.1"] = (
-        "agentic-retrieval-execution/v0.1"
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    stop_reason: Literal[
-        "agent_finish",
-        "round_budget",
-        "action_budget",
-        "agent_error",
-    ]
-    rounds_used: int = Field(ge=0)
-    search_actions_used: int = Field(ge=0)
-    expansion_actions_used: int = Field(ge=0)
-    turns: tuple[AgentRetrievalTurn, ...] = ()
-    evidence_execution: PlannedRetrievalExecution
-    errors: tuple[str, ...] = ()
-
-
-_CONTROLLER_INSTRUCTIONS = """\
-You control a bounded source-retrieval loop. Your only goal is to collect enough
-normative evidence to answer the supplied Discovery questions. You may call:
-
-1. hybrid_search: lexical plus semantic search. Supply a query_id, both query
-   strings, optional target specifications, no seed IDs, and a result limit.
-2. expand_same_section: retrieve the opening/adjacent chunks of the exact
-   subsection containing one to four seed evidence IDs. Supply a query_id and
-   seed IDs; leave query strings and target specifications empty.
-3. finish: stop retrieval. Use an empty query_id, empty query strings, no target
-   specifications, no seed IDs, and max_results=1.
-
-Inspect the evidence before choosing the next action. Search for missing facts
-or missing relation edges, not paraphrases of evidence already present. Ordered
-questions may form a semantic chain: terms found for an earlier question may be
-used to formulate a later search, but they are search hints only. A later answer
-still requires its own source evidence. Do not assume a candidate answer is true.
-Do not repeat a prior tool call. Use only listed specification numbers. Finish
-when the requested answer units are directly supportable or the remaining
-budget cannot usefully improve them. Return one to three actions per round; a
-finish action must be the only action.
-"""
-
-
-def _minimum_optional(left: int | None, right: int | None) -> int | None:
-    if left is None:
-        return right
-    if right is None:
-        return left
-    return min(left, right)
-
-
-class _EvidenceLedger:
-    def __init__(
-        self,
-        query_ids: tuple[str, ...],
-        *,
-        max_per_question: int,
-    ) -> None:
-        self._hits = {query_id: [] for query_id in query_ids}
-        self._indexes = {query_id: {} for query_id in query_ids}
-        self._next = {query_id: 1 for query_id in query_ids}
-        self._max_per_question = max_per_question
-
-    def hits(self, query_id: str) -> tuple[PlannedRetrievalHit, ...]:
-        return tuple(self._hits[query_id])
-
-    def find(self, query_id: str, evidence_id: str) -> PlannedRetrievalHit | None:
-        for hit in self._hits[query_id]:
-            if hit.hit_id == evidence_id:
-                return hit
-        return None
-
-    def add(
-        self,
-        query_id: str,
-        hits: tuple[PlannedRetrievalHit, ...],
-        *,
-        action_id: str,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        observed: list[str] = []
-        added: list[str] = []
-        for hit in hits:
-            existing_index = self._indexes[query_id].get(hit.chunk_id)
-            source = f"agent_tool:{action_id}"
-            if existing_index is not None:
-                existing = self._hits[query_id][existing_index]
-                merged = existing.model_copy(update={
-                    "retrieval_sources": tuple(dict.fromkeys((
-                        *existing.retrieval_sources,
-                        *hit.retrieval_sources,
-                        source,
-                    ))),
-                    "probe_ids": tuple(dict.fromkeys((
-                        *existing.probe_ids,
-                        *hit.probe_ids,
-                    ))),
-                    "matched_anchors": tuple(dict.fromkeys((
-                        *existing.matched_anchors,
-                        *hit.matched_anchors,
-                    ))),
-                    "reference_source_chunk_ids": tuple(dict.fromkeys((
-                        *existing.reference_source_chunk_ids,
-                        *hit.reference_source_chunk_ids,
-                    ))),
-                    "semantic_rank": _minimum_optional(
-                        existing.semantic_rank,
-                        hit.semantic_rank,
-                    ),
-                    "lexical_rank": _minimum_optional(
-                        existing.lexical_rank,
-                        hit.lexical_rank,
-                    ),
-                    "final_score": max(existing.final_score, hit.final_score),
-                })
-                self._hits[query_id][existing_index] = merged
-                observed.append(existing.hit_id)
-                continue
-            if len(self._hits[query_id]) >= self._max_per_question:
-                continue
-            evidence_id = f"E-{query_id}:{self._next[query_id]}"
-            self._next[query_id] += 1
-            stored = hit.model_copy(update={
-                "hit_id": evidence_id,
-                "collection_rank": len(self._hits[query_id]) + 1,
-                "retrieval_sources": tuple(dict.fromkeys((
-                    *hit.retrieval_sources,
-                    source,
-                ))),
-            })
-            self._indexes[query_id][stored.chunk_id] = len(self._hits[query_id])
-            self._hits[query_id].append(stored)
-            observed.append(evidence_id)
-            added.append(evidence_id)
-        return tuple(observed), tuple(added)
-
-    def payload(self, *, excerpt_characters: int = 1600) -> list[dict[str, Any]]:
-        values: list[dict[str, Any]] = []
-        for query_id, hits in self._hits.items():
-            for hit in hits:
-                excerpt = hit.excerpt
-                if len(excerpt) > excerpt_characters:
-                    excerpt = excerpt[:excerpt_characters].rstrip() + " ..."
-                values.append({
-                    "evidence_id": hit.hit_id,
-                    "query_id": query_id,
-                    "specification": hit.specification,
-                    "version": hit.version,
-                    "heading_path": list(hit.heading_path),
-                    "line_start": hit.line_start,
-                    "line_end": hit.line_end,
-                    "retrieval_sources": list(hit.retrieval_sources),
-                    "excerpt": excerpt,
-                })
-        return values
-
-
-def _build_search_plan(
-    base_item: PlannedDiscoveryRetrieval,
-    action: AgentRetrievalAction,
-    *,
-    round_number: int,
-) -> DiscoveryRetrievalPlanV3:
-    """Build a one-probe search with exact-anchor recall explicitly disabled."""
-
-    routes = tuple(
-        SpecificationRoute(
-            specification=specification,
-            weight=1.0,
-            reason=f"agent-selected target for {action.action_id}",
-            source="agent_hypothesis",
-        )
-        for specification in action.target_specifications
-    )
-    probe = RetrievalProbe(
-        probe_id=f"AG-R{round_number}-{action.action_id}",
-        evidence_role=base_item.angle,
-        lexical_query=action.lexical_query.strip(),
-        semantic_query=action.semantic_query.strip(),
-        routes=routes,
-        # Empty anchors are intentional: this tool ranks only BM25/semantic
-        # results and therefore cannot reintroduce Route-B exact-anchor bias.
-        anchors=(),
-        facets=(),
-        stage=1,
-    )
-    item = base_item.model_copy(update={
-        "retrieval_id": f"{base_item.query_id}:agent:r{round_number}:{action.action_id}",
-        "planner_action": "planned",
-        "anchors": (),
-        "warnings": (*base_item.warnings, "agent-controlled hybrid search"),
-        "reference_expansion": ReferenceExpansionPolicy(
-            enabled=False,
-            max_references=0,
-        ),
-        "retrieval_probes": (probe,),
-    })
-    return DiscoveryRetrievalPlanV3(
-        anchor_extraction_method="deterministic_extractive",
-        retrievals=(item,),
-    )
-
-
-def _validate_action(
-    action: AgentRetrievalAction,
-    *,
-    query_ids: frozenset[str],
-    available_specifications: frozenset[str],
-    ledger: _EvidenceLedger,
-) -> tuple[str, ...]:
-    errors: list[str] = []
-    if action.tool == "finish":
-        if (
-            action.query_id
-            or action.lexical_query
-            or action.semantic_query
-            or action.target_specifications
-            or action.seed_evidence_ids
-            or action.max_results != 1
-        ):
-            errors.append("finish contains non-empty tool parameters")
-        return tuple(errors)
-    if action.query_id not in query_ids:
-        errors.append(f"unknown query_id: {action.query_id}")
-        return tuple(errors)
-    unknown_specs = sorted(
-        set(action.target_specifications) - available_specifications
-    )
-    if unknown_specs:
-        errors.append("unknown specifications: " + ", ".join(unknown_specs))
-    if action.tool == "hybrid_search":
-        if not action.lexical_query.strip() or not action.semantic_query.strip():
-            errors.append("hybrid_search requires both query strings")
-        if action.seed_evidence_ids:
-            errors.append("hybrid_search cannot contain seed evidence IDs")
-    elif action.tool == "expand_same_section":
-        if action.lexical_query or action.semantic_query:
-            errors.append("expand_same_section cannot contain query strings")
-        if action.target_specifications:
-            errors.append("expand_same_section cannot contain target specifications")
-        if not action.seed_evidence_ids:
-            errors.append("expand_same_section requires seed evidence IDs")
-        unknown_ids = [
-            evidence_id
-            for evidence_id in action.seed_evidence_ids
-            if ledger.find(action.query_id, evidence_id) is None
-        ]
-        if unknown_ids:
-            errors.append("unknown seed evidence IDs: " + ", ".join(unknown_ids))
-    return tuple(errors)
-
-
-def _action_signature(action: AgentRetrievalAction) -> tuple[Any, ...]:
-    return (
-        action.tool,
-        action.query_id,
-        action.lexical_query.casefold().strip(),
-        action.semantic_query.casefold().strip(),
-        tuple(sorted(action.target_specifications)),
-        tuple(sorted(action.seed_evidence_ids)),
-    )
+from .models import (
+    AgentActionOutcome,
+    AgentRetrievalAction,
+    AgentRetrievalDecision,
+    AgentRetrievalTurn,
+    AgenticRetrievalExecution,
+)
+from .policy import (
+    CONTROLLER_INSTRUCTIONS,
+    action_signature,
+    build_search_plan,
+    validate_action,
+)
+from .state import EvidenceLedger
 
 
 def _expand_same_section(
@@ -369,15 +68,14 @@ def _expand_same_section(
     )
     seed_chunks = {hit.chunk_id for hit in seeds}
     return tuple(
-        hit for hit in expanded.tasks[0].hits
-        if hit.chunk_id not in seed_chunks
+        hit for hit in expanded.tasks[0].hits if hit.chunk_id not in seed_chunks
     )
 
 
 def _evidence_execution(
     *,
     base_plan: DiscoveryRetrievalPlanV3,
-    ledger: _EvidenceLedger,
+    ledger: EvidenceLedger,
     retriever: HybridMarkdownRetriever,
     app_config: AppConfig,
 ) -> PlannedRetrievalExecution:
@@ -438,7 +136,7 @@ def run_agentic_retrieval_loop(
         for document in retriever.documents
         if document.specification is not None
     )
-    ledger = _EvidenceLedger(
+    ledger = EvidenceLedger(
         query_ids,
         max_per_question=max_evidence_per_question,
     )
@@ -496,7 +194,7 @@ def run_agentic_retrieval_loop(
             response = controller_agent.parse(
                 purpose="choose the next bounded Discovery retrieval tool calls",
                 prompt_version="agentic-discovery-retrieval-controller/v0.1",
-                instructions=_CONTROLLER_INSTRUCTIONS,
+                instructions=CONTROLLER_INSTRUCTIONS,
                 input_payload=payload,
                 output_type=AgentRetrievalDecision,
             )
@@ -522,7 +220,7 @@ def run_agentic_retrieval_loop(
                 ))
                 errors.extend(outcome.errors)
                 continue
-            finish_errors = _validate_action(
+            finish_errors = validate_action(
                 actions[0],
                 query_ids=query_id_set,
                 available_specifications=available_specs,
@@ -548,13 +246,13 @@ def run_agentic_retrieval_loop(
 
         outcomes: list[AgentActionOutcome] = []
         for action in actions:
-            action_errors = list(_validate_action(
+            action_errors = list(validate_action(
                 action,
                 query_ids=query_id_set,
                 available_specifications=available_specs,
                 ledger=ledger,
             ))
-            signature = _action_signature(action)
+            signature = action_signature(action)
             if signature in signatures:
                 action_errors.append("duplicate prior tool call")
             if action.tool == "hybrid_search" and search_used >= max_search_actions:
@@ -578,7 +276,7 @@ def run_agentic_retrieval_loop(
             signatures.add(signature)
             if action.tool == "hybrid_search":
                 search_used += 1
-                search_plan = _build_search_plan(
+                search_plan = build_search_plan(
                     base_by_query[action.query_id],
                     action,
                     round_number=round_number,

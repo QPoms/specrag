@@ -23,8 +23,12 @@ user question or task
 
 ## Active code
 
-- `src/specrag/retrieval/hybrid.py`: specification discovery, chunking,
-  lexical and semantic retrieval, and adjacent-section expansion.
+- `src/specrag/retrieval/corpus.py`: 3GPP version discovery and source-faithful
+  Markdown chunking.
+- `src/specrag/retrieval/lexical.py`, `semantic.py`, and `fusion.py`: BM25,
+  dense candidate search, and deterministic reciprocal-rank fusion.
+- `src/specrag/retrieval/hybrid.py`: small hybrid retrieval orchestrator with
+  a tested lexical fallback when semantic search is unavailable.
 - `src/specrag/retrieval/planner.py`: query planning, protocol routing,
   multi-stage retrieval, evidence selection, and summaries.
 - `src/specrag/retrieval/hypothesis.py`: answer-hypothesis expansion used as
@@ -32,7 +36,8 @@ user question or task
 - `src/specrag/retrieval/reranker.py`: optional cross-encoder reranking.
 - `src/specrag/retrieval/normalization.py`: protocol identifier
   normalization.
-- `src/specrag/agents/researcher.py`: bounded researcher tool loop.
+- `src/specrag/agents/`: separate Researcher models, evidence state, action
+  policy, and bounded loop execution.
 - `src/specrag/infrastructure/structured_agent.py`: structured-agent runtime
   adapter.
 - `src/specrag/infrastructure/llm.py`: structured OpenAI-compatible client
@@ -59,9 +64,9 @@ Copy `.env.example` to `.env`, set the OpenAI-compatible endpoint and model
 IDs, then adjust retrieval mechanics in `config.yaml`.
 
 The project does not yet expose the final general-purpose `specrag` CLI. The
-next milestone is to add characterization tests around the migrated code, then
-build clean `tools/` and `evidence/` boundaries for one direct
-question-to-answer demo.
+current milestone is characterizing and splitting the two remaining oversized
+planning modules before building clean `tools/` and `evidence/` boundaries for
+one direct question-to-answer demo.
 
 ## Development guardrails
 

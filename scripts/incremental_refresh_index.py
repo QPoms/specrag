@@ -13,15 +13,18 @@ from pathlib import Path
 import shutil
 
 from specrag.config import load_config
-from specrag.retrieval.hybrid import (
-    RetrievalIndexManifest,
-    _fingerprint,
-    _open_vector_collection,
-    _repository_path,
-    _write_snapshot,
+from specrag.infrastructure.vector_store import open_chroma_collection
+from specrag.retrieval.corpus import (
     chunk_source_documents,
     discover_source_documents,
+    repository_path,
 )
+from specrag.retrieval.index import (
+    index_fingerprint,
+    searchable_text,
+    write_snapshot,
+)
+from specrag.retrieval.models import RetrievalIndexManifest
 
 
 def main() -> int:
@@ -36,8 +39,8 @@ def main() -> int:
         "target_release": args.release,
     })
     documents = discover_source_documents(cfg)
-    fingerprint = _fingerprint(documents, cfg)
-    index_root = _repository_path(cfg.index_dir, "retrieval index directory")
+    fingerprint = index_fingerprint(documents, cfg)
+    index_root = repository_path(cfg.index_dir, "retrieval index directory")
     base_snapshot = index_root / args.base_fingerprint
     snapshot = index_root / fingerprint
     if not base_snapshot.is_dir():
@@ -73,8 +76,13 @@ def main() -> int:
         documents=documents,
         chunk_count=len(chunks),
     )
-    _write_snapshot(snapshot, chunks, manifest)
-    collection = _open_vector_collection(snapshot, chunks, cfg)
+    write_snapshot(snapshot, chunks, manifest)
+    collection = open_chroma_collection(
+        snapshot,
+        chunks,
+        embedding_model=cfg.embedding_model,
+        document_text=searchable_text,
+    )
     indexed_ids = set(collection.get(include=[]).get("ids", []))
     missing = expected_ids - indexed_ids
     if missing:

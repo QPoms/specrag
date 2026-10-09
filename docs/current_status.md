@@ -69,7 +69,15 @@ research task
 ```
 
 All migrated modules import successfully. The structure check passes and the
-current focused test suite passes: 5 tests.
+current focused test suite passes: 12 tests.
+
+The first behavioral refactor is complete. Corpus discovery/chunking, immutable
+retrieval contracts, BM25, semantic candidate search, reciprocal-rank fusion,
+snapshot persistence, and hybrid orchestration now have separate modules.
+Chroma-specific construction is isolated under `infrastructure/`. The bounded
+Researcher is split into explicit models, evidence state, action policy, and
+loop execution. Its agent-finish, round-budget, and agent-error exits are
+covered by characterization tests.
 
 ## Known limitations
 
@@ -85,10 +93,11 @@ current focused test suite passes: 5 tests.
 
 ## Next milestone
 
-Add characterization tests around corpus discovery, lexical fallback,
-retrieval planning, and bounded agent termination. Then split the oversized
-modules behind tested interfaces and build the clean evidence-validation
-boundary for one small direct-question 3GPP scenario.
+Add characterization tests around deterministic retrieval planning, then split
+the oversized planner and hypothesis modules behind their existing public
+interfaces. After those two remaining line-count exceptions are removed, build
+the clean evidence-validation boundary for one small direct-question 3GPP
+scenario.
 
 The live eight-stage progress checklist is maintained in
 `docs/plans/003-optimization-roadmap.md`.

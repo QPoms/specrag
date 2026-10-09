@@ -55,17 +55,20 @@ memory   → models, infrastructure
 
 ## Current migration debt
 
-The retained research implementation contains four oversized modules. They are
+The retained research implementation contains two oversized modules. They are
 temporarily protected by line-count ratchets in `scripts/check_structure.py`:
 
 - `retrieval/planner.py`
 - `retrieval/hypothesis.py`
-- `retrieval/hybrid.py`
-- `agents/researcher.py`
 
 They may become smaller, but may not grow beyond their recorded ceilings.
 Splitting them requires characterization tests first and must preserve one
 public implementation rather than creating versioned copies.
+
+`retrieval/hybrid.py` has been split into corpus, immutable model, index,
+lexical, semantic, fusion, and orchestration modules. The Researcher now has
+separate model, state, policy, and bounded-loop modules. Neither needs a
+line-count exception anymore.
 
 ## Change protocol
 
