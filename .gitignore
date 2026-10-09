@@ -1,0 +1,46 @@
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Test and temporary workspaces
+.tmp/
+tmp/
+.pytest_tmp*/
+pytest-cache-files-*/
+.torch_cuda/
+.tmp_*.py
+
+# Local model weights and staging downloads
+models/
+model_staging/
+.local/
+
+# Generated corpora, indexes, and benchmark tensors
+data/raw/
+data/processed/
+data/indexes/
+data/embedding_benchmark/
+
+# Local full corpus and mutable memory. Keep only their tracked metadata/docs.
+data/3gpp/*/
+data/memory/*
+!data/memory/README.md
+
+# Runtime outputs
+artifacts/runs/
+runs/
+
+# Editor and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

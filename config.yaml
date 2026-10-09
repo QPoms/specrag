@@ -1,0 +1,25 @@
+# RAG parameters. Secrets are loaded from .env.
+
+retrieval:
+  embedding_model: BAAI/bge-small-en-v1.5
+  index_dir: .local/indexes/specifications
+  specification_root: data/3gpp
+  version_policy: latest_per_spec
+  chunk_characters: 2400
+  chunk_overlap_characters: 300
+  semantic_candidates_per_collection: 20
+  lexical_candidates_per_collection: 20
+  final_hits_per_collection: 6
+  rrf_k: 60
+
+llm:
+  temperature: 0.4
+  max_retries: 3
+  api_max_retries: 8
+  api_retry_initial_delay_seconds: 1.0
+  api_retry_max_delay_seconds: 15.0
+  api_fallback_models:
+    - gpt-5.6-sol
+    - gpt-5.6-terra
+    - gpt-5.6-luna
+    - gpt-5.5

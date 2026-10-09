@@ -1,0 +1,9 @@
+{
+  "schema_version": "specrag-3gpp-corpus/v1",
+  "layout": "data/3gpp/<specification>/v<version>/",
+  "historical_versions_retained": true,
+  "catalog": "data/3gpp/catalog.jsonl",
+  "specification_count": 34,
+  "version_count": 146,
+  "file_count": 350
+}
