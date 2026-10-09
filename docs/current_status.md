@@ -87,6 +87,12 @@ planner line-count ratchet has been lowered from 5,066 to 4,406 lines; its
 algorithmic stages still need to be separated before the exception can be
 removed.
 
+Question-to-plan compilation and specification routing now live in separate
+`planning.py` and `routing.py` modules. The original planner remains the single
+compatibility entry point, while its ratchet has been reduced again to 3,772
+lines. Retrieval execution, evidence selection, and summarization are the
+remaining planner responsibilities to extract.
+
 ## Known limitations
 
 - Local model weights remain under `models/` but are ignored by Git.

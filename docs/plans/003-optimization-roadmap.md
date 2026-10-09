@@ -13,7 +13,7 @@ validated long-term memory.
 | Milestone | Status | Current evidence | Next completion gate |
 | --- | --- | --- | --- |
 | 1. Engineering baseline | Complete | Clean package/data layout, structural guardrails, canonical quality gate, Git baseline | Maintain the gate throughout later milestones |
-| 2. Core refactor | In progress | 15 tests pass; hybrid and Researcher split; planner contracts extracted; two line-count exceptions removed | Split planner algorithms and hypothesis |
+| 2. Core refactor | In progress | 15 tests pass; hybrid and Researcher split; planner contracts, question planning, and specification routing extracted | Split planner execution/selection and hypothesis |
 | 3. Version-aware retrieval | Partial foundation | 146 versions retained; latest and Release-specific policies work | Exact, mixed-version, and cross-version query contracts |
 | 4. Retrieval tool system | Not started | Retrieval implementations exist but have no stable tool registry | Unified tool protocol and independently tested tools |
 | 5. Research Agent | Partial foundation | State, policy and loop separated; budgets and stop reasons tested | Router and explicit Observe → Re-plan state transitions |
@@ -36,8 +36,9 @@ validated long-term memory.
 - [x] Add characterization tests for corpus selection, chunk provenance,
   lexical fallback, reranking, and bounded Researcher termination.
 - [ ] Split `retrieval/planner.py` by models, planning, execution, selection,
-  and answer summarization. Contract models are separated; algorithmic
-  planning, execution, selection, and summarization remain to move.
+  and answer summarization. Contract models, deterministic question planning,
+  and specification routing are separated; execution, selection, and
+  summarization remain to move.
 - [ ] Split `retrieval/hypothesis.py` into proposal models and execution.
 - [x] Split `retrieval/hybrid.py` into corpus, index, lexical, semantic, and
   fusion responsibilities.
