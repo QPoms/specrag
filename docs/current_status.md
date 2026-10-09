@@ -69,7 +69,7 @@ research task
 ```
 
 All migrated modules import successfully. The structure check passes and the
-current focused test suite passes: 12 tests.
+current focused test suite passes: 15 tests.
 
 The first behavioral refactor is complete. Corpus discovery/chunking, immutable
 retrieval contracts, BM25, semantic candidate search, reciprocal-rank fusion,
@@ -78,6 +78,14 @@ Chroma-specific construction is isolated under `infrastructure/`. The bounded
 Researcher is split into explicit models, evidence state, action policy, and
 loop execution. Its agent-finish, round-budget, and agent-error exits are
 covered by characterization tests.
+
+Deterministic planner behavior is now characterized for exact source spans,
+explicit facets, unresolved-reference fallback, and explicit-specification
+routing. Planning-input, execution-result, evidence-selection, repair, and
+answer-summary contracts have been extracted from the monolithic planner. The
+planner line-count ratchet has been lowered from 5,066 to 4,406 lines; its
+algorithmic stages still need to be separated before the exception can be
+removed.
 
 ## Known limitations
 

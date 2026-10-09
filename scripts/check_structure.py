@@ -55,7 +55,7 @@ VERSIONED_MODULE = re.compile(
 
 DEFAULT_MAX_LINES = 600
 LINE_RATCHETS = {
-    "src/specrag/retrieval/planner.py": 5066,
+    "src/specrag/retrieval/planner.py": 4406,
     "src/specrag/retrieval/hypothesis.py": 1525,
 }
 

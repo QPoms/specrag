@@ -15,8 +15,6 @@ import math
 import re
 from typing import Any, Literal, Mapping, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
 from ..config import AppConfig, load_config
 from .hybrid import (
     CorpusVersionPolicy,
@@ -30,10 +28,64 @@ from .normalization import (
     protocol_identifier_in_text,
     protocol_identifier_variants,
 )
+from .plan_models import (
+    AnchorType,
+    DiscoveryRetrievalPlanV2,
+    DiscoveryRetrievalPlanV3,
+    EvidenceTermProposal,
+    ExplicitFacet,
+    GroundedTerm,
+    LLMAnchorBatch,
+    LLMAnchorProposal,
+    PLANNER_PROFILE,
+    PlannedDiscoveryRetrieval,
+    QueryAnchor,
+    ReferenceExpansionPolicy,
+    RetrievalProbe,
+    RetrievalSubquery,
+    RoutingPolicy,
+    SourceSpan,
+    SpecificationRoute,
+)
+from .execution_models import (
+    CuratedEvidenceItem,
+    CuratedEvidenceTask,
+    CuratedRetrievalExecution,
+    EvidenceRelationClass,
+    EvidenceExpansionBatch,
+    EvidenceGroundedFollowup,
+    ExpandedRetrievalExecution,
+    FollowupProbeProposal,
+    GroundedRelationEvidence,
+    PlannedRetrievalExecution,
+    PlannedRetrievalHit,
+    PlannedRetrievalTaskResult,
+    QuestionExpansionProposal,
+)
+from .answer_models import (
+    AgentEvidenceGroupProposal,
+    AgentHypothesisEvidenceAssessmentProposal,
+    AgentIndependentEvidenceGroupProposal,
+    AgentQuestionAnswerProposal,
+    AgentQuestionEvidenceSelectionProposal,
+    AgentRepairableQuestionAnswerProposal,
+    DiscoveryEvidenceSelection,
+    DualStageRetrievalExecution,
+    EvidenceAnswerSummary,
+    EvidenceBackedAnswer,
+    EvidenceGroundedExpansionPlan,
+    EvidenceRepairQuery,
+    EvidenceRepairSubQuery,
+    EvidenceSourceStage,
+    HypothesisEvidenceAssessment,
+    HypothesisSupportStatus,
+    QuestionAnswerSummary,
+    QuestionEvidenceSelection,
+    SelectedEvidenceGroup,
+    SelectedSpecificationEvidence,
+)
 
 
-PLANNER_PROFILE = "protocol-agnostic-retrieval-planner/v1.0"
-_SPEC_PATTERN = r"^\d{2}\.\d{3}$"
 _LOW_VALUE_HEADINGS = (
     "change history",
     "handling of unknown, unforeseen",
@@ -62,15 +114,6 @@ _SPEC_REFERENCE_PATTERNS = (
     ),
 )
 
-AnchorType = Literal[
-    "protocol_message",
-    "information_element",
-    "protocol_state",
-    "timer",
-    "specification",
-    "literal_value",
-    "technical_term",
-]
 _T = TypeVar("_T")
 
 
@@ -138,709 +181,6 @@ _GENERIC_FACET_TERMS = frozenset({
     "ue",
     "network",
 })
-
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class SourceSpan(_StrictModel):
-    """Exact, half-open character range in the original Discovery question."""
-
-    text: str = Field(min_length=1)
-    start: int = Field(ge=0)
-    end: int = Field(ge=1)
-
-    @model_validator(mode="after")
-    def _valid_half_open_range(self) -> "SourceSpan":
-        if self.end <= self.start:
-            raise ValueError("source span end must be greater than start")
-        if self.end - self.start != len(self.text):
-            raise ValueError("source span offsets must match source span text")
-        return self
-
-
-class QueryAnchor(_StrictModel):
-    surface: str = Field(min_length=1)
-    canonical: str = Field(min_length=1)
-    entity_type: AnchorType
-    source_span: SourceSpan
-    normalization: Literal["verbatim", "orthographic", "controlled_alias"]
-
-    @model_validator(mode="after")
-    def _surface_matches_span(self) -> "QueryAnchor":
-        if self.surface != self.source_span.text:
-            raise ValueError("anchor surface must equal source_span.text")
-        return self
-
-
-class ExplicitFacet(_StrictModel):
-    """A role-specific information need explicitly stated in the question."""
-
-    name: str = Field(min_length=1)
-    source_span: SourceSpan
-
-
-class EvidenceTermProposal(_StrictModel):
-    """Verbatim term selected from one first-stage hit excerpt."""
-
-    source_hit_id: str = Field(min_length=1)
-    surface: str = Field(min_length=1)
-
-
-class GroundedTerm(_StrictModel):
-    """A code-assigned selectable term; the agent returns only its ID."""
-
-    term_id: str = Field(min_length=1)
-    source_evidence_id: str = Field(min_length=1)
-    surface: str = Field(min_length=1)
-
-
-class LLMAnchorProposal(_StrictModel):
-    """An extractive proposal; normalization is performed by trusted code."""
-
-    surface: str = Field(min_length=1)
-    entity_type: AnchorType
-
-
-class LLMQuestionAnchors(_StrictModel):
-    query_id: str = Field(min_length=1)
-    anchors: tuple[LLMAnchorProposal, ...]
-
-
-class LLMAnchorBatch(_StrictModel):
-    questions: tuple[LLMQuestionAnchors, ...]
-
-
-class SpecificationRoute(_StrictModel):
-    specification: str = Field(pattern=_SPEC_PATTERN)
-    weight: float = Field(gt=0, le=1)
-    reason: str = Field(min_length=1)
-    source: Literal[
-        "document_router",
-        "explicit_query",
-        "reference",
-        "agent_hypothesis",
-    ]
-
-
-class RetrievalProbe(_StrictModel):
-    probe_id: str = Field(min_length=1)
-    evidence_role: str = Field(min_length=1)
-    lexical_query: str = Field(min_length=1)
-    semantic_query: str = Field(min_length=1)
-    routes: tuple[SpecificationRoute, ...] = ()
-    anchors: tuple[str, ...] = ()
-    facets: tuple[str, ...] = ()
-    source_hit_ids: tuple[str, ...] = ()
-    evidence_terms: tuple[EvidenceTermProposal, ...] = ()
-    stage: Literal[1, 2] = 1
-    weight: float = Field(default=1.0, gt=0)
-
-    @field_validator("anchors", "facets", "source_hit_ids")
-    @classmethod
-    def _unique_values(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        folded = [item.casefold() for item in value]
-        if len(folded) != len(set(folded)):
-            raise ValueError("probe anchors and facets must be unique")
-        return value
-
-
-# Compatibility name for callers of the experimental v0.1 module.
-RetrievalSubquery = RetrievalProbe
-
-
-class RoutingPolicy(_StrictModel):
-    strategy: Literal["document_then_passage"] = "document_then_passage"
-    max_candidate_specifications: int = Field(default=6, ge=1, le=12)
-    fallback_to_full_corpus: bool = True
-
-
-class ReferenceExpansionPolicy(_StrictModel):
-    enabled: bool = True
-    max_hops: Literal[1] = 1
-    max_references: int = Field(default=3, ge=0, le=10)
-
-
-class PlannedDiscoveryRetrieval(_StrictModel):
-    retrieval_id: str = Field(min_length=1)
-    query_id: str = Field(min_length=1)
-    claim_id: str = Field(min_length=1)
-    angle: str = Field(min_length=1)
-    original_question: str = Field(min_length=1)
-    planner_action: Literal["planned", "fallback_full_corpus"]
-    anchors: tuple[QueryAnchor, ...] = ()
-    explicit_facets: tuple[ExplicitFacet, ...] = ()
-    context_dependent: bool = False
-    warnings: tuple[str, ...] = ()
-    routing_policy: RoutingPolicy = RoutingPolicy()
-    reference_expansion: ReferenceExpansionPolicy = ReferenceExpansionPolicy()
-    retrieval_probes: tuple[RetrievalProbe, ...] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _coherent_plan(self) -> "PlannedDiscoveryRetrieval":
-        identifiers = [item.probe_id for item in self.retrieval_probes]
-        if len(identifiers) != len(set(identifiers)):
-            raise ValueError("probe IDs must be unique within a retrieval")
-        if any(item.evidence_role != self.angle for item in self.retrieval_probes):
-            raise ValueError("every probe must preserve the frozen Discovery angle")
-        return self
-
-    @property
-    def subqueries(self) -> tuple[RetrievalProbe, ...]:
-        """Read-only compatibility view; new artifacts use retrieval_probes."""
-
-        return self.retrieval_probes
-
-
-class DiscoveryRetrievalPlanV3(_StrictModel):
-    schema_version: Literal["discovery-retrieval-plan/v3.0"] = (
-        "discovery-retrieval-plan/v3.0"
-    )
-    planner_profile: Literal["protocol-agnostic-retrieval-planner/v1.0"] = (
-        PLANNER_PROFILE
-    )
-    anchor_extraction_method: Literal[
-        "deterministic_extractive",
-        "codex_agent_extractive_validated",
-    ] = "deterministic_extractive"
-    planner_agent_receipt: CodexAgentReceipt | None = None
-    retrievals: tuple[PlannedDiscoveryRetrieval, ...] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _unique_retrievals(self) -> "DiscoveryRetrievalPlanV3":
-        retrieval_ids = [item.retrieval_id for item in self.retrievals]
-        query_ids = [item.query_id for item in self.retrievals]
-        if len(retrieval_ids) != len(set(retrieval_ids)):
-            raise ValueError("planned retrieval IDs must be unique")
-        if len(query_ids) != len(set(query_ids)):
-            raise ValueError("each Discovery question must be planned once")
-        return self
-
-
-# Compatibility alias. The serialized schema version distinguishes artifacts.
-DiscoveryRetrievalPlanV2 = DiscoveryRetrievalPlanV3
-
-
-class PlannedRetrievalHit(_StrictModel):
-    hit_id: str = Field(min_length=1)
-    chunk_id: str = Field(min_length=1)
-    collection_rank: int = Field(ge=1)
-    specification: str = Field(pattern=_SPEC_PATTERN)
-    version: str = Field(min_length=1)
-    source_path: str = Field(min_length=1)
-    document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
-    heading_path: tuple[str, ...] = ()
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
-    excerpt: str = Field(min_length=1)
-    evidence_roles: tuple[str, ...] = Field(min_length=1)
-    probe_ids: tuple[str, ...] = Field(min_length=1)
-    retrieval_sources: tuple[str, ...] = ()
-    matched_anchors: tuple[str, ...] = ()
-    retrieval_hop: Literal[1, 2] = 1
-    reference_source_chunk_ids: tuple[str, ...] = ()
-    semantic_rank: int | None = Field(default=None, ge=1)
-    lexical_rank: int | None = Field(default=None, ge=1)
-    rrf_score: float = Field(ge=0)
-    route_score: float = Field(ge=0)
-    anchor_score: float = Field(ge=0)
-    heading_score: float = Field(ge=0)
-    agreement_score: float = Field(ge=0)
-    noise_penalty: float = Field(ge=0)
-    deterministic_score: float | None = None
-    reranker_score: float | None = None
-    deterministic_score_normalized: float | None = Field(
-        default=None,
-        ge=0,
-        le=1,
-    )
-    reranker_score_normalized: float | None = Field(default=None, ge=0, le=1)
-    reranker_model: str | None = None
-    final_score: float
-
-
-class PlannedRetrievalTaskResult(_StrictModel):
-    retrieval_id: str = Field(min_length=1)
-    query_id: str = Field(min_length=1)
-    planner_action: Literal["planned", "fallback_full_corpus"]
-    status: Literal["completed", "partial", "no_hits", "unavailable"]
-    unavailable_specifications: tuple[str, ...] = ()
-    followed_references: tuple[str, ...] = ()
-    reranker_status: Literal["disabled", "applied", "fallback"] = "disabled"
-    reranker_error: str | None = None
-    hits: tuple[PlannedRetrievalHit, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-class PlannedRetrievalExecution(_StrictModel):
-    schema_version: Literal["planned-retrieval-execution/v1.0"] = (
-        "planned-retrieval-execution/v1.0"
-    )
-    planner_profile: Literal["protocol-agnostic-retrieval-planner/v1.0"] = (
-        PLANNER_PROFILE
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    resolved_plan: DiscoveryRetrievalPlanV3 | None = None
-    index_fingerprint: str | None = None
-    index_manifest_path: str | None = None
-    embedding_model: str
-    reranker: dict[str, Any] | None = None
-    corpus_version_policy: CorpusVersionPolicy
-    corpus_release: int | None = Field(default=None, ge=1)
-    tasks: tuple[PlannedRetrievalTaskResult, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-ExpansionIntent = Literal[
-    "definition",
-    "representation",
-    "field_structure",
-    "encoding",
-    "carrier_usage",
-    "procedure_usage",
-    "transport_path",
-    "endpoint_interface",
-    "direction",
-    "authority",
-    "security_protection",
-    "state_condition",
-    "timing_order",
-    "prerequisites",
-    "relationship",
-    "resource_constraint",
-    "explicit_reference",
-]
-
-
-class FollowupProbeProposal(_StrictModel):
-    followup_id: str = Field(min_length=1)
-    parent_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
-    intent: ExpansionIntent
-    selected_term_ids: tuple[str, ...] = Field(
-        min_length=1,
-        max_length=8,
-    )
-
-
-class QuestionExpansionProposal(_StrictModel):
-    query_id: str = Field(min_length=1)
-    probes: tuple[FollowupProbeProposal, ...] = Field(max_length=5)
-
-
-class EvidenceExpansionBatch(_StrictModel):
-    questions: tuple[QuestionExpansionProposal, ...]
-
-
-class EvidenceGroundedFollowup(_StrictModel):
-    retrieval_id: str = Field(min_length=1)
-    query_id: str = Field(min_length=1)
-    claim_id: str = Field(min_length=1)
-    angle: str = Field(min_length=1)
-    original_question: str = Field(min_length=1)
-    status: Literal["expanded", "no_expansion"]
-    warnings: tuple[str, ...] = ()
-    retrieval_probes: tuple[RetrievalProbe, ...] = ()
-
-    @model_validator(mode="after")
-    def _same_role_second_stage(self) -> "EvidenceGroundedFollowup":
-        if self.status == "expanded" and not self.retrieval_probes:
-            raise ValueError("expanded follow-up must contain probes")
-        if self.status == "no_expansion" and self.retrieval_probes:
-            raise ValueError("no-expansion follow-up cannot contain probes")
-        if any(probe.stage != 2 for probe in self.retrieval_probes):
-            raise ValueError("follow-up probes must be second-stage probes")
-        if any(probe.evidence_role != self.angle for probe in self.retrieval_probes):
-            raise ValueError("follow-up probes must preserve the Discovery angle")
-        return self
-
-
-class GroundedRelationEvidence(_StrictModel):
-    """Corpus-derived evidence made available to the second-stage agent."""
-
-    evidence_id: str = Field(min_length=1)
-    query_id: str = Field(min_length=1)
-    chunk_id: str = Field(min_length=1)
-    specification: str = Field(pattern=_SPEC_PATTERN)
-    version: str = Field(min_length=1)
-    source_path: str = Field(min_length=1)
-    document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
-    heading_path: tuple[str, ...] = ()
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
-    excerpt: str = Field(min_length=1)
-    matched_original_anchors: tuple[str, ...] = ()
-    bridge_terms: tuple[str, ...] = ()
-    grounded_terms: tuple[GroundedTerm, ...] = ()
-    relation_kinds: tuple[str, ...] = Field(min_length=1)
-
-
-EvidenceRelationClass = Literal[
-    "direct_relation",
-    "supporting_relation",
-    "context_only",
-]
-
-
-class CuratedEvidenceItem(_StrictModel):
-    """One deduplicated candidate selected for downstream evidence review."""
-
-    evidence_id: str = Field(min_length=1)
-    query_id: str = Field(min_length=1)
-    chunk_id: str = Field(min_length=1)
-    specification: str = Field(pattern=_SPEC_PATTERN)
-    version: str = Field(min_length=1)
-    source_path: str = Field(min_length=1)
-    document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
-    heading_path: tuple[str, ...] = ()
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
-    excerpt: str = Field(min_length=1)
-    relation_class: EvidenceRelationClass
-    classification_reasons: tuple[str, ...] = Field(min_length=1)
-    candidate_sources: tuple[str, ...] = Field(min_length=1)
-    source_evidence_ids: tuple[str, ...] = Field(min_length=1)
-    matched_original_anchors: tuple[str, ...] = ()
-    grounded_terms: tuple[str, ...] = ()
-    curation_score: float
-
-
-class CuratedEvidenceTask(_StrictModel):
-    query_id: str = Field(min_length=1)
-    claim_id: str = Field(min_length=1)
-    angle: str = Field(min_length=1)
-    original_question: str = Field(min_length=1)
-    candidate_count: int = Field(ge=0)
-    direct_candidate_count: int = Field(ge=0)
-    supporting_candidate_count: int = Field(ge=0)
-    context_candidate_count: int = Field(ge=0)
-    selected_evidence: tuple[CuratedEvidenceItem, ...] = ()
-
-
-class CuratedRetrievalExecution(_StrictModel):
-    schema_version: Literal["curated-retrieval-execution/v1.0"] = (
-        "curated-retrieval-execution/v1.0"
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    resolved_plan: DiscoveryRetrievalPlanV3 | None = None
-    first_stage: PlannedRetrievalExecution
-    relation_candidates: tuple[GroundedRelationEvidence, ...] = ()
-    curated_tasks: tuple[CuratedEvidenceTask, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-class ExpandedRetrievalExecution(_StrictModel):
-    schema_version: Literal["expanded-retrieval-execution/v1.0"] = (
-        "expanded-retrieval-execution/v1.0"
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    resolved_plan: DiscoveryRetrievalPlanV3 | None = None
-    first_stage: PlannedRetrievalExecution
-    second_stage_candidates: tuple[GroundedRelationEvidence, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-AnswerType = Literal[
-    "protocol_message",
-    "information_element",
-    "container",
-    "procedure",
-    "boundary",
-    "other",
-]
-AnswerSupportKind = Literal[
-    "direct_statement",
-    "table_relation",
-    "combined_evidence",
-    "negative_boundary",
-]
-AnswerCoverageStatus = Literal[
-    "supported",
-    "partial",
-    "unsupported",
-    "unresolved",
-]
-
-
-class EvidenceBackedAnswer(_StrictModel):
-    answer_id: str = Field(min_length=1)
-    # Required in the structured response schema; null means an independent answer.
-    hypothesis_id: str | None = Field(...)
-    coverage_status: AnswerCoverageStatus = Field(...)
-    answer_type: AnswerType
-    statement: str = Field(min_length=1)
-    support_kind: AnswerSupportKind
-    evidence_ids: tuple[str, ...] = Field(max_length=8)
-
-
-class EvidenceRepairSubQuery(_StrictModel):
-    """One local evidence lookup within a bounded repair task."""
-
-    specification: str = Field(min_length=1)
-    lexical_query: str = Field(min_length=1)
-    semantic_query: str = Field(min_length=1)
-    required_terms: tuple[str, ...] = Field(min_length=1, max_length=3)
-
-    @field_validator("specification", "lexical_query", "semantic_query")
-    @classmethod
-    def _non_blank_subquery_text(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("repair subquery text must be non-blank")
-        return cleaned
-
-    @field_validator("required_terms")
-    @classmethod
-    def _unique_subquery_terms(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        cleaned = tuple(value.strip() for value in values)
-        if any(not value for value in cleaned):
-            raise ValueError("repair subquery terms must be non-blank")
-        if len({value.casefold() for value in cleaned}) != len(cleaned):
-            raise ValueError("repair subquery terms must be unique")
-        return cleaned
-
-
-class EvidenceRepairQuery(_StrictModel):
-    repair_id: str = Field(min_length=1)
-    hypothesis_ids: tuple[str, ...] = Field(max_length=6)
-    requirement_id: str | None
-    missing_claim: str = Field(min_length=1)
-    evidence_queries: tuple[EvidenceRepairSubQuery, ...] = Field(
-        min_length=1,
-        max_length=3,
-    )
-    rationale: str = Field(min_length=1)
-
-    @field_validator("requirement_id")
-    @classmethod
-    def _non_blank_optional_requirement_id(
-        cls,
-        value: str | None,
-    ) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("repair requirement ID must be non-blank")
-        return cleaned
-
-    @field_validator(
-        "repair_id",
-        "missing_claim",
-        "rationale",
-    )
-    @classmethod
-    def _non_blank_repair_text(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("repair query text must be non-blank")
-        return cleaned
-
-    @field_validator("hypothesis_ids")
-    @classmethod
-    def _non_blank_repair_hypothesis_ids(
-        cls,
-        values: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        cleaned = tuple(value.strip() for value in values)
-        if any(not value for value in cleaned):
-            raise ValueError("repair hypothesis IDs must be non-blank")
-        return cleaned
-
-    @model_validator(mode="after")
-    def _unique_evidence_queries(self) -> "EvidenceRepairQuery":
-        keys = {
-            (
-                query.specification.casefold(),
-                query.lexical_query.casefold(),
-                query.semantic_query.casefold(),
-            )
-            for query in self.evidence_queries
-        }
-        if len(keys) != len(self.evidence_queries):
-            raise ValueError("repair evidence queries must be unique")
-        if len(set(self.hypothesis_ids)) != len(self.hypothesis_ids):
-            raise ValueError("repair hypothesis IDs must be unique")
-        return self
-
-
-class AgentQuestionAnswerProposal(_StrictModel):
-    query_id: str = Field(min_length=1)
-    answers: tuple[EvidenceBackedAnswer, ...] = Field(max_length=10)
-
-
-class AgentRepairableQuestionAnswerProposal(_StrictModel):
-    query_id: str = Field(min_length=1)
-    evidence_status: Literal["sufficient", "insufficient"]
-    answers: tuple[EvidenceBackedAnswer, ...] = Field(max_length=10)
-    repair_queries: tuple[EvidenceRepairQuery, ...] = Field(max_length=3)
-
-    @model_validator(mode="after")
-    def _repair_matches_status(self) -> "AgentRepairableQuestionAnswerProposal":
-        if self.evidence_status == "sufficient" and self.repair_queries:
-            raise ValueError("sufficient evidence cannot request repair")
-        return self
-
-
-class QuestionAnswerSummary(_StrictModel):
-    query_id: str = Field(min_length=1)
-    claim_id: str = Field(min_length=1)
-    angle: str = Field(min_length=1)
-    original_question: str = Field(min_length=1)
-    status: Literal["completed", "no_answers", "unavailable"]
-    evidence_status: Literal[
-        "sufficient",
-        "insufficient",
-        "not_assessed",
-        "unavailable",
-    ] = (
-        "not_assessed"
-    )
-    answers: tuple[EvidenceBackedAnswer, ...] = ()
-    repair_queries: tuple[EvidenceRepairQuery, ...] = ()
-    warnings: tuple[str, ...] = ()
-
-
-class EvidenceAnswerSummary(_StrictModel):
-    schema_version: Literal["evidence-answer-summary/v1.5"] = (
-        "evidence-answer-summary/v1.5"
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    max_answers_per_question: int = Field(ge=1, le=10)
-    agent_receipts: tuple[CodexAgentReceipt, ...] = ()
-    questions: tuple[QuestionAnswerSummary, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-class AgentEvidenceGroupProposal(_StrictModel):
-    """Evidence IDs forming one distinct answer-bearing source group."""
-
-    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
-    hypothesis_ids: tuple[str, ...]
-
-
-HypothesisSupportStatus = Literal[
-    "supported",
-    "partial",
-    "unsupported",
-    "unassessed",
-]
-
-
-class AgentHypothesisEvidenceAssessmentProposal(_StrictModel):
-    hypothesis_id: str = Field(min_length=1)
-    status: Literal["supported", "partial", "unsupported"]
-    evidence_ids: tuple[str, ...] = Field(max_length=4)
-
-
-class AgentIndependentEvidenceGroupProposal(_StrictModel):
-    """Direct answer evidence found outside the hypothesis checklist."""
-
-    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
-
-
-class AgentQuestionEvidenceSelectionProposal(_StrictModel):
-    query_id: str = Field(min_length=1)
-    hypothesis_assessments: tuple[
-        AgentHypothesisEvidenceAssessmentProposal, ...
-    ]
-    independent_evidence_groups: tuple[
-        AgentIndependentEvidenceGroupProposal, ...
-    ] = Field(max_length=10)
-    evidence_groups: tuple[AgentEvidenceGroupProposal, ...] = Field(max_length=10)
-
-
-EvidenceSourceStage = Literal[
-    "first_stage",
-    "hypothesis_route",
-    "second_stage",
-]
-
-
-class SelectedSpecificationEvidence(_StrictModel):
-    """One unmodified specification excerpt selected for downstream work."""
-
-    evidence_id: str = Field(min_length=1)
-    source_stage: EvidenceSourceStage
-    chunk_id: str = Field(min_length=1)
-    specification: str = Field(pattern=_SPEC_PATTERN)
-    version: str = Field(min_length=1)
-    source_path: str = Field(min_length=1)
-    document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
-    heading_path: tuple[str, ...] = ()
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
-    excerpt: str = Field(min_length=1)
-    retrieval_sources: tuple[str, ...] = ()
-    relation_kinds: tuple[str, ...] = ()
-    bridge_terms: tuple[str, ...] = ()
-
-
-class SelectedEvidenceGroup(_StrictModel):
-    group_id: str = Field(min_length=1)
-    source_stages: tuple[EvidenceSourceStage, ...] = Field(min_length=1)
-    hypothesis_ids: tuple[str, ...] = ()
-    selection_basis: Literal[
-        "hypothesis_assessment",
-        "original_question_independent",
-    ] = "hypothesis_assessment"
-    evidence: tuple[SelectedSpecificationEvidence, ...] = Field(
-        min_length=1,
-        max_length=4,
-    )
-
-
-class HypothesisEvidenceAssessment(_StrictModel):
-    hypothesis_id: str = Field(min_length=1)
-    status: HypothesisSupportStatus
-    evidence_ids: tuple[str, ...] = Field(default=(), max_length=4)
-
-
-class QuestionEvidenceSelection(_StrictModel):
-    query_id: str = Field(min_length=1)
-    claim_id: str = Field(min_length=1)
-    angle: str = Field(min_length=1)
-    original_question: str = Field(min_length=1)
-    status: Literal["completed", "no_evidence", "unavailable"]
-    hypothesis_assessments: tuple[HypothesisEvidenceAssessment, ...] = ()
-    evidence_groups: tuple[SelectedEvidenceGroup, ...] = ()
-    warnings: tuple[str, ...] = ()
-
-
-class DiscoveryEvidenceSelection(_StrictModel):
-    schema_version: Literal["discovery-evidence-selection/v1.0"] = (
-        "discovery-evidence-selection/v1.0"
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    max_evidence_groups_per_question: int = Field(ge=1, le=10)
-    agent_receipts: tuple[CodexAgentReceipt, ...] = ()
-    questions: tuple[QuestionEvidenceSelection, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-class EvidenceGroundedExpansionPlan(_StrictModel):
-    schema_version: Literal["evidence-expansion-plan/v1.0"] = (
-        "evidence-expansion-plan/v1.0"
-    )
-    planner_profile: Literal["protocol-agnostic-retrieval-planner/v1.0"] = (
-        PLANNER_PROFILE
-    )
-    expansion_agent_receipts: tuple[CodexAgentReceipt, ...] = Field(min_length=1)
-    retrievals: tuple[EvidenceGroundedFollowup, ...]
-
-
-class DualStageRetrievalExecution(_StrictModel):
-    schema_version: Literal["dual-stage-retrieval-execution/v1.0"] = (
-        "dual-stage-retrieval-execution/v1.0"
-    )
-    status: Literal["completed", "partial", "unavailable"]
-    resolved_first_stage_plan: DiscoveryRetrievalPlanV3 | None = None
-    relation_evidence: tuple[GroundedRelationEvidence, ...] = ()
-    expansion_plan: EvidenceGroundedExpansionPlan | None = None
-    first_stage: PlannedRetrievalExecution
-    second_stage: PlannedRetrievalExecution | None = None
-    merged_tasks: tuple[PlannedRetrievalTaskResult, ...] = ()
-    errors: tuple[str, ...] = ()
 
 
 def _angle_value(question: Any) -> str:

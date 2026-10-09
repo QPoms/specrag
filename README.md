@@ -31,6 +31,8 @@ user question or task
   a tested lexical fallback when semantic search is unavailable.
 - `src/specrag/retrieval/planner.py`: query planning, protocol routing,
   multi-stage retrieval, evidence selection, and summaries.
+- `src/specrag/retrieval/*_models.py`: immutable planning, execution, and
+  answer/evidence-selection contracts extracted from the planner.
 - `src/specrag/retrieval/hypothesis.py`: answer-hypothesis expansion used as
   search guidance rather than evidence.
 - `src/specrag/retrieval/reranker.py`: optional cross-encoder reranking.
