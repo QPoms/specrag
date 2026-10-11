@@ -29,19 +29,31 @@ user question or task
   dense candidate search, and deterministic reciprocal-rank fusion.
 - `src/specrag/retrieval/hybrid.py`: small hybrid retrieval orchestrator with
   a tested lexical fallback when semantic search is unavailable.
-- `src/specrag/retrieval/planner.py`: query planning, protocol routing,
-  multi-stage retrieval, evidence selection, and summaries.
+- `src/specrag/retrieval/planner.py`: stable public facade and high-level
+  retrieval workflow orchestration.
 - `src/specrag/retrieval/planning.py` and `routing.py`: source-grounded
   question compilation and candidate-specification routing.
+- `src/specrag/retrieval/execution.py` and `ranking.py`: candidate retrieval,
+  reference expansion, deterministic scoring, and optional reranking.
+- `src/specrag/retrieval/relation_evidence.py`, `curation.py`, and
+  `expansion.py`: grounded relation discovery, deterministic curation, and
+  bounded second-stage retrieval.
+- `src/specrag/retrieval/evidence_selection.py`, `answer_synthesis.py`, and
+  `selected_answer.py`: source-ID selection and evidence-backed answer paths.
 - `src/specrag/retrieval/*_models.py`: immutable planning, execution, and
   answer/evidence-selection contracts extracted from the planner.
-- `src/specrag/retrieval/hypothesis.py`: answer-hypothesis expansion used as
-  search guidance rather than evidence.
+- `src/specrag/retrieval/hypothesis.py`: stable facade for speculative search
+  guidance, backed by separate contract, execution, and merge-policy modules.
 - `src/specrag/retrieval/reranker.py`: optional cross-encoder reranking.
 - `src/specrag/retrieval/normalization.py`: protocol identifier
   normalization.
 - `src/specrag/agents/`: separate Researcher models, evidence state, action
-  policy, and bounded loop execution.
+  policy, and bounded loop execution through the unified Tool Registry.
+- `src/specrag/tools/`: provider-neutral request/result schemas, capability
+  descriptions, registry, and six trusted retrieval adapters.
+- `src/specrag/models/`: framework-independent research state contracts.
+- `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
+  dependency-context handoff, bounded re-planning, checkpointing, and recovery.
 - `src/specrag/infrastructure/structured_agent.py`: structured-agent runtime
   adapter.
 - `src/specrag/infrastructure/llm.py`: structured OpenAI-compatible client
@@ -57,7 +69,11 @@ Markdown corpus; the deleted threat model is no longer an input source.
 - `data/3gpp/`: all retained 3GPP specification versions and source formats.
 - `data/3gpp/manifest.json`: compact corpus manifest.
 - `data/3gpp/catalog.jsonl`: one catalog record per specification version.
-- `data/memory/`: future validated long-term knowledge only.
+- `data/memory/`: validated long-term knowledge only; raw model output cannot
+  enter this store.
+- `data/QA/questions.jsonl`: curated Release 17 development questions with
+  exact local evidence bindings; complete upstream snapshots stay in ignored
+  sibling directories under `data/QA/`.
 
 Generated indexes are written under `.local/indexes/specifications/` and are
 ignored by Git. They are reproducible caches rather than project data.
@@ -67,10 +83,44 @@ ignored by Git. They are reproducible caches rather than project data.
 Copy `.env.example` to `.env`, set the OpenAI-compatible endpoint and model
 IDs, then adjust retrieval mechanics in `config.yaml`.
 
-The project does not yet expose the final general-purpose `specrag` CLI. The
-current milestone is characterizing and splitting the two remaining oversized
-planning modules before building clean `tools/` and `evidence/` boundaries for
-one direct question-to-answer demo.
+The default corpus scope is Release 17. A retrieval run selects the highest
+available version of every specification within that single Release.
+Cross-version research compares isolated Release-scoped runs. Explicit latest,
+exact-version, and mixed-version scopes are also supported and retain each
+source document's exact identity.
+
+The supported product CLI now has staged `route`, `plan`, and `baseline`
+commands. `specrag route` selects `single_task/simple` or
+`decompose/complex` and records one concise rationale; `specrag plan` uses the
+reviewed development labels to isolate and inspect bounded task decomposition
+without rerunning Router; `specrag baseline` continues through retrieval and evidence.
+Release is a `baseline` retrieval parameter, not a Router/Planner input. All
+commands select individual questions with `--id` or the complete 50-question
+development set with `--all`. LangGraph is restricted to
+`specrag/orchestration/`; domain, retrieval, evidence, memory, and evaluation
+logic remain independent from the orchestration runtime.
+
+Each planning artifact records whether its plan was generated deterministically
+or by the model, the active Planner contract and prompt version, and the
+structured-agent receipt for model-generated plans. Deterministic simple plans
+record a null prompt receipt because no Planner model call occurs.
+
+Planner dependencies represent validated information flow. A dependent
+Researcher starts only after its predecessors are sufficient and receives only
+their selected, source-valid supported evidence as scoped research context.
+
+## Local environment
+
+The project uses Python 3.12 and `uv`. Create or reproduce the repository-local
+environment with:
+
+```text
+uv sync --extra dev --frozen
+```
+
+`uv` installs the runtime and development dependencies into `.venv/`, which is
+ignored by Git. Run project commands with `uv run ...`; `pyproject.toml` and
+`uv.lock` are the authoritative dependency definition.
 
 ## Development guardrails
 
@@ -78,12 +128,13 @@ All generated changes must follow `AGENTS.md` and the documented package
 boundaries. Run these checks before finishing a change:
 
 ```text
-python scripts/check.py
+uv run python scripts/check.py
 ```
 
-The structure check rejects legacy directories, versioned module names,
-dependency-direction violations, and unbounded growth of the remaining large
-research modules.
+The quality gate validates the curated R17 question set, then runs the
+structure and test checks. The structure check rejects legacy directories,
+versioned module names, dependency-direction violations, and Python modules
+above the normal size ceiling.
 
 The complete local 3GPP corpus and mutable memory are intentionally excluded
 from Git. The compact corpus manifest and catalog remain tracked so corpus

@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from specrag.config import AppConfig
 from specrag.infrastructure.structured_agent import CodexStructuredAgent
-from specrag.retrieval.hypothesis import merge_parallel_retrieval_channels
-from specrag.retrieval.hybrid import HybridMarkdownRetriever
+from specrag.models import ResearchTask
+from specrag.retrieval.hybrid import (
+    HybridMarkdownRetriever,
+    effective_corpus_scope,
+)
 from specrag.retrieval.planner import (
     DiscoveryRetrievalPlanV3,
+    PlannedDiscoveryRetrieval,
     PlannedRetrievalExecution,
     PlannedRetrievalHit,
     PlannedRetrievalTaskResult,
-    execute_planned_discovery_retrieval,
+    compile_discovery_retrieval_plan,
+)
+from specrag.tools import (
+    RetrievalToolRequest,
+    RetrievalToolResult,
+    ToolEvidence,
+    ToolRegistry,
+    build_retrieval_tool_registry,
 )
 
 from .models import (
@@ -27,49 +39,182 @@ from .models import (
 from .policy import (
     CONTROLLER_INSTRUCTIONS,
     action_signature,
-    build_search_plan,
     validate_action,
 )
 from .state import EvidenceLedger
 
 
-def _expand_same_section(
+@dataclass(frozen=True)
+class _ResearchQuestion:
+    discovery_id: str
+    claim_id: str
+    angle: str
+    question: str
+
+
+@dataclass
+class RegistryResearcherService:
+    """Framework-independent application service for one Researcher worker."""
+
+    controller_agent: CodexStructuredAgent
+    retriever: HybridMarkdownRetriever
+    app_config: AppConfig
+    planner_agent: CodexStructuredAgent | None = None
+    tool_registry: ToolRegistry | None = None
+    memory_reader: Any | None = None
+    max_rounds: int = 4
+    max_search_actions: int = 6
+    max_expansion_actions: int = 3
+    hits_per_search: int = 8
+    max_evidence_per_question: int = 28
+
+    def run(
+        self,
+        tasks: tuple[ResearchTask, ...],
+        *,
+        shared_context: Mapping[str, Any] | None = None,
+        max_tool_calls: int | None = None,
+    ) -> tuple[AgenticRetrievalExecution, dict[str, str]]:
+        if not tasks:
+            raise ValueError("Researcher requires at least one research task")
+        questions = tuple(
+            _ResearchQuestion(
+                discovery_id=task.task_id,
+                claim_id=task.task_id,
+                angle=task.objective,
+                question=task.question,
+            )
+            for task in tasks
+        )
+        plan = compile_discovery_retrieval_plan(
+            questions,
+            planner_agent=self.planner_agent,
+        )
+        memory_context: list[dict[str, object]] = []
+        if self.memory_reader is not None:
+            for task in tasks:
+                memory_context.extend(
+                    item.knowledge.model_dump(mode="json")
+                    for item in self.memory_reader.search(task.question, limit=4)
+                )
+        execution = run_agentic_retrieval_loop(
+            plan,
+            controller_agent=self.controller_agent,
+            retriever=self.retriever,
+            app_config=self.app_config,
+            tool_registry=self.tool_registry,
+            shared_context={
+                **dict(shared_context or {}),
+                "validated_memory": memory_context,
+            },
+            max_rounds=self.max_rounds,
+            max_search_actions=self.max_search_actions,
+            max_expansion_actions=self.max_expansion_actions,
+            max_total_actions=max_tool_calls,
+            hits_per_search=self.hits_per_search,
+            max_evidence_per_question=self.max_evidence_per_question,
+        )
+        return execution, {task.task_id: task.task_id for task in tasks}
+
+
+def _tool_request(
+    action: AgentRetrievalAction,
     *,
-    query_id: str,
-    seeds: tuple[PlannedRetrievalHit, ...],
-    retriever: HybridMarkdownRetriever,
-    app_config: AppConfig,
-    max_results: int,
+    round_number: int,
+    ledger: EvidenceLedger,
+    result_limit: int,
+) -> RetrievalToolRequest:
+    seeds = tuple(
+        hit.chunk_id
+        for evidence_id in action.seed_evidence_ids
+        if (hit := ledger.find(action.query_id, evidence_id)) is not None
+    )
+    if action.tool in {"keyword_search", "hybrid_search"}:
+        query = action.lexical_query
+    elif action.tool in {"semantic_search", "rerank"}:
+        query = action.semantic_query
+    else:
+        query = ""
+    semantic_query = (
+        action.semantic_query
+        if action.tool == "hybrid_search"
+        else None
+    )
+    return RetrievalToolRequest(
+        request_id=f"{action.query_id}:agent:r{round_number}:{action.action_id}",
+        query_id=action.query_id,
+        query=query,
+        semantic_query=semantic_query,
+        target_specifications=action.target_specifications,
+        clause=action.clause or None,
+        seed_chunk_ids=seeds,
+        limit=min(action.max_results, result_limit),
+    )
+
+
+def _evidence_score(evidence: ToolEvidence) -> float:
+    if evidence.score is None:
+        return 1.0 / evidence.rank
+    if evidence.score_kind == "semantic_distance":
+        return 1.0 / (1.0 + max(evidence.score, 0.0))
+    return evidence.score
+
+
+def _planned_hits_from_tool(
+    result: RetrievalToolResult,
+    *,
+    base_item: PlannedDiscoveryRetrieval,
 ) -> tuple[PlannedRetrievalHit, ...]:
-    task = PlannedRetrievalTaskResult(
-        retrieval_id=f"{query_id}:agent:adjacent",
-        query_id=query_id,
-        planner_action="planned",
-        status="completed",
-        hits=seeds,
-    )
-    literal = PlannedRetrievalExecution(
-        status="completed",
-        index_fingerprint=retriever.fingerprint,
-        index_manifest_path=retriever.index_manifest_path,
-        embedding_model=app_config.retrieval.embedding_model,
-        corpus_version_policy=app_config.retrieval.version_policy,
-        corpus_release=app_config.retrieval.target_release,
-        tasks=(task,),
-    )
-    expanded = merge_parallel_retrieval_channels(
-        literal,
-        None,
-        retriever=retriever,
-        route_a_quota=len(seeds),
-        route_b_quota=0,
-        max_hits_per_question=len(seeds) + max_results,
-        adjacent_chunk_budget=max_results,
-    )
-    seed_chunks = {hit.chunk_id for hit in seeds}
-    return tuple(
-        hit for hit in expanded.tasks[0].hits if hit.chunk_id not in seed_chunks
-    )
+    hits: list[PlannedRetrievalHit] = []
+    for evidence in result.evidence:
+        score = _evidence_score(evidence)
+        hits.append(PlannedRetrievalHit(
+            hit_id=evidence.evidence_id,
+            chunk_id=evidence.chunk_id,
+            collection_rank=evidence.rank,
+            specification=evidence.specification,
+            release=evidence.release,
+            version=evidence.version,
+            source_path=evidence.source_path,
+            document_sha256=evidence.document_sha256,
+            heading_path=evidence.heading_path,
+            line_start=evidence.line_start,
+            line_end=evidence.line_end,
+            excerpt=evidence.excerpt,
+            evidence_roles=(base_item.angle,),
+            probe_ids=(result.request_id,),
+            retrieval_sources=(f"tool:{result.tool_name}",),
+            retrieval_hop=(
+                2 if result.tool_name == "expand_same_section" else 1
+            ),
+            semantic_rank=(
+                evidence.rank
+                if result.tool_name in {"semantic_search", "hybrid_search"}
+                else None
+            ),
+            lexical_rank=(
+                evidence.rank
+                if result.tool_name in {"keyword_search", "hybrid_search"}
+                else None
+            ),
+            rrf_score=(
+                max(evidence.score or 0.0, 0.0)
+                if evidence.score_kind == "rrf"
+                else 0.0
+            ),
+            route_score=0.0,
+            anchor_score=0.0,
+            heading_score=0.0,
+            agreement_score=0.0,
+            noise_penalty=0.0,
+            reranker_score=(
+                evidence.score
+                if evidence.score_kind == "cross_encoder"
+                else None
+            ),
+            final_score=score,
+        ))
+    return tuple(hits)
 
 
 def _evidence_execution(
@@ -79,6 +224,7 @@ def _evidence_execution(
     retriever: HybridMarkdownRetriever,
     app_config: AppConfig,
 ) -> PlannedRetrievalExecution:
+    active_scope = effective_corpus_scope(app_config.retrieval, retriever)
     tasks: list[PlannedRetrievalTaskResult] = []
     for item in base_plan.retrievals:
         hits = ledger.hits(item.query_id)
@@ -96,8 +242,9 @@ def _evidence_execution(
         index_fingerprint=retriever.fingerprint,
         index_manifest_path=retriever.index_manifest_path,
         embedding_model=app_config.retrieval.embedding_model,
-        corpus_version_policy=app_config.retrieval.version_policy,
-        corpus_release=app_config.retrieval.target_release,
+        corpus_version_policy=active_scope.version_policy,
+        corpus_release=active_scope.release,
+        corpus_versions=active_scope.versions,
         tasks=tuple(tasks),
     )
 
@@ -108,10 +255,12 @@ def run_agentic_retrieval_loop(
     controller_agent: CodexStructuredAgent,
     retriever: HybridMarkdownRetriever,
     app_config: AppConfig,
+    tool_registry: ToolRegistry | None = None,
     shared_context: Mapping[str, Any] | None = None,
     max_rounds: int = 4,
     max_search_actions: int = 6,
     max_expansion_actions: int = 3,
+    max_total_actions: int | None = None,
     hits_per_search: int = 8,
     max_evidence_per_question: int = 28,
 ) -> AgenticRetrievalExecution:
@@ -127,6 +276,11 @@ def run_agentic_retrieval_loop(
             raise ValueError(f"{name} must be positive")
     if max_expansion_actions < 0:
         raise ValueError("max_expansion_actions cannot be negative")
+    if max_total_actions is not None and max_total_actions < 1:
+        raise ValueError("max_total_actions must be positive when supplied")
+    total_action_limit = max_total_actions or (
+        max_search_actions + max_expansion_actions
+    )
 
     base_by_query = {item.query_id: item for item in base_plan.retrievals}
     query_ids = tuple(base_by_query)
@@ -145,6 +299,7 @@ def run_agentic_retrieval_loop(
     signatures: set[tuple[Any, ...]] = set()
     search_used = 0
     expansion_used = 0
+    registry = tool_registry or build_retrieval_tool_registry(retriever)
     stop_reason: Literal[
         "agent_finish",
         "round_budget",
@@ -178,11 +333,18 @@ def run_agentic_retrieval_loop(
             ],
             "shared_context": dict(shared_context or {}),
             "available_specifications": sorted(available_specs),
+            "available_tools": [
+                capability.model_dump(mode="json")
+                for capability in registry.capabilities
+            ],
             "budget": {
                 "rounds_remaining_including_this": max_rounds - round_number + 1,
                 "search_actions_remaining": max_search_actions - search_used,
                 "expansion_actions_remaining": (
                     max_expansion_actions - expansion_used
+                ),
+                "tool_actions_remaining": (
+                    total_action_limit - search_used - expansion_used
                 ),
                 "hits_per_search_ceiling": hits_per_search,
                 "max_evidence_per_question": max_evidence_per_question,
@@ -193,7 +355,7 @@ def run_agentic_retrieval_loop(
         try:
             response = controller_agent.parse(
                 purpose="choose the next bounded Discovery retrieval tool calls",
-                prompt_version="agentic-discovery-retrieval-controller/v0.1",
+                prompt_version="agentic-discovery-retrieval-controller/v0.2",
                 instructions=CONTROLLER_INSTRUCTIONS,
                 input_payload=payload,
                 output_type=AgentRetrievalDecision,
@@ -255,13 +417,18 @@ def run_agentic_retrieval_loop(
             signature = action_signature(action)
             if signature in signatures:
                 action_errors.append("duplicate prior tool call")
-            if action.tool == "hybrid_search" and search_used >= max_search_actions:
+            if (
+                action.tool not in {"finish", "expand_same_section"}
+                and search_used >= max_search_actions
+            ):
                 action_errors.append("search action budget exhausted")
             if (
                 action.tool == "expand_same_section"
                 and expansion_used >= max_expansion_actions
             ):
                 action_errors.append("expansion action budget exhausted")
+            if search_used + expansion_used >= total_action_limit:
+                action_errors.append("total tool action budget exhausted")
             if action_errors:
                 outcome = AgentActionOutcome(
                     round_number=round_number,
@@ -274,64 +441,50 @@ def run_agentic_retrieval_loop(
                 continue
 
             signatures.add(signature)
-            if action.tool == "hybrid_search":
-                search_used += 1
-                search_plan = build_search_plan(
-                    base_by_query[action.query_id],
-                    action,
-                    round_number=round_number,
-                )
-                result = execute_planned_discovery_retrieval(
-                    search_plan,
-                    app_config=app_config,
-                    final_hits=min(action.max_results, hits_per_search),
-                    retriever=retriever,
-                )
-                task = result.tasks[0]
-                observed, added = ledger.add(
-                    action.query_id,
-                    task.hits,
-                    action_id=action.action_id,
-                )
-                outcome = AgentActionOutcome(
-                    round_number=round_number,
-                    action=action,
-                    status=(
-                        "completed"
-                        if observed
-                        else "unavailable"
-                        if task.status == "unavailable"
-                        else "no_hits"
-                    ),
-                    evidence_ids=observed,
-                    new_evidence_ids=added,
-                    errors=task.errors,
-                )
-            else:
+            if action.tool == "expand_same_section":
                 expansion_used += 1
-                seeds = tuple(
-                    hit
-                    for evidence_id in action.seed_evidence_ids
-                    if (hit := ledger.find(action.query_id, evidence_id)) is not None
+            else:
+                search_used += 1
+            request = _tool_request(
+                action,
+                round_number=round_number,
+                ledger=ledger,
+                result_limit=hits_per_search,
+            )
+            try:
+                result = registry.invoke(action.tool, request)
+                active_scope = effective_corpus_scope(
+                    app_config.retrieval,
+                    retriever,
                 )
-                expanded_hits = _expand_same_section(
-                    query_id=action.query_id,
-                    seeds=seeds,
-                    retriever=retriever,
-                    app_config=app_config,
-                    max_results=action.max_results,
+                if result.corpus_scope != active_scope:
+                    raise RuntimeError(
+                        "tool result corpus scope differs from the active run"
+                    )
+                planned_hits = _planned_hits_from_tool(
+                    result,
+                    base_item=base_by_query[action.query_id],
                 )
                 observed, added = ledger.add(
                     action.query_id,
-                    expanded_hits,
+                    planned_hits,
                     action_id=action.action_id,
                 )
                 outcome = AgentActionOutcome(
                     round_number=round_number,
                     action=action,
-                    status="completed" if observed else "no_hits",
+                    status=result.status,
                     evidence_ids=observed,
                     new_evidence_ids=added,
+                    errors=result.errors,
+                )
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                outcome = AgentActionOutcome(
+                    round_number=round_number,
+                    action=action,
+                    status="unavailable",
+                    errors=(message,),
                 )
             outcomes.append(outcome)
             errors.extend(outcome.errors)
@@ -342,7 +495,11 @@ def run_agentic_retrieval_loop(
             receipt=response.receipt,
             outcomes=tuple(outcomes),
         ))
-        if search_used >= max_search_actions and expansion_used >= max_expansion_actions:
+        if (
+            search_used + expansion_used >= total_action_limit
+            or search_used >= max_search_actions
+            and expansion_used >= max_expansion_actions
+        ):
             stop_reason = "action_budget"
             break
 
@@ -379,5 +536,6 @@ __all__ = [
     "AgentRetrievalDecision",
     "AgentRetrievalTurn",
     "AgenticRetrievalExecution",
+    "RegistryResearcherService",
     "run_agentic_retrieval_loop",
 ]

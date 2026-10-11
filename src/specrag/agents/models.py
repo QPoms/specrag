@@ -7,14 +7,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from specrag.infrastructure.structured_agent import CodexAgentReceipt
+from specrag.models import ResearcherStopReason
 from specrag.retrieval.planner import PlannedRetrievalExecution
+from specrag.tools import RetrievalToolName
 
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-AgentToolName = Literal["hybrid_search", "expand_same_section", "finish"]
+AgentToolName = RetrievalToolName | Literal["finish"]
 
 
 class AgentRetrievalAction(_StrictModel):
@@ -25,6 +27,7 @@ class AgentRetrievalAction(_StrictModel):
     query_id: str
     lexical_query: str
     semantic_query: str
+    clause: str = ""
     target_specifications: tuple[str, ...] = Field(max_length=6)
     seed_evidence_ids: tuple[str, ...] = Field(max_length=4)
     max_results: int = Field(ge=1, le=12)
@@ -40,7 +43,13 @@ class AgentRetrievalDecision(_StrictModel):
 class AgentActionOutcome(_StrictModel):
     round_number: int = Field(ge=1)
     action: AgentRetrievalAction
-    status: Literal["completed", "no_hits", "rejected", "unavailable"]
+    status: Literal[
+        "completed",
+        "partial",
+        "no_hits",
+        "rejected",
+        "unavailable",
+    ]
     evidence_ids: tuple[str, ...] = ()
     new_evidence_ids: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
@@ -58,12 +67,7 @@ class AgenticRetrievalExecution(_StrictModel):
         "agentic-retrieval-execution/v0.1"
     )
     status: Literal["completed", "partial", "unavailable"]
-    stop_reason: Literal[
-        "agent_finish",
-        "round_budget",
-        "action_budget",
-        "agent_error",
-    ]
+    stop_reason: ResearcherStopReason
     rounds_used: int = Field(ge=0)
     search_actions_used: int = Field(ge=0)
     expansion_actions_used: int = Field(ge=0)

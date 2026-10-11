@@ -13,6 +13,7 @@ from ..config import AppConfig, RetrievalCfg, load_config
 from ..infrastructure.vector_store import open_chroma_collection
 from .corpus import (
     chunk_source_documents,
+    corpus_scope_from_config,
     discover_source_documents,
     evidence_body_text,
     relative_repository_path,
@@ -23,12 +24,14 @@ from .index import index_fingerprint, load_chunks, searchable_text, write_snapsh
 from .lexical import BM25Index
 from .models import (
     CorpusVersionPolicy,
+    CorpusScope,
     MarkdownChunk,
     RetrievalExecution,
     RetrievalHit,
     RetrievalIndexManifest,
     RetrievalTaskResult,
     SourceDocument,
+    SpecificationVersion,
 )
 from .semantic import dense_search
 
@@ -36,10 +39,20 @@ from .semantic import dense_search
 class HybridMarkdownRetriever:
     """Local semantic recall plus deterministic BM25/RRF with safe fallback."""
 
-    def __init__(self, cfg: RetrievalCfg):
+    def __init__(
+        self,
+        cfg: RetrievalCfg,
+        *,
+        corpus_scope: CorpusScope | None = None,
+    ):
         self.cfg = cfg
-        self.documents = discover_source_documents(cfg)
-        self.fingerprint = index_fingerprint(self.documents, cfg)
+        self.corpus_scope = corpus_scope or corpus_scope_from_config(cfg)
+        self.documents = discover_source_documents(cfg, self.corpus_scope)
+        self.fingerprint = index_fingerprint(
+            self.documents,
+            cfg,
+            self.corpus_scope,
+        )
         index_root = repository_path(cfg.index_dir, "retrieval index directory")
         snapshot = index_root / self.fingerprint
         self.index_manifest_path = relative_repository_path(snapshot / "manifest.json")
@@ -63,8 +76,9 @@ class HybridMarkdownRetriever:
         manifest = RetrievalIndexManifest(
             index_fingerprint=self.fingerprint,
             embedding_model=cfg.embedding_model,
-            corpus_version_policy=cfg.version_policy,
-            corpus_release=cfg.target_release,
+            corpus_version_policy=self.corpus_scope.version_policy,
+            corpus_release=self.corpus_scope.release,
+            corpus_versions=self.corpus_scope.versions,
             chunk_characters=cfg.chunk_characters,
             chunk_overlap_characters=cfg.chunk_overlap_characters,
             collection_name="specification_evidence",
@@ -108,18 +122,31 @@ class HybridMarkdownRetriever:
         retrieval_id: str,
         text: str,
         source_collection: str,
+        allowed_specifications: tuple[str, ...] = (),
+        *,
+        semantic_text: str | None = None,
+        lexical_text: str | None = None,
     ) -> tuple[list[RetrievalHit], list[str]]:
         errors: list[str] = []
         try:
-            semantic = self._dense(text, source_collection)
+            semantic = self._dense(
+                semantic_text or text,
+                source_collection,
+                allowed_specifications,
+            )
         except Exception as exc:
             semantic = []
             errors.append(f"semantic: {type(exc).__name__}: {exc}")
         try:
             lexical = self.bm25.search(
-                text,
+                lexical_text or text,
                 source_collection=source_collection,
                 limit=self.cfg.lexical_candidates_per_collection,
+                allowed_specifications=(
+                    frozenset(allowed_specifications)
+                    if allowed_specifications
+                    else None
+                ),
             )
         except Exception as exc:
             lexical = []
@@ -157,6 +184,56 @@ class HybridMarkdownRetriever:
             ))
         return hits, errors
 
+    def keyword_candidates(
+        self,
+        text: str,
+        *,
+        allowed_specifications: tuple[str, ...] = (),
+        limit: int,
+    ) -> list[tuple[str, float]]:
+        return self.bm25.search(
+            text,
+            source_collection="3gpp_markdown",
+            limit=limit,
+            allowed_specifications=(
+                frozenset(allowed_specifications)
+                if allowed_specifications
+                else None
+            ),
+        )
+
+    def semantic_candidates(
+        self,
+        text: str,
+        *,
+        allowed_specifications: tuple[str, ...] = (),
+        limit: int,
+    ) -> list[tuple[str, float]]:
+        return self._dense(
+            text,
+            "3gpp_markdown",
+            allowed_specifications,
+        )[:limit]
+
+    def hybrid_hits(
+        self,
+        request_id: str,
+        text: str,
+        *,
+        semantic_query: str | None = None,
+        allowed_specifications: tuple[str, ...] = (),
+        limit: int,
+    ) -> tuple[tuple[RetrievalHit, ...], tuple[str, ...]]:
+        hits, errors = self._collection_hits(
+            request_id,
+            text,
+            "3gpp_markdown",
+            allowed_specifications,
+            semantic_text=semantic_query,
+            lexical_text=text,
+        )
+        return tuple(hits[:limit]), tuple(errors)
+
     def retrieve(self, item: Any) -> RetrievalTaskResult:
         hits: list[RetrievalHit] = []
         errors: list[str] = []
@@ -191,23 +268,40 @@ class HybridMarkdownRetriever:
         )
 
 
+def effective_corpus_scope(
+    cfg: RetrievalCfg,
+    retriever: object | None = None,
+) -> CorpusScope:
+    """Return the scope actually used by a retriever, or the configured scope."""
+
+    scope = getattr(retriever, "corpus_scope", None)
+    if scope is None:
+        return corpus_scope_from_config(cfg)
+    if not isinstance(scope, CorpusScope):
+        raise TypeError("retriever.corpus_scope must be a CorpusScope")
+    return scope
+
+
 def execute_retrieval_plan(
     plan: Any,
     *,
     app_config: AppConfig | None = None,
+    corpus_scope: CorpusScope | None = None,
 ) -> RetrievalExecution:
     """Execute all Retrieval Plan items and return a serializable audit artifact."""
 
     cfg = (app_config or load_config()).retrieval
+    active_scope = corpus_scope or corpus_scope_from_config(cfg)
     try:
-        retriever = HybridMarkdownRetriever(cfg)
+        retriever = HybridMarkdownRetriever(cfg, corpus_scope=active_scope)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         return RetrievalExecution(
             status="unavailable",
             embedding_model=cfg.embedding_model,
-            corpus_version_policy=cfg.version_policy,
-            corpus_release=cfg.target_release,
+            corpus_version_policy=active_scope.version_policy,
+            corpus_release=active_scope.release,
+            corpus_versions=active_scope.versions,
             tasks=tuple(
                 RetrievalTaskResult(
                     retrieval_id=item.retrieval_id,
@@ -233,8 +327,9 @@ def execute_retrieval_plan(
         index_fingerprint=retriever.fingerprint,
         index_manifest_path=retriever.index_manifest_path,
         embedding_model=cfg.embedding_model,
-        corpus_version_policy=cfg.version_policy,
-        corpus_release=cfg.target_release,
+        corpus_version_policy=retriever.corpus_scope.version_policy,
+        corpus_release=retriever.corpus_scope.release,
+        corpus_versions=retriever.corpus_scope.versions,
         tasks=tasks,
         errors=tuple(error for task in tasks for error in task.errors),
     )
@@ -242,6 +337,7 @@ def execute_retrieval_plan(
 
 __all__ = [
     "CorpusVersionPolicy",
+    "CorpusScope",
     "HybridMarkdownRetriever",
     "MarkdownChunk",
     "RetrievalExecution",
@@ -249,8 +345,10 @@ __all__ = [
     "RetrievalIndexManifest",
     "RetrievalTaskResult",
     "SourceDocument",
+    "SpecificationVersion",
     "chunk_source_documents",
     "discover_source_documents",
     "evidence_body_text",
+    "effective_corpus_scope",
     "execute_retrieval_plan",
 ]

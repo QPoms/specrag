@@ -4,7 +4,8 @@ retrieval:
   embedding_model: BAAI/bge-small-en-v1.5
   index_dir: .local/indexes/specifications
   specification_root: data/3gpp
-  version_policy: latest_per_spec
+  version_policy: highest_version_within_release
+  target_release: 17
   chunk_characters: 2400
   chunk_overlap_characters: 300
   semantic_candidates_per_collection: 20

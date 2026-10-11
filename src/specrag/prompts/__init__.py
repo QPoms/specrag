@@ -1,5 +1,11 @@
 """Versioned prompt text used by structured research services."""
 
+from .planner import PLANNER_INSTRUCTIONS, PLANNER_PROMPT_VERSION
 from .router import ROUTER_INSTRUCTIONS, ROUTER_PROMPT_VERSION
 
-__all__ = ["ROUTER_INSTRUCTIONS", "ROUTER_PROMPT_VERSION"]
+__all__ = [
+    "PLANNER_INSTRUCTIONS",
+    "PLANNER_PROMPT_VERSION",
+    "ROUTER_INSTRUCTIONS",
+    "ROUTER_PROMPT_VERSION",
+]

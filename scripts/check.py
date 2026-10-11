@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from check_qa_dataset import main as check_qa_dataset
 from check_structure import main as check_structure
 
 
@@ -22,6 +23,9 @@ def main() -> int:
     structure_status = check_structure()
     if structure_status != 0:
         return structure_status
+    qa_status = check_qa_dataset()
+    if qa_status != 0:
+        return qa_status
     return int(pytest.main(["-p", "no:cacheprovider", "-q"]))
 
 

@@ -14,6 +14,7 @@ from .execution_models import (
     PlannedRetrievalTaskResult,
 )
 from .plan_models import DiscoveryRetrievalPlanV3, PLANNER_PROFILE
+from .models import release_from_version
 
 
 class _StrictModel(BaseModel):
@@ -230,6 +231,7 @@ class SelectedSpecificationEvidence(_StrictModel):
     chunk_id: str = Field(min_length=1)
     specification: str = Field(pattern=r"^\d{2}\.\d{3}$")
     version: str = Field(min_length=1)
+    release: int | None = Field(default=None, ge=1)
     source_path: str = Field(min_length=1)
     document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
     heading_path: tuple[str, ...] = ()
@@ -239,6 +241,14 @@ class SelectedSpecificationEvidence(_StrictModel):
     retrieval_sources: tuple[str, ...] = ()
     relation_kinds: tuple[str, ...] = ()
     bridge_terms: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _coherent_release(self) -> "SelectedSpecificationEvidence":
+        expected = release_from_version(self.version)
+        if self.release is not None and self.release != expected:
+            raise ValueError("evidence Release does not match its exact version")
+        object.__setattr__(self, "release", expected)
+        return self
 
 
 class SelectedEvidenceGroup(_StrictModel):

@@ -6,16 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from specrag.config import RetrievalCfg
+from specrag.config import AppConfig, RetrievalCfg
 from specrag.retrieval import corpus
+from specrag.retrieval import planner
 from specrag.retrieval.hybrid import (
+    CorpusScope,
     HybridMarkdownRetriever,
     MarkdownChunk,
     SourceDocument,
+    SpecificationVersion,
     chunk_source_documents,
     discover_source_documents,
 )
 from specrag.retrieval.lexical import BM25Index
+from specrag.retrieval.index import index_fingerprint
+from specrag.retrieval.execution_models import PlannedRetrievalExecution
 
 
 def _write_specification(
@@ -58,30 +63,33 @@ def _chunk(chunk_id: str, text: str, specification: str) -> MarkdownChunk:
     )
 
 
-def test_latest_policy_selects_one_highest_version_per_specification(
+def test_default_scope_selects_release_17_uniformly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    older = _write_specification(tmp_path, "24.501", "17.9.0", "older")
-    latest = _write_specification(tmp_path, "24.501", "18.2.0", "latest")
-    other = _write_specification(tmp_path, "33.501", "16.4.0", "other")
+    selected_24 = _write_specification(tmp_path, "24.501", "17.9.0", "R17")
+    _write_specification(tmp_path, "24.501", "18.2.0", "R18")
+    selected_33 = _write_specification(tmp_path, "33.501", "17.4.0", "R17")
+    _write_specification(tmp_path, "33.501", "16.4.0", "R16")
     monkeypatch.setattr(corpus, "ROOT", tmp_path)
 
     documents = discover_source_documents(_cfg())
 
     assert [(item.specification, item.version) for item in documents] == [
-        ("24.501", "18.2.0"),
-        ("33.501", "16.4.0"),
+        ("24.501", "17.9.0"),
+        ("33.501", "17.4.0"),
     ]
-    selected = documents[0]
-    assert selected.source_path == latest.relative_to(tmp_path).as_posix()
-    assert selected.document_sha256 == hashlib.sha256(latest.read_bytes()).hexdigest().upper()
-    assert older.relative_to(tmp_path).as_posix() not in {
-        item.source_path for item in documents
+    assert {item.version.split(".", 1)[0] for item in documents} == {"17"}
+    assert {item.source_path for item in documents} == {
+        selected_24.relative_to(tmp_path).as_posix(),
+        selected_33.relative_to(tmp_path).as_posix(),
     }
-    assert other.relative_to(tmp_path).as_posix() in {
-        item.source_path for item in documents
-    }
+    assert documents[0].document_sha256 == hashlib.sha256(
+        selected_24.read_bytes()
+    ).hexdigest().upper()
+    assert documents[1].document_sha256 == hashlib.sha256(
+        selected_33.read_bytes()
+    ).hexdigest().upper()
 
 
 def test_release_policy_selects_highest_version_inside_requested_release(
@@ -102,6 +110,196 @@ def test_release_policy_selects_highest_version_inside_requested_release(
     assert [(item.specification, item.version) for item in documents] == [
         ("24.501", "17.9.0"),
     ]
+
+
+def test_explicit_release_scope_applies_one_release_to_every_specification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_specification(tmp_path, "24.501", "16.8.0", "NAS release 16")
+    _write_specification(tmp_path, "24.501", "17.9.0", "NAS release 17")
+    _write_specification(tmp_path, "33.501", "16.5.0", "security release 16")
+    _write_specification(tmp_path, "33.501", "17.6.0", "security release 17")
+    monkeypatch.setattr(corpus, "ROOT", tmp_path)
+
+    documents = discover_source_documents(
+        _cfg(),
+        CorpusScope(
+            version_policy="highest_version_within_release",
+            release=16,
+        ),
+    )
+
+    assert [(item.specification, item.version) for item in documents] == [
+        ("24.501", "16.8.0"),
+        ("33.501", "16.5.0"),
+    ]
+    assert {item.version.split(".", 1)[0] for item in documents} == {"16"}
+
+
+def test_latest_scope_selects_latest_version_per_specification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_specification(tmp_path, "24.501", "17.9.0", "NAS R17")
+    _write_specification(tmp_path, "24.501", "18.3.0", "NAS R18")
+    _write_specification(tmp_path, "33.501", "16.4.0", "Security R16")
+    _write_specification(tmp_path, "33.501", "17.8.0", "Security R17")
+    monkeypatch.setattr(corpus, "ROOT", tmp_path)
+
+    documents = discover_source_documents(
+        _cfg(),
+        CorpusScope(version_policy="latest_per_spec"),
+    )
+
+    assert [(item.specification, item.version) for item in documents] == [
+        ("24.501", "18.3.0"),
+        ("33.501", "17.8.0"),
+    ]
+
+
+def test_exact_scope_selects_only_requested_specification_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_specification(tmp_path, "24.501", "17.1.0", "selected")
+    _write_specification(tmp_path, "24.501", "17.9.0", "not selected")
+    monkeypatch.setattr(corpus, "ROOT", tmp_path)
+    selected = SpecificationVersion(
+        specification="24.501",
+        version="17.1.0",
+    )
+
+    documents = discover_source_documents(
+        _cfg(),
+        CorpusScope(version_policy="exact_version", versions=(selected,)),
+    )
+
+    assert [(item.specification, item.version) for item in documents] == [
+        ("24.501", "17.1.0"),
+    ]
+
+
+def test_mixed_scope_selects_each_explicit_specification_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_specification(tmp_path, "24.501", "16.8.0", "NAS R16")
+    _write_specification(tmp_path, "24.501", "17.9.0", "NAS R17")
+    _write_specification(tmp_path, "33.501", "17.6.0", "Security R17")
+    _write_specification(tmp_path, "33.501", "18.2.0", "Security R18")
+    monkeypatch.setattr(corpus, "ROOT", tmp_path)
+
+    documents = discover_source_documents(
+        _cfg(),
+        CorpusScope(
+            version_policy="mixed_versions",
+            versions=(
+                SpecificationVersion(
+                    specification="24.501",
+                    version="16.8.0",
+                ),
+                SpecificationVersion(
+                    specification="33.501",
+                    version="18.2.0",
+                ),
+            ),
+        ),
+    )
+
+    assert [(item.specification, item.version) for item in documents] == [
+        ("24.501", "16.8.0"),
+        ("33.501", "18.2.0"),
+    ]
+
+
+def test_explicit_scope_fails_when_requested_version_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_specification(tmp_path, "24.501", "17.1.0", "available")
+    monkeypatch.setattr(corpus, "ROOT", tmp_path)
+    scope = CorpusScope(
+        version_policy="exact_version",
+        versions=(SpecificationVersion(
+            specification="24.501",
+            version="18.1.0",
+        ),),
+    )
+
+    with pytest.raises(ValueError, match=r"24\.501 v18\.1\.0"):
+        discover_source_documents(_cfg(), scope)
+
+
+def test_release_scope_requires_release_number() -> None:
+    with pytest.raises(ValueError, match="corpus_release is required"):
+        CorpusScope(version_policy="highest_version_within_release")
+
+
+def test_release_scope_is_part_of_index_snapshot_identity() -> None:
+    documents = (
+        SourceDocument(
+            source_collection="3gpp_markdown",
+            specification="24.501",
+            version="17.1.0",
+            source_path="data/3gpp/24.501/v17.1.0/source.md",
+            document_sha256="A" * 64,
+        ),
+    )
+    release_16 = CorpusScope(
+        version_policy="highest_version_within_release",
+        release=16,
+    )
+    release_17 = release_16.model_copy(update={"release": 17})
+
+    assert index_fingerprint(documents, _cfg(), release_16) != index_fingerprint(
+        documents,
+        _cfg(),
+        release_17,
+    )
+
+
+def test_release_comparison_runs_two_isolated_uniform_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_scopes: list[CorpusScope] = []
+
+    def fake_execute(*args: object, **kwargs: object) -> PlannedRetrievalExecution:
+        scope = kwargs["corpus_scope"]
+        assert isinstance(scope, CorpusScope)
+        observed_scopes.append(scope)
+        return PlannedRetrievalExecution(
+            status="completed",
+            embedding_model="test",
+            corpus_version_policy=scope.version_policy,
+            corpus_release=scope.release,
+        )
+
+    monkeypatch.setattr(
+        planner,
+        "execute_planned_discovery_retrieval",
+        fake_execute,
+    )
+    result = planner.execute_release_comparison(
+        SimpleNamespace(),
+        base_release=16,
+        target_release=17,
+        app_config=AppConfig(retrieval=_cfg()),
+    )
+
+    assert observed_scopes == [
+        CorpusScope(
+            version_policy="highest_version_within_release",
+            release=16,
+        ),
+        CorpusScope(
+            version_policy="highest_version_within_release",
+            release=17,
+        ),
+    ]
+    assert result.status == "completed"
+    assert result.base_execution.corpus_release == 16
+    assert result.target_execution.corpus_release == 17
 
 
 def test_chunking_preserves_heading_and_exact_source_locator(

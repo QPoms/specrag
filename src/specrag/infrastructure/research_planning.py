@@ -12,7 +12,12 @@ from specrag.models import (
     ResearchRouteDecision,
     ResearchTask,
 )
-from specrag.prompts import ROUTER_INSTRUCTIONS, ROUTER_PROMPT_VERSION
+from specrag.prompts import (
+    PLANNER_INSTRUCTIONS,
+    PLANNER_PROMPT_VERSION,
+    ROUTER_INSTRUCTIONS,
+    ROUTER_PROMPT_VERSION,
+)
 
 from .structured_agent import (
     CodexAgentReceipt,
@@ -90,44 +95,51 @@ class StructuredQuestionRouter:
 
 
 @dataclass(frozen=True)
+class StructuredPlanResponse:
+    """Validated plan plus the execution metadata used to produce it."""
+
+    output: ResearchPlan
+    mode: Literal["deterministic", "model"]
+    contract_version: str
+    prompt_version: str | None
+    receipt: CodexAgentReceipt | None
+
+
+@dataclass(frozen=True)
 class StructuredResearchPlanner:
     agent: CodexStructuredAgent
     max_complex_tasks: int = 4
 
-    def plan(
+    def plan_with_receipt(
         self,
         *,
         research_id: str,
         question: str,
         route: ResearchRouteDecision,
-    ) -> ResearchPlan:
+    ) -> StructuredPlanResponse:
         if route.complexity == "simple":
-            return ResearchPlan(
-                plan_id=f"P:{research_id}",
-                tasks=(ResearchTask(
-                    task_id="T1",
-                    question=question,
-                    objective=(
-                        "Locate the normative passage that completely answers "
-                        "the question."
-                    ),
-                ),),
+            return StructuredPlanResponse(
+                output=ResearchPlan(
+                    plan_id=f"P:{research_id}",
+                    tasks=(ResearchTask(
+                        task_id="T1",
+                        question=question,
+                        objective=(
+                            "Locate the normative passage that completely answers "
+                            "the question."
+                        ),
+                    ),),
+                ),
+                mode="deterministic",
+                contract_version=PLANNER_PROMPT_VERSION,
+                prompt_version=None,
+                receipt=None,
             )
 
         response = self.agent.parse(
             purpose="decompose one complex 3GPP research question",
-            prompt_version="research-planner/v1.0",
-            instructions=(
-                "Create 2 to 4 non-overlapping ResearchTask items that together "
-                "cover the complete user question. Use IDs T1, T2, and so on; "
-                "use status pending. Each task must remain a retrieval objective, "
-                "not an asserted answer. Independent source lookups have no "
-                "dependencies and may run in parallel. Add dependencies only "
-                "when a later relation cannot be researched until an earlier "
-                "result is known. Include an explicit integration/relationship "
-                "task when merely collecting separate facts would not answer the "
-                "question. Do not invent requirements absent from the question."
-            ),
+            prompt_version=PLANNER_PROMPT_VERSION,
+            instructions=PLANNER_INSTRUCTIONS,
             input_payload={
                 "research_id": research_id,
                 "question": question,
@@ -143,12 +155,41 @@ class StructuredResearchPlanner:
             )
         if any(task.status != "pending" for task in proposed.tasks):
             raise ValueError("new research-plan tasks must be pending")
-        return proposed.model_copy(update={"plan_id": f"P:{research_id}"})
+        expected_ids = tuple(
+            f"T{index}" for index in range(1, len(proposed.tasks) + 1)
+        )
+        actual_ids = tuple(task.task_id for task in proposed.tasks)
+        if actual_ids != expected_ids:
+            raise ValueError(
+                "complex research-plan task IDs must be ordered as "
+                + ", ".join(expected_ids)
+            )
+        return StructuredPlanResponse(
+            output=proposed.model_copy(update={"plan_id": f"P:{research_id}"}),
+            mode="model",
+            contract_version=PLANNER_PROMPT_VERSION,
+            prompt_version=PLANNER_PROMPT_VERSION,
+            receipt=response.receipt,
+        )
 
+    def plan(
+        self,
+        *,
+        research_id: str,
+        question: str,
+        route: ResearchRouteDecision,
+    ) -> ResearchPlan:
+        """Return only the plan for runtime callers that do not persist audits."""
 
+        return self.plan_with_receipt(
+            research_id=research_id,
+            question=question,
+            route=route,
+        ).output
 __all__ = [
     "RouteGoalAssessment",
     "StructuredQuestionRouter",
+    "StructuredPlanResponse",
     "StructuredResearchPlanner",
     "StructuredRouteResponse",
 ]

@@ -73,8 +73,8 @@ class RetrievalCfg(BaseModel):
     version_policy: Literal[
         "latest_per_spec",
         "highest_version_within_release",
-    ] = "latest_per_spec"
-    target_release: int | None = None
+    ] = "highest_version_within_release"
+    target_release: int | None = 17
     chunk_characters: int = 2400
     chunk_overlap_characters: int = 300
     semantic_candidates_per_collection: int = 20
@@ -84,17 +84,15 @@ class RetrievalCfg(BaseModel):
 
     @model_validator(mode="after")
     def _valid_retrieval_mechanics(self):
-        if self.version_policy == "highest_version_within_release":
-            if self.target_release is None:
-                raise ValueError(
-                    "target_release is required for "
-                    "highest_version_within_release"
-                )
-        elif self.target_release is not None:
+        if (
+            self.version_policy == "highest_version_within_release"
+            and self.target_release is None
+        ):
             raise ValueError(
-                "target_release may only be set with "
-                "highest_version_within_release"
+                "target_release is required for highest_version_within_release"
             )
+        if self.version_policy == "latest_per_spec" and self.target_release is not None:
+            raise ValueError("target_release is not valid for latest_per_spec")
         if self.target_release is not None and self.target_release < 1:
             raise ValueError("target_release must be positive")
         positive = {

@@ -90,8 +90,10 @@ def _retriever() -> SimpleNamespace:
 class _SequenceController:
     def __init__(self, *decisions: AgentRetrievalDecision) -> None:
         self._decisions = iter(decisions)
+        self.calls: list[dict[str, object]] = []
 
     def parse(self, **kwargs):
+        self.calls.append(kwargs)
         return CodexAgentResponse(output=next(self._decisions), receipt=_receipt())
 
 
@@ -126,6 +128,38 @@ def test_agent_finish_records_explicit_stop_reason_without_using_tools() -> None
     assert result.search_actions_used == 0
     assert result.expansion_actions_used == 0
     assert result.status == "unavailable"
+
+
+def test_controller_receives_and_is_instructed_to_use_dependency_context() -> None:
+    controller = _SequenceController(AgentRetrievalDecision(
+        assessment="Use the predecessor finding to scope the next search.",
+        actions=(_action("finish"),),
+    ))
+    dependency_context = ({
+        "task_id": "T1",
+        "supporting_evidence": ({
+            "evidence_id": "E1",
+            "excerpt": "The intermediate node is identified.",
+        },),
+    },)
+
+    run_agentic_retrieval_loop(
+        _plan(),
+        controller_agent=controller,
+        retriever=_retriever(),
+        app_config=_config(),
+        shared_context={"dependency_context": dependency_context},
+    )
+
+    call = controller.calls[0]
+    assert call["prompt_version"] == (
+        "agentic-discovery-retrieval-controller/v0.2"
+    )
+    assert call["input_payload"]["shared_context"][
+        "dependency_context"
+    ] == dependency_context
+    assert "completed predecessor tasks" in call["instructions"]
+    assert "seed_evidence_ids" in call["instructions"]
 
 
 def test_invalid_actions_stop_at_round_budget_and_remain_auditable() -> None:

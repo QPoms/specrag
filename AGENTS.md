@@ -24,10 +24,23 @@ These rules apply to every human- or AI-authored change in this repository.
 - `memory`: validated knowledge persistence and lookup.
 - `infrastructure`: LLM, embedding, vector-store, and persistence adapters.
 - `evaluation`: offline metrics and benchmark runners only.
+- `prompts`: versioned prompt text only; provider calls and workflow logic stay
+  in their owning packages.
 
 Only create a package when working code needs it. Do not add empty scaffolding.
 Dependencies must point inward according to
 `docs/architecture/package_boundaries.md`.
+
+## LangGraph runtime boundary
+
+- LangGraph imports belong only in `orchestration`.
+- Graph nodes manage state transitions, routing, loops, parallel scheduling,
+  checkpoints, and recovery. They call injected business services instead of
+  implementing retrieval, evidence, memory, or domain judgment inline.
+- Domain, retrieval, tools, agents, evidence, memory, infrastructure, and
+  evaluation packages must remain usable without importing LangGraph.
+- LangGraph checkpoint state is runtime state. It is never a substitute for
+  validated long-term domain memory.
 
 ## No version graveyards
 

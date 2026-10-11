@@ -7,18 +7,25 @@ import json
 from pathlib import Path
 
 from ..config import RetrievalCfg
-from .models import MarkdownChunk, RetrievalIndexManifest, SourceDocument
+from .corpus import corpus_scope_from_config
+from .models import (
+    CorpusScope,
+    MarkdownChunk,
+    RetrievalIndexManifest,
+    SourceDocument,
+)
 
 
 def index_fingerprint(
     documents: tuple[SourceDocument, ...],
     cfg: RetrievalCfg,
+    scope: CorpusScope | None = None,
 ) -> str:
+    active_scope = scope or corpus_scope_from_config(cfg)
     payload = {
-        "schema": "specification-retrieval-index/v1.0",
+        "schema": "specification-retrieval-index/v1.1",
         "embedding_model": cfg.embedding_model,
-        "version_policy": cfg.version_policy,
-        "target_release": cfg.target_release,
+        "corpus_scope": active_scope.model_dump(mode="json"),
         "chunk_characters": cfg.chunk_characters,
         "chunk_overlap_characters": cfg.chunk_overlap_characters,
         "documents": [item.model_dump(mode="json") for item in documents],

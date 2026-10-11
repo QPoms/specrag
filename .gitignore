@@ -20,7 +20,7 @@ pytest-cache-files-*/
 .tmp_*.py
 
 # Local model weights and staging downloads
-models/
+/models/
 model_staging/
 .local/
 
@@ -35,8 +35,13 @@ data/3gpp/*/
 data/memory/*
 !data/memory/README.md
 
+# Locally downloaded upstream QA datasets. Keep only curated records and docs.
+data/QA/telco-dpr/
+data/QA/mm-telcobench/
+
 # Runtime outputs
 artifacts/runs/
+artifacts/test-temp/
 runs/
 
 # Editor and OS metadata

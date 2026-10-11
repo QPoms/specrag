@@ -9,7 +9,11 @@ import re
 from typing import Iterable
 
 from ..config import RetrievalCfg
-from .models import MarkdownChunk, SourceDocument
+from .models import (
+    CorpusScope,
+    MarkdownChunk,
+    SourceDocument,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -48,23 +52,45 @@ def _version_key(path: Path) -> tuple[int, int, int]:
 
 def _select_version_source(
     version_sources: list[tuple[Path, Path]],
-    cfg: RetrievalCfg,
+    scope: CorpusScope,
+    specification: str,
 ) -> tuple[Path, Path] | None:
-    eligible = version_sources
-    if cfg.version_policy == "highest_version_within_release":
+    if scope.version_policy == "latest_per_spec":
+        eligible = version_sources
+    elif scope.version_policy == "highest_version_within_release":
         eligible = [
             item
             for item in version_sources
-            if _version_key(item[0])[0] == cfg.target_release
+            if _version_key(item[0])[0] == scope.release
+        ]
+    else:
+        requested = {
+            item.specification: item.version for item in scope.versions
+        }.get(specification)
+        eligible = [
+            item
+            for item in version_sources
+            if requested is not None and item[0].name == f"v{requested}"
         ]
     if not eligible:
         return None
     return max(eligible, key=lambda item: _version_key(item[0]))
 
 
-def discover_source_documents(cfg: RetrievalCfg) -> tuple[SourceDocument, ...]:
-    """Resolve the immutable source snapshot selected by global policy."""
+def corpus_scope_from_config(cfg: RetrievalCfg) -> CorpusScope:
+    return CorpusScope(
+        version_policy=cfg.version_policy,
+        release=cfg.target_release,
+    )
 
+
+def discover_source_documents(
+    cfg: RetrievalCfg,
+    scope: CorpusScope | None = None,
+) -> tuple[SourceDocument, ...]:
+    """Resolve the immutable source snapshot selected by an explicit scope."""
+
+    active_scope = scope or corpus_scope_from_config(cfg)
     documents: list[SourceDocument] = []
     spec_root = repository_path(cfg.specification_root, "specification root")
     if not spec_root.is_dir():
@@ -86,7 +112,11 @@ def discover_source_documents(cfg: RetrievalCfg) -> tuple[SourceDocument, ...]:
                 version_sources.append((version_dir, markdown[0]))
         if not version_sources:
             continue
-        selected = _select_version_source(version_sources, cfg)
+        selected = _select_version_source(
+            version_sources,
+            active_scope,
+            spec_dir.name,
+        )
         if selected is None:
             continue
         version_dir, source = selected
@@ -97,10 +127,28 @@ def discover_source_documents(cfg: RetrievalCfg) -> tuple[SourceDocument, ...]:
             source_path=relative_repository_path(source),
             document_sha256=hashlib.sha256(source.read_bytes()).hexdigest().upper(),
         ))
+    if active_scope.versions:
+        requested = {
+            (item.specification, item.version)
+            for item in active_scope.versions
+        }
+        selected = {
+            (item.specification, item.version)
+            for item in documents
+        }
+        missing = sorted(requested - selected)
+        if missing:
+            raise ValueError(
+                "requested specification versions are unavailable: "
+                + ", ".join(
+                    f"{specification} v{version}"
+                    for specification, version in missing
+                )
+            )
     if not documents:
         release_detail = (
-            f" for Release {cfg.target_release}"
-            if cfg.target_release is not None
+            f" for Release {active_scope.release}"
+            if active_scope.release is not None
             else ""
         )
         raise ValueError("the 3GPP Markdown source snapshot is empty" + release_detail)
@@ -255,6 +303,7 @@ def evidence_body_text(text: str) -> str:
 
 __all__ = [
     "chunk_source_documents",
+    "corpus_scope_from_config",
     "discover_source_documents",
     "evidence_body_text",
     "relative_repository_path",

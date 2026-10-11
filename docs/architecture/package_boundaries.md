@@ -16,11 +16,12 @@ src/specrag/
 ├── retrieval/         corpus, indexes, search, fusion, reranking, planning
 ├── tools/             agent-callable tool interfaces and registry
 ├── agents/            bounded researcher loops
-├── orchestration/     router and supervisor across agents
+├── orchestration/     LangGraph runtime, graph nodes, routing, checkpoints
 ├── evidence/          validation, sufficiency, gaps, and synthesis
 ├── memory/            validated long-term knowledge
 ├── infrastructure/    external service and persistence adapters
 ├── evaluation/        offline evaluation only
+├── prompts/           versioned model instructions without runtime logic
 ├── config.py
 └── cli.py             the single supported product entry point
 ```
@@ -52,23 +53,44 @@ memory   → models, infrastructure
 - `agents` coordinate existing retrieval and tool APIs; they do not implement
   vector search, reranking, or provider clients inline.
 - `orchestration` coordinates agents but does not absorb their implementations.
+- `prompts` contains prompt text and version identifiers only. It does not call
+  providers or implement business decisions.
+- LangGraph imports are allowed only in `orchestration`. Graph nodes call stable
+  application services; they do not contain retrieval, evidence, memory, or
+  domain judgment logic.
+- Checkpoint state is runtime state owned by `orchestration`. It is distinct
+  from validated domain knowledge owned by `memory`.
 
-## Current migration debt
+## Current module boundaries
 
-The retained research implementation contains two oversized modules. They are
-temporarily protected by line-count ratchets in `scripts/check_structure.py`:
-
-- `retrieval/planner.py`
-- `retrieval/hypothesis.py`
-
-They may become smaller, but may not grow beyond their recorded ceilings.
-Splitting them requires characterization tests first and must preserve one
-public implementation rather than creating versioned copies.
+The retained research implementation no longer has oversized-module
+exceptions. Every Python module follows the normal 600-line ceiling enforced
+by `scripts/check_structure.py`. Public compatibility imports remain in
+`retrieval/planner.py` and `retrieval/hypothesis.py`; implementation history
+lives in Git rather than parallel source files.
 
 `retrieval/hybrid.py` has been split into corpus, immutable model, index,
 lexical, semantic, fusion, and orchestration modules. The Researcher now has
 separate model, state, policy, and bounded-loop modules. Neither needs a
-line-count exception anymore.
+line-count exception anymore. Candidate execution and ranking have also been
+extracted from the planner. The answer-hypothesis channel now has separate
+contract, execution, and merge-policy modules and no longer needs an exception.
+Relation expansion, deterministic curation, evidence selection, and the two
+answer-synthesis paths also have explicit modules behind the planner facade.
+Version selection is a retrieval concern expressed by one immutable
+`CorpusScope` per run. The active scope must propagate into index and execution
+artifacts. Uniform Release scope is the default; explicit exact and mixed scopes
+must preserve each source document's exact version and Release identity.
+
+The first orchestration implementation is `orchestration/workflow.py`. It owns
+the `StateGraph`, conditional edges, budget guard, checkpointer, and recovery
+API. Node business behavior is supplied through `ResearchNodeHandlers`.
+Framework-independent workflow contracts live in `models/research.py`, and the
+tool protocol remains under `tools/`. `memory/service.py` owns validated-only
+distillation, search, supersession, conflict, and invalidation rules; its JSONL
+adapter lives in `infrastructure/memory_store.py`. Researcher services may use
+the memory search interface read-only, but no Researcher path receives a
+memory-write capability.
 
 ## Change protocol
 

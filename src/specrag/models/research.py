@@ -95,6 +95,15 @@ class ResearchPlan(_StrictModel):
 
         for task_id in identifiers:
             visit(task_id)
+        earlier: set[str] = set()
+        for task in self.tasks:
+            forward = set(task.dependencies) - earlier
+            if forward:
+                raise ValueError(
+                    f"{task.task_id} dependencies must reference earlier tasks: "
+                    + ", ".join(sorted(forward))
+                )
+            earlier.add(task.task_id)
         return self
 
 

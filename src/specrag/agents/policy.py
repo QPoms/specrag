@@ -1,16 +1,8 @@
-"""Researcher action constraints and compilation into trusted retrieval plans."""
+"""Researcher action instructions, validation, and deduplication policy."""
 
 from __future__ import annotations
 
 from typing import Any
-
-from specrag.retrieval.planner import (
-    DiscoveryRetrievalPlanV3,
-    PlannedDiscoveryRetrieval,
-    ReferenceExpansionPolicy,
-    RetrievalProbe,
-    SpecificationRoute,
-)
 
 from .models import AgentRetrievalAction
 from .state import EvidenceLedger
@@ -20,12 +12,15 @@ CONTROLLER_INSTRUCTIONS = """\
 You control a bounded source-retrieval loop. Your only goal is to collect enough
 normative evidence to answer the supplied Discovery questions. You may call:
 
-1. hybrid_search: lexical plus semantic search. Supply a query_id, both query
-   strings, optional target specifications, no seed IDs, and a result limit.
-2. expand_same_section: retrieve the opening/adjacent chunks of the exact
+1. keyword_search: BM25 search. Supply only lexical_query.
+2. semantic_search: embedding search. Supply only semantic_query.
+3. hybrid_search: lexical plus semantic search. Supply both query strings.
+4. rerank: rerank one to four seed evidence items with semantic_query.
+5. clause_lookup: retrieve an exact clause heading. Supply only clause.
+6. expand_same_section: retrieve the opening/adjacent chunks of the exact
    subsection containing one to four seed evidence IDs. Supply a query_id and
    seed IDs; leave query strings and target specifications empty.
-3. finish: stop retrieval. Use an empty query_id, empty query strings, no target
+7. finish: stop retrieval. Use an empty query_id, empty query strings, no target
    specifications, no seed IDs, and max_results=1.
 
 Inspect the evidence before choosing the next action. Search for missing facts
@@ -33,57 +28,17 @@ or missing relation edges, not paraphrases of evidence already present. Ordered
 questions may form a semantic chain: terms found for an earlier question may be
 used to formulate a later search, but they are search hints only. A later answer
 still requires its own source evidence. Do not assume a candidate answer is true.
+When shared_context.dependency_context is present, it contains source-backed
+evidence selected from completed predecessor tasks. Use that context to resolve
+the dependent question's subject, scope, conditions, branches, or validation
+target and to formulate new searches. Dependency evidence remains owned by the
+predecessor task: do not submit its evidence IDs as seed_evidence_ids for the
+current question, and collect source evidence for the dependent objective.
 Do not repeat a prior tool call. Use only listed specification numbers. Finish
 when the requested answer units are directly supportable or the remaining
 budget cannot usefully improve them. Return one to three actions per round; a
 finish action must be the only action.
 """
-
-
-def build_search_plan(
-    base_item: PlannedDiscoveryRetrieval,
-    action: AgentRetrievalAction,
-    *,
-    round_number: int,
-) -> DiscoveryRetrievalPlanV3:
-    """Build a one-probe search with exact-anchor recall explicitly disabled."""
-
-    routes = tuple(
-        SpecificationRoute(
-            specification=specification,
-            weight=1.0,
-            reason=f"agent-selected target for {action.action_id}",
-            source="agent_hypothesis",
-        )
-        for specification in action.target_specifications
-    )
-    probe = RetrievalProbe(
-        probe_id=f"AG-R{round_number}-{action.action_id}",
-        evidence_role=base_item.angle,
-        lexical_query=action.lexical_query.strip(),
-        semantic_query=action.semantic_query.strip(),
-        routes=routes,
-        anchors=(),
-        facets=(),
-        stage=1,
-    )
-    item = base_item.model_copy(update={
-        "retrieval_id": (
-            f"{base_item.query_id}:agent:r{round_number}:{action.action_id}"
-        ),
-        "planner_action": "planned",
-        "anchors": (),
-        "warnings": (*base_item.warnings, "agent-controlled hybrid search"),
-        "reference_expansion": ReferenceExpansionPolicy(
-            enabled=False,
-            max_references=0,
-        ),
-        "retrieval_probes": (probe,),
-    })
-    return DiscoveryRetrievalPlanV3(
-        anchor_extraction_method="deterministic_extractive",
-        retrievals=(item,),
-    )
 
 
 def validate_action(
@@ -99,6 +54,7 @@ def validate_action(
             action.query_id
             or action.lexical_query
             or action.semantic_query
+            or action.clause
             or action.target_specifications
             or action.seed_evidence_ids
             or action.max_results != 1
@@ -113,18 +69,41 @@ def validate_action(
     )
     if unknown_specs:
         errors.append("unknown specifications: " + ", ".join(unknown_specs))
-    if action.tool == "hybrid_search":
+    if action.tool == "keyword_search":
+        if not action.lexical_query.strip():
+            errors.append("keyword_search requires lexical_query")
+        if action.semantic_query or action.clause or action.seed_evidence_ids:
+            errors.append("keyword_search contains incompatible parameters")
+    elif action.tool == "semantic_search":
+        if not action.semantic_query.strip():
+            errors.append("semantic_search requires semantic_query")
+        if action.lexical_query or action.clause or action.seed_evidence_ids:
+            errors.append("semantic_search contains incompatible parameters")
+    elif action.tool == "hybrid_search":
         if not action.lexical_query.strip() or not action.semantic_query.strip():
             errors.append("hybrid_search requires both query strings")
-        if action.seed_evidence_ids:
-            errors.append("hybrid_search cannot contain seed evidence IDs")
+        if action.clause or action.seed_evidence_ids:
+            errors.append("hybrid_search contains incompatible parameters")
+    elif action.tool == "clause_lookup":
+        if not action.clause.strip():
+            errors.append("clause_lookup requires clause")
+        if action.lexical_query or action.semantic_query or action.seed_evidence_ids:
+            errors.append("clause_lookup contains incompatible parameters")
+    elif action.tool == "rerank":
+        if not action.semantic_query.strip():
+            errors.append("rerank requires semantic_query")
+        if action.lexical_query or action.clause or action.target_specifications:
+            errors.append("rerank contains incompatible parameters")
+        if not action.seed_evidence_ids:
+            errors.append("rerank requires seed evidence IDs")
     elif action.tool == "expand_same_section":
-        if action.lexical_query or action.semantic_query:
-            errors.append("expand_same_section cannot contain query strings")
+        if action.lexical_query or action.semantic_query or action.clause:
+            errors.append("expand_same_section contains incompatible parameters")
         if action.target_specifications:
             errors.append("expand_same_section cannot contain target specifications")
         if not action.seed_evidence_ids:
             errors.append("expand_same_section requires seed evidence IDs")
+    if action.tool in {"rerank", "expand_same_section"}:
         unknown_ids = [
             evidence_id
             for evidence_id in action.seed_evidence_ids
@@ -141,6 +120,7 @@ def action_signature(action: AgentRetrievalAction) -> tuple[Any, ...]:
         action.query_id,
         action.lexical_query.casefold().strip(),
         action.semantic_query.casefold().strip(),
+        action.clause.casefold().strip(),
         tuple(sorted(action.target_specifications)),
         tuple(sorted(action.seed_evidence_ids)),
     )
@@ -149,6 +129,5 @@ def action_signature(action: AgentRetrievalAction) -> tuple[Any, ...]:
 __all__ = [
     "CONTROLLER_INSTRUCTIONS",
     "action_signature",
-    "build_search_plan",
     "validate_action",
 ]

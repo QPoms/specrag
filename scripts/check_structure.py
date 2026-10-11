@@ -54,14 +54,11 @@ VERSIONED_MODULE = re.compile(
 )
 
 DEFAULT_MAX_LINES = 600
-LINE_RATCHETS = {
-    "src/specrag/retrieval/planner.py": 3772,
-    "src/specrag/retrieval/hypothesis.py": 1525,
-}
+LINE_RATCHETS: dict[str, int] = {}
 
 ALLOWED_IMPORTS = {
     "models": {"models"},
-    "infrastructure": {"config", "models", "infrastructure"},
+    "infrastructure": {"config", "models", "prompts", "infrastructure"},
     "retrieval": {"config", "models", "infrastructure", "retrieval"},
     "tools": {"config", "models", "infrastructure", "retrieval", "memory", "tools"},
     "evidence": {"config", "models", "infrastructure", "retrieval", "evidence"},
@@ -106,6 +103,12 @@ def _target_package(path: Path, node: ast.Import | ast.ImportFrom) -> str | None
     return resolved[1] if len(resolved) > 1 else "config"
 
 
+def _imports_langgraph(node: ast.Import | ast.ImportFrom) -> bool:
+    if isinstance(node, ast.Import):
+        return any(alias.name.split(".", 1)[0] == "langgraph" for alias in node.names)
+    return bool(node.module and node.module.split(".", 1)[0] == "langgraph")
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -123,6 +126,8 @@ def main() -> int:
 
     for path in SOURCE_ROOT.rglob("*.py"):
         relative = _relative(path)
+        parts = path.relative_to(SOURCE_ROOT).parts
+        source_package = parts[0] if len(parts) > 1 else None
         if path.name != "__init__.py" and VERSIONED_MODULE.search(path.stem):
             errors.append(f"versioned or temporary module name: {relative}")
 
@@ -138,8 +143,6 @@ def main() -> int:
                 f"module grew beyond {ceiling} lines ({line_count}): {relative}"
             )
 
-        parts = path.relative_to(SOURCE_ROOT).parts
-        source_package = parts[0] if len(parts) > 1 else None
         allowed = ALLOWED_IMPORTS.get(source_package or "")
         if allowed is None:
             continue
@@ -151,6 +154,10 @@ def main() -> int:
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue
+            if source_package != "orchestration" and _imports_langgraph(node):
+                errors.append(
+                    f"LangGraph import outside orchestration: {relative}:{node.lineno}"
+                )
             target = _target_package(path, node)
             if target is not None and target not in allowed:
                 errors.append(
