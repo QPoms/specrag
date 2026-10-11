@@ -7,6 +7,24 @@ import re
 from .models import MarkdownChunk
 
 
+_CLAUSE_IDENTIFIER = re.compile(r"\d+(?:\.\d+)+")
+
+
+def _fold_heading(value: str) -> str:
+    return re.sub(r"\s+", "", value).casefold()
+
+
+def _matches_clause_heading(heading: str, clause: str) -> bool:
+    folded_clause = _fold_heading(clause)
+    folded_heading = _fold_heading(heading)
+    if _CLAUSE_IDENTIFIER.fullmatch(folded_clause):
+        return re.search(
+            rf"(?<![0-9.]){re.escape(folded_clause)}(?![0-9.])",
+            folded_heading,
+        ) is not None
+    return folded_clause in folded_heading
+
+
 def lookup_clause_chunks(
     chunks: tuple[MarkdownChunk, ...],
     clause: str,
@@ -14,22 +32,21 @@ def lookup_clause_chunks(
     specifications: tuple[str, ...] = (),
     limit: int = 10,
 ) -> tuple[MarkdownChunk, ...]:
-    """Find chunks whose heading contains one exact clause identifier."""
+    """Find chunks by clause identifier, title, or combined heading."""
 
     if not clause.strip():
         raise ValueError("clause must not be blank")
     if limit < 1:
         raise ValueError("limit must be positive")
     allowed = frozenset(specifications)
-    pattern = re.compile(
-        rf"(?<![0-9.]){re.escape(clause.strip())}(?![0-9.])",
-        re.IGNORECASE,
-    )
     matches = [
         chunk
         for chunk in chunks
         if (not allowed or chunk.specification in allowed)
-        and any(pattern.search(heading) for heading in chunk.heading_path)
+        and any(
+            _matches_clause_heading(heading, clause)
+            for heading in chunk.heading_path
+        )
     ]
     return tuple(sorted(
         matches,

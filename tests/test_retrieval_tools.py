@@ -14,7 +14,7 @@ def _chunk(chunk_id: str, line_start: int, text: str) -> MarkdownChunk:
         version="17.1.0",
         source_path="data/3gpp/24.501/v17.1.0/source.md",
         document_sha256="A" * 64,
-        heading_path=("5.1 Registration procedure",),
+        heading_path=("5.1Registration procedure",),
         line_start=line_start,
         line_end=line_start + 1,
         text=text,
@@ -149,6 +149,22 @@ def test_clause_lookup_tool_matches_exact_heading_clause() -> None:
 
     assert result.status == "completed"
     assert [item.chunk_id for item in result.evidence] == ["C1", "C2"]
+
+
+def test_clause_lookup_tool_matches_title_and_normalizes_heading_spacing() -> None:
+    registry = _registry()
+
+    title_result = registry.invoke(
+        "clause_lookup",
+        _request(query="", clause="Registration procedure"),
+    )
+    combined_result = registry.invoke(
+        "clause_lookup",
+        _request(query="", clause="5.1 Registration procedure"),
+    )
+
+    assert [item.chunk_id for item in title_result.evidence] == ["C1", "C2"]
+    assert [item.chunk_id for item in combined_result.evidence] == ["C1", "C2"]
 
 
 def test_same_section_tool_expands_from_trusted_seed() -> None:

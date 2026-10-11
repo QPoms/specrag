@@ -234,7 +234,10 @@ class ClauseLookupTool(_RetrieverTool):
     name: RetrievalToolName = "clause_lookup"
     capability = ToolCapability(
         name=name,
-        description="Exact clause-heading lookup in indexed 3GPP source chunks.",
+        description=(
+            "Exact clause identifier, title, or combined-heading lookup in "
+            "indexed 3GPP source chunks."
+        ),
         required_fields=("clause",),
         optional_fields=("target_specifications", "limit"),
         execution_kind="deterministic",

@@ -78,7 +78,7 @@ research task
 
 All migrated modules import successfully. The canonical quality gate now
 passes the structure contract, validates every curated question's local source
-hash, R17 version, line locator, and exact excerpt, and passes all 85 focused
+hash, R17 version, line locator, and exact excerpt, and passes all 86 focused
 tests.
 
 The first behavioral refactor is complete. Corpus discovery/chunking, immutable
@@ -132,7 +132,9 @@ same-section adapters. Every emitted evidence item preserves its active corpus
 scope, Release, exact version, source path, document hash, heading path, and
 line locator. The bounded Researcher now invokes these capabilities only through
 the Tool Registry; its old direct retrieval branch has been removed. All six
-tools are verified independently from the agent loop.
+tools are verified independently from the agent loop. Clause lookup accepts an
+exact clause identifier, a title, or their combined heading and normalizes the
+missing whitespace found in converted 3GPP headings.
 
 The Researcher no longer prepares a retrieval plan before its bounded loop,
 either through a separate model call or through deterministic anchor, facet,
