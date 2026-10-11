@@ -22,12 +22,6 @@ from specrag.prompts import (
     RESEARCHER_CONTROLLER_PROMPT_VERSION,
 )
 from specrag.retrieval.models import CorpusScope, SourceDocument
-from specrag.retrieval.planner import (
-    DiscoveryRetrievalPlanV3,
-    PlannedDiscoveryRetrieval,
-    ReferenceExpansionPolicy,
-    RetrievalProbe,
-)
 from specrag.tools import (
     RetrievalToolRequest,
     RetrievalToolResult,
@@ -65,25 +59,12 @@ def _action(tool: str, *, query_id: str = "") -> AgentRetrievalAction:
     )
 
 
-def _plan() -> DiscoveryRetrievalPlanV3:
-    item = PlannedDiscoveryRetrieval(
-        retrieval_id="RET-Q1",
-        query_id="Q1",
-        claim_id="C1",
-        angle="procedure",
-        original_question="What is the registration procedure?",
-        planner_action="planned",
-        reference_expansion=ReferenceExpansionPolicy(enabled=False),
-        retrieval_probes=(
-            RetrievalProbe(
-                probe_id="P1",
-                evidence_role="procedure",
-                lexical_query="registration",
-                semantic_query="registration procedure",
-            ),
-        ),
-    )
-    return DiscoveryRetrievalPlanV3(retrievals=(item,))
+def _tasks() -> tuple[ResearchTask, ...]:
+    return (ResearchTask(
+        task_id="Q1",
+        question="What is the registration procedure?",
+        objective="Establish the normative registration procedure.",
+    ),)
 
 
 def _retriever() -> SimpleNamespace:
@@ -155,7 +136,7 @@ def test_agent_finish_records_explicit_stop_reason_without_using_tools() -> None
     ))
 
     result = run_agentic_retrieval_loop(
-        _plan(),
+        _tasks(),
         controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
@@ -192,9 +173,15 @@ def test_first_controller_round_is_the_only_model_planning_entry() -> None:
     assert first_payload["history"] == []
     assert first_payload["evidence_catalog"] == []
     assert first_payload["available_tools"]
-    assert first_payload["deterministic_retrieval_hints"][0][
-        "suggested_probes"
-    ]
+    assert first_payload["research_tasks"] == [{
+        "task_id": "T1",
+        "question": "What is the registration procedure?",
+        "objective": "Establish the normative procedure.",
+        "dependencies": [],
+        "status": "pending",
+    }]
+    assert "deterministic_retrieval_hints" not in first_payload
+    assert first_payload["corpus_scope"]["release"] == 17
     assert controller.calls[0]["prompt_version"] == (
         RESEARCHER_CONTROLLER_PROMPT_VERSION
     )
@@ -219,7 +206,7 @@ def test_first_controller_round_can_emit_and_execute_a_tool_call() -> None:
     registry.register(tool)
 
     result = run_agentic_retrieval_loop(
-        _plan(),
+        _tasks(),
         controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
@@ -251,7 +238,7 @@ def test_controller_receives_and_is_instructed_to_use_dependency_context() -> No
     },)
 
     run_agentic_retrieval_loop(
-        _plan(),
+        _tasks(),
         controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
@@ -279,7 +266,7 @@ def test_invalid_actions_stop_at_round_budget_and_remain_auditable() -> None:
     controller = _SequenceController(invalid, invalid)
 
     result = run_agentic_retrieval_loop(
-        _plan(),
+        _tasks(),
         controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
@@ -299,7 +286,7 @@ def test_invalid_actions_stop_at_round_budget_and_remain_auditable() -> None:
 
 def test_controller_failure_records_agent_error_stop_reason() -> None:
     result = run_agentic_retrieval_loop(
-        _plan(),
+        _tasks(),
         controller_agent=StructuredResearcherController(_FailingController()),
         retriever=_retriever(),
         app_config=_config(),

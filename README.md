@@ -32,8 +32,8 @@ user question or task
   a tested lexical fallback when semantic search is unavailable.
 - `src/specrag/retrieval/planner.py`: stable public facade and high-level
   retrieval workflow orchestration.
-- `src/specrag/retrieval/planning.py` and `routing.py`: source-grounded
-  question compilation and candidate-specification routing.
+- `src/specrag/retrieval/routing.py`: candidate-specification routing for
+  retained deterministic retrieval workflows.
 - `src/specrag/retrieval/execution.py` and `ranking.py`: candidate retrieval,
   reference expansion, deterministic scoring, and optional reranking.
 - `src/specrag/retrieval/relation_evidence.py`, `curation.py`, and
@@ -50,9 +50,9 @@ user question or task
   normalization.
 - `src/specrag/agents/`: separate Researcher models, evidence state, action
   policy, and bounded loop execution through the unified Tool Registry. The
-  first controller round receives deterministic source-grounded hints and the
-  live tool catalog, then emits the first concrete tool calls; later rounds
-  adapt to observed evidence.
+  first controller round receives Planner tasks directly with the live tool
+  catalog and generates the initial queries and concrete tool calls; later
+  rounds adapt to observed evidence.
 - `src/specrag/prompts/researcher.py`: versioned Researcher controller prompt
   contract.
 - `src/specrag/tools/`: provider-neutral request/result schemas, capability

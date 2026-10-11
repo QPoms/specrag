@@ -67,11 +67,11 @@ not a formal evaluation framework.
   preserves the original question in one dependency-free task and proceeds
   directly to Researcher without a second high-level Planner model call.
 - [x] Make the first Researcher controller round the only model-based retrieval
-  planning entry. Pre-loop compilation is deterministic and supplies only
-  source-grounded anchors, facets, and suggested probes; the controller sees
-  those hints together with the registered tool capabilities and emits the
-  first executable tool calls. Later rounds observe evidence and adapt the next
-  calls within the same bounded loop.
+  planning entry. Remove pre-loop anchor, facet, and suggested-query generation.
+  The controller receives Planner tasks directly together with the registered
+  tool capabilities, active corpus scope, dependency context, and budget; it
+  generates the initial queries and executable calls. Later rounds observe
+  evidence and adapt the next calls within the same bounded loop.
 - [ ] Wire the R17 retriever, Tool Registry, structured model adapters, source
   validation, sufficiency, conflict detection, and grounded synthesis.
 - [x] Add one baseline command that selects only development records and writes

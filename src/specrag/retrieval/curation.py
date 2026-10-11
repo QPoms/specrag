@@ -18,10 +18,12 @@ from .execution_models import (
 )
 from .index import searchable_text
 from .models import MarkdownChunk
+from .normalization import GENERIC_FACET_TERMS
 from .plan_models import DiscoveryRetrievalPlanV3
-from .planning import GENERIC_FACET_TERMS
 from .ranking import ordered_unique as _ordered_unique
 from .relation_evidence import _RELATION_MESSAGE, _grounded_terms_from_chunk
+
+
 @dataclass
 class _CuratedCandidate:
     chunk: MarkdownChunk

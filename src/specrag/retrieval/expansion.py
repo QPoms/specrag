@@ -33,13 +33,15 @@ from .plan_models import (
     RetrievalProbe,
     SpecificationRoute,
 )
-from .planning import GENERIC_FACET_TERMS
+from .normalization import GENERIC_FACET_TERMS
 from .relation_evidence import (
     _INTENT_QUERY_PHRASES,
     _build_grounded_relation_evidence,
     _grounded_term_catalog,
 )
 from .routing import resolve_discovery_retrieval_plan
+
+
 def _first_stage_agent_payload(
     resolved_plan: DiscoveryRetrievalPlanV3,
     tasks: tuple[PlannedRetrievalTaskResult, ...],

@@ -16,12 +16,9 @@ from specrag.retrieval.hybrid import (
     effective_corpus_scope,
 )
 from specrag.retrieval.planner import (
-    DiscoveryRetrievalPlanV3,
-    PlannedDiscoveryRetrieval,
     PlannedRetrievalExecution,
     PlannedRetrievalHit,
     PlannedRetrievalTaskResult,
-    compile_discovery_retrieval_plan,
 )
 from specrag.tools import (
     RetrievalToolRequest,
@@ -43,15 +40,6 @@ from .policy import (
     validate_action,
 )
 from .state import EvidenceLedger
-
-
-@dataclass(frozen=True)
-class _ResearchQuestion:
-    discovery_id: str
-    claim_id: str
-    angle: str
-    question: str
-
 
 @dataclass
 class RegistryResearcherService:
@@ -77,16 +65,6 @@ class RegistryResearcherService:
     ) -> tuple[AgenticRetrievalExecution, dict[str, str]]:
         if not tasks:
             raise ValueError("Researcher requires at least one research task")
-        questions = tuple(
-            _ResearchQuestion(
-                discovery_id=task.task_id,
-                claim_id=task.task_id,
-                angle=task.objective,
-                question=task.question,
-            )
-            for task in tasks
-        )
-        plan = compile_discovery_retrieval_plan(questions)
         memory_context: list[dict[str, object]] = []
         if self.memory_reader is not None:
             for task in tasks:
@@ -95,7 +73,7 @@ class RegistryResearcherService:
                     for item in self.memory_reader.search(task.question, limit=4)
                 )
         execution = run_agentic_retrieval_loop(
-            plan,
+            tasks,
             controller_agent=self.controller_agent,
             retriever=self.retriever,
             app_config=self.app_config,
@@ -160,7 +138,7 @@ def _evidence_score(evidence: ToolEvidence) -> float:
 def _planned_hits_from_tool(
     result: RetrievalToolResult,
     *,
-    base_item: PlannedDiscoveryRetrieval,
+    task: ResearchTask,
 ) -> tuple[PlannedRetrievalHit, ...]:
     hits: list[PlannedRetrievalHit] = []
     for evidence in result.evidence:
@@ -178,7 +156,7 @@ def _planned_hits_from_tool(
             line_start=evidence.line_start,
             line_end=evidence.line_end,
             excerpt=evidence.excerpt,
-            evidence_roles=(base_item.angle,),
+            evidence_roles=(task.objective,),
             probe_ids=(result.request_id,),
             retrieval_sources=(f"tool:{result.tool_name}",),
             retrieval_hop=(
@@ -216,26 +194,25 @@ def _planned_hits_from_tool(
 
 def _evidence_execution(
     *,
-    base_plan: DiscoveryRetrievalPlanV3,
+    research_tasks: tuple[ResearchTask, ...],
     ledger: EvidenceLedger,
     retriever: HybridMarkdownRetriever,
     app_config: AppConfig,
 ) -> PlannedRetrievalExecution:
     active_scope = effective_corpus_scope(app_config.retrieval, retriever)
     tasks: list[PlannedRetrievalTaskResult] = []
-    for item in base_plan.retrievals:
-        hits = ledger.hits(item.query_id)
+    for task in research_tasks:
+        hits = ledger.hits(task.task_id)
         tasks.append(PlannedRetrievalTaskResult(
-            retrieval_id=item.retrieval_id,
-            query_id=item.query_id,
-            planner_action=item.planner_action,
+            retrieval_id=f"RET-{task.task_id}",
+            query_id=task.task_id,
+            planner_action="planned",
             status="completed" if hits else "no_hits",
             hits=hits,
         ))
     has_hits = any(task.hits for task in tasks)
     return PlannedRetrievalExecution(
         status="completed" if has_hits else "unavailable",
-        resolved_plan=base_plan,
         index_fingerprint=retriever.fingerprint,
         index_manifest_path=retriever.index_manifest_path,
         embedding_model=app_config.retrieval.embedding_model,
@@ -247,7 +224,7 @@ def _evidence_execution(
 
 
 def run_agentic_retrieval_loop(
-    base_plan: DiscoveryRetrievalPlanV3,
+    research_tasks: tuple[ResearchTask, ...],
     *,
     controller_agent: StructuredResearcherController,
     retriever: HybridMarkdownRetriever,
@@ -262,6 +239,9 @@ def run_agentic_retrieval_loop(
     max_evidence_per_question: int = 28,
 ) -> AgenticRetrievalExecution:
     """Let an agent choose bounded calls to trusted local retrieval tools."""
+
+    if not research_tasks:
+        raise ValueError("Researcher requires at least one research task")
 
     for name, value in (
         ("max_rounds", max_rounds),
@@ -279,14 +259,17 @@ def run_agentic_retrieval_loop(
         max_search_actions + max_expansion_actions
     )
 
-    base_by_query = {item.query_id: item for item in base_plan.retrievals}
-    query_ids = tuple(base_by_query)
+    task_by_id = {task.task_id: task for task in research_tasks}
+    if len(task_by_id) != len(research_tasks):
+        raise ValueError("Researcher task IDs must be unique")
+    query_ids = tuple(task_by_id)
     query_id_set = frozenset(query_ids)
     available_specs = frozenset(
         document.specification
         for document in retriever.documents
         if document.specification is not None
     )
+    active_scope = effective_corpus_scope(app_config.retrieval, retriever)
     ledger = EvidenceLedger(
         query_ids,
         max_per_question=max_evidence_per_question,
@@ -319,36 +302,11 @@ def run_agentic_retrieval_loop(
             for outcome in turn.outcomes
         ]
         payload = {
-            "questions": [
-                {
-                    "query_id": item.query_id,
-                    "claim_id": item.claim_id,
-                    "angle": item.angle,
-                    "question": item.original_question,
-                }
-                for item in base_plan.retrievals
-            ],
-            "deterministic_retrieval_hints": [
-                {
-                    "query_id": item.query_id,
-                    "planner_action": item.planner_action,
-                    "anchors": [
-                        anchor.model_dump(mode="json")
-                        for anchor in item.anchors
-                    ],
-                    "explicit_facets": [
-                        facet.model_dump(mode="json")
-                        for facet in item.explicit_facets
-                    ],
-                    "suggested_probes": [
-                        probe.model_dump(mode="json")
-                        for probe in item.retrieval_probes
-                    ],
-                    "warnings": list(item.warnings),
-                }
-                for item in base_plan.retrievals
+            "research_tasks": [
+                task.model_dump(mode="json") for task in research_tasks
             ],
             "shared_context": dict(shared_context or {}),
+            "corpus_scope": active_scope.model_dump(mode="json"),
             "available_specifications": sorted(available_specs),
             "available_tools": [
                 capability.model_dump(mode="json")
@@ -467,17 +425,13 @@ def run_agentic_retrieval_loop(
             )
             try:
                 result = registry.invoke(action.tool, request)
-                active_scope = effective_corpus_scope(
-                    app_config.retrieval,
-                    retriever,
-                )
                 if result.corpus_scope != active_scope:
                     raise RuntimeError(
                         "tool result corpus scope differs from the active run"
                     )
                 planned_hits = _planned_hits_from_tool(
                     result,
-                    base_item=base_by_query[action.query_id],
+                    task=task_by_id[action.query_id],
                 )
                 observed, added = ledger.add(
                     action.query_id,
@@ -518,7 +472,7 @@ def run_agentic_retrieval_loop(
             break
 
     evidence = _evidence_execution(
-        base_plan=base_plan,
+        research_tasks=research_tasks,
         ledger=ledger,
         retriever=retriever,
         app_config=app_config,

@@ -19,6 +19,35 @@ _COMPOUND_IDENTIFIER = re.compile(
 )
 _UNICODE_DASHES = re.compile(r"[\u2010-\u2015]")
 
+# Generic evidence-shape terms are not concrete protocol identifiers. Retained
+# retrieval paths use this set only to avoid promoting them as entity matches.
+GENERIC_FACET_TERMS = frozenset({
+    "channel",
+    "channels",
+    "container",
+    "containers",
+    "endpoint",
+    "endpoints",
+    "field",
+    "fields",
+    "ie",
+    "ies",
+    "information element",
+    "information elements",
+    "interface",
+    "interfaces",
+    "message",
+    "messages",
+    "path",
+    "paths",
+    "procedure",
+    "procedures",
+    "protocol message",
+    "protocol messages",
+    "ue",
+    "network",
+})
+
 
 def _fold(value: str) -> str:
     return _UNICODE_DASHES.sub("-", value).casefold().strip()
@@ -71,6 +100,7 @@ def any_protocol_identifier_in_text(
 
 
 __all__ = [
+    "GENERIC_FACET_TERMS",
     "any_protocol_identifier_in_text",
     "protocol_identifier_in_text",
     "protocol_identifier_variants",

@@ -78,7 +78,7 @@ research task
 
 All migrated modules import successfully. The canonical quality gate now
 passes the structure contract, validates every curated question's local source
-hash, R17 version, line locator, and exact excerpt, and passes all 84 focused
+hash, R17 version, line locator, and exact excerpt, and passes all 81 focused
 tests.
 
 The first behavioral refactor is complete. Corpus discovery/chunking, immutable
@@ -89,14 +89,12 @@ Researcher is split into explicit models, evidence state, action policy, and
 loop execution. Its agent-finish, round-budget, and agent-error exits are
 covered by characterization tests.
 
-Deterministic planner behavior is now characterized for exact source spans,
-explicit facets, unresolved-reference fallback, and explicit-specification
-routing. Planning-input, execution-result, evidence-selection, repair, and
-answer-summary contracts have been extracted from the monolithic planner.
-
-Question-to-plan compilation and specification routing now live in separate
-`planning.py` and `routing.py` modules. The original planner remains the single
-compatibility entry point.
+The former deterministic question compiler, which extracted anchors and facets
+and generated suggested queries before the Researcher loop, has been removed
+from the supported path. Candidate-specification routing for retained retrieval
+workflows remains isolated in `routing.py`. Execution-result,
+evidence-selection, repair, and answer-summary contracts remain extracted from
+the monolithic planner.
 
 Candidate retrieval execution and ranking are now separate, cohesive modules.
 Execution owns exact-anchor, semantic, BM25, and evidence-driven reference
@@ -136,14 +134,15 @@ line locator. The bounded Researcher now invokes these capabilities only through
 the Tool Registry; its old direct retrieval branch has been removed. All six
 tools are verified independently from the agent loop.
 
-The Researcher no longer makes a separate model call to prepare a retrieval
-plan before its bounded loop. Pre-loop compilation is deterministic and emits
-only source-grounded anchors, explicit facets, and suggested probes. The first
-`researcher-controller/v1.0` round receives those hints, the registered tool
-capabilities, dependency context, and budget, then returns the first executable
-tool calls. Subsequent rounds use the same controller contract to observe the
-evidence ledger and choose only the next bounded actions. The versioned prompt
-text lives under `specrag.prompts`.
+The Researcher no longer prepares a retrieval plan before its bounded loop,
+either through a separate model call or through deterministic anchor, facet,
+and query generation. The first `researcher-controller/v1.1` round receives
+the Planner's `ResearchTask` items directly, together with the registered tool
+capabilities, active corpus scope, dependency context, and budget. It generates
+the initial query strings and executable tool calls itself. Subsequent rounds
+use the same controller contract to observe the evidence ledger and choose only
+the next bounded actions. The versioned prompt text lives under
+`specrag.prompts`.
 
 The LangGraph runtime lives under `specrag/orchestration/`.
 It defines one unified `ResearchState`, injected handlers for Router, Planner,
@@ -405,11 +404,10 @@ the original question verbatim. This includes the four reviewed simple cases
 whose evidence targets span more than one clause or specification: their
 question still expresses one cohesive research objective, so source count does
 not justify a second high-level Planner call. These tasks proceed directly to
-Researcher. Deterministic pre-processing extracts question-grounded retrieval
-hints without a model call, and the first Researcher controller round turns
-those hints into executable calls against the registered tools. The simple
-branch is therefore accepted without an additional task-decomposition or
-pre-loop retrieval-planning model call.
+the first Researcher controller round, which generates both the queries and
+their executable calls against the registered tools. The simple branch is
+therefore accepted without an additional task-decomposition or pre-loop
+retrieval-planning step.
 
 Dependency scheduling now distinguishes normal plan execution from corrective
 re-planning. Pending tasks are not assessed before their dependencies complete,

@@ -106,7 +106,7 @@ from .answer_models import (
     SelectedEvidenceGroup,
     SelectedSpecificationEvidence,
 )
-from .planning import GENERIC_FACET_TERMS, compile_discovery_retrieval_plan
+from .normalization import GENERIC_FACET_TERMS
 from .routing import resolve_discovery_retrieval_plan
 
 def execute_curated_discovery_retrieval(
@@ -550,7 +550,6 @@ __all__ = [
     "RoutingPolicy",
     "SourceSpan",
     "SpecificationRoute",
-    "compile_discovery_retrieval_plan",
     "execute_dual_stage_discovery_retrieval",
     "execute_planned_discovery_retrieval",
     "execute_release_comparison",

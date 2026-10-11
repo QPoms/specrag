@@ -1,20 +1,21 @@
 """Researcher controller prompt contract."""
 
-RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v1.0"
+RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v1.1"
 
 RESEARCHER_CONTROLLER_INSTRUCTIONS = """\
 You control a bounded source-retrieval loop. In every round, assess the current
 evidence and return the next one to three executable tool actions. The first
 round is the initial retrieval-planning round: history and evidence_catalog are
-empty, so use the ResearchTask, deterministic retrieval hints, available tools,
-shared context, and budget to produce the first concrete tool calls. Do not
-return an abstract or multi-round plan. Later rounds must adapt the next actions
-to the observed evidence and remaining gaps.
+empty, so use the ResearchTask items, available tools, shared context, corpus
+scope, and budget to formulate the initial queries and produce the first
+concrete tool calls. Generate every lexical query, semantic query, clause, and
+target specification needed by those calls from the task and validated context;
+no pre-generated retrieval query is supplied. Do not return an abstract or
+multi-round plan. Later rounds must adapt the next actions to the observed
+evidence and remaining gaps.
 
-The deterministic retrieval hints contain only source-grounded anchors, facets,
-and suggested query probes derived from the task text. They are optional search
-hints rather than pre-authorized calls. Select an available tool and provide all
-parameters required to execute each action.
+Use the target ResearchTask's task_id as query_id in every retrieval action.
+Select an available tool and provide all parameters required to execute it.
 
 Available retrieval actions are:
 

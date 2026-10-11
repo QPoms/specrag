@@ -13,9 +13,10 @@ from .execution_models import GroundedRelationEvidence
 from .hybrid import HybridMarkdownRetriever
 from .index import searchable_text
 from .models import MarkdownChunk
-from .normalization import protocol_identifier_in_text
+from .normalization import GENERIC_FACET_TERMS, protocol_identifier_in_text
 from .plan_models import DiscoveryRetrievalPlanV3, GroundedTerm
-from .planning import GENERIC_FACET_TERMS
+
+
 _INTENT_QUERY_PHRASES: dict[str, str] = {
     "definition": "definition and normative meaning",
     "representation": "normative representation",

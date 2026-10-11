@@ -14,6 +14,7 @@ from .hybrid import HybridMarkdownRetriever
 from .index import searchable_text
 from .models import MarkdownChunk
 from .normalization import (
+    GENERIC_FACET_TERMS,
     protocol_identifier_in_text,
     protocol_identifier_variants,
 )
@@ -22,7 +23,6 @@ from .plan_models import (
     RetrievalProbe,
     SpecificationRoute,
 )
-from .planning import GENERIC_FACET_TERMS
 from .ranking import (
     RankingMode,
     RetrievalCandidate,
