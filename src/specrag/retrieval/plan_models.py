@@ -6,8 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..infrastructure.structured_agent import CodexAgentReceipt
-
 
 PLANNER_PROFILE = "protocol-agnostic-retrieval-planner/v1.0"
 AnchorType = Literal[
@@ -75,22 +73,6 @@ class GroundedTerm(_StrictModel):
     term_id: str = Field(min_length=1)
     source_evidence_id: str = Field(min_length=1)
     surface: str = Field(min_length=1)
-
-
-class LLMAnchorProposal(_StrictModel):
-    """An extractive proposal; normalization is performed by trusted code."""
-
-    surface: str = Field(min_length=1)
-    entity_type: AnchorType
-
-
-class LLMQuestionAnchors(_StrictModel):
-    query_id: str = Field(min_length=1)
-    anchors: tuple[LLMAnchorProposal, ...]
-
-
-class LLMAnchorBatch(_StrictModel):
-    questions: tuple[LLMQuestionAnchors, ...]
 
 
 class SpecificationRoute(_StrictModel):
@@ -178,11 +160,9 @@ class DiscoveryRetrievalPlanV3(_StrictModel):
     planner_profile: Literal["protocol-agnostic-retrieval-planner/v1.0"] = (
         PLANNER_PROFILE
     )
-    anchor_extraction_method: Literal[
-        "deterministic_extractive",
-        "codex_agent_extractive_validated",
-    ] = "deterministic_extractive"
-    planner_agent_receipt: CodexAgentReceipt | None = None
+    anchor_extraction_method: Literal["deterministic_extractive"] = (
+        "deterministic_extractive"
+    )
     retrievals: tuple[PlannedDiscoveryRetrieval, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -206,9 +186,6 @@ __all__ = [
     "EvidenceTermProposal",
     "ExplicitFacet",
     "GroundedTerm",
-    "LLMAnchorBatch",
-    "LLMAnchorProposal",
-    "LLMQuestionAnchors",
     "PLANNER_PROFILE",
     "PlannedDiscoveryRetrieval",
     "QueryAnchor",

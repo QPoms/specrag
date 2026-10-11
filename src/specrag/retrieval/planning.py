@@ -5,13 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, TypeVar
 
-from ..infrastructure.structured_agent import CodexAgentReceipt, CodexStructuredAgent
 from .plan_models import (
     AnchorType,
     DiscoveryRetrievalPlanV3,
     ExplicitFacet,
-    LLMAnchorBatch,
-    LLMAnchorProposal,
     PlannedDiscoveryRetrieval,
     QueryAnchor,
     RetrievalProbe,
@@ -181,35 +178,11 @@ def _extract_anchors(text: str) -> tuple[QueryAnchor, ...]:
     return tuple(anchors)
 
 
-def _validated_llm_anchors(
-    text: str,
-    proposals: tuple[LLMAnchorProposal, ...],
-) -> tuple[QueryAnchor, ...]:
-    anchors: list[QueryAnchor] = []
-    for proposal in proposals:
-        start = text.find(proposal.surface)
-        if start < 0:
-            raise ValueError(
-                "Codex anchor does not occur verbatim in the question"
-            )
-        end = start + len(proposal.surface)
-        source = proposal.surface
-        canonical, normalization = _canonicalize(source)
-        anchors.append(QueryAnchor(
-            surface=source,
-            canonical=canonical,
-            entity_type=proposal.entity_type,
-            source_span=_span(text, start, end),
-            normalization=normalization,
-        ))
-    return tuple(anchors)
-
-
 def _merge_anchors(
     *groups: tuple[QueryAnchor, ...],
 ) -> tuple[QueryAnchor, ...]:
-    # Prefer a longer extractive phrase to a contained token. This lets an LLM
-    # identify natural-language protocol names while retaining strict spans.
+    # Prefer a longer extractive phrase to a contained token while retaining
+    # strict source spans.
     candidates = [anchor for group in groups for anchor in group]
     selected: list[QueryAnchor] = []
     for anchor in sorted(
@@ -434,11 +407,10 @@ def _has_unresolved_reference(
 
 def _compile_one(
     question: Any,
-    llm_anchors: tuple[QueryAnchor, ...] = (),
 ) -> PlannedDiscoveryRetrieval:
     text = question.question
     angle = _angle_value(question)
-    anchors = _merge_anchors(llm_anchors, _extract_anchors(text))
+    anchors = _merge_anchors(_extract_anchors(text))
     facets = _extract_facets(text, angle)
     context_dependent = _has_unresolved_reference(text, anchors)
     warnings: list[str] = []
@@ -473,73 +445,11 @@ def _compile_one(
 
 def compile_discovery_retrieval_plan(
     discovery_questions: tuple[Any, ...],
-    *,
-    planner_agent: CodexStructuredAgent | None = None,
 ) -> DiscoveryRetrievalPlanV3:
-    """Compile questions without importing unstated protocol facts.
-
-    If a Codex agent is supplied, it is used once for batch extractive NER. Its
-    surface terms are accepted only when they occur verbatim in the original
-    question. Trusted code, not the agent, performs source locating,
-    normalization, and probe construction.
-    """
-
-    llm_by_query: dict[str, tuple[QueryAnchor, ...]] = {}
-    receipt: CodexAgentReceipt | None = None
-    method: Literal[
-        "deterministic_extractive",
-        "codex_agent_extractive_validated",
-    ] = "deterministic_extractive"
-    if planner_agent is not None:
-        response = planner_agent.parse(
-            purpose="extract protocol anchors from Discovery questions",
-            prompt_version="discovery-anchor-extraction/v1.0",
-            instructions=(
-                "Extract only protocol-relevant entities whose exact surface "
-                "text occurs verbatim in each question. Do not infer or add a "
-                "message, information element, interface, state, specification, "
-                "relationship, or other fact absent from the question. Do not "
-                "resolve pronouns from other questions or claims. Classify each "
-                "surface using only the supplied schema. It is valid to return no "
-                "anchors. Return every query_id exactly once."
-            ),
-            input_payload={
-                "questions": [
-                    {
-                        "query_id": item.discovery_id,
-                        "angle": _angle_value(item),
-                        "question": item.question,
-                    }
-                    for item in discovery_questions
-                ]
-            },
-            output_type=LLMAnchorBatch,
-        )
-        expected_ids = [item.discovery_id for item in discovery_questions]
-        returned_ids = [item.query_id for item in response.output.questions]
-        if returned_ids != expected_ids:
-            raise ValueError(
-                "Codex anchor extraction must preserve ordered Discovery query IDs"
-            )
-        question_by_id = {
-            item.discovery_id: item.question for item in discovery_questions
-        }
-        llm_by_query = {
-            item.query_id: _validated_llm_anchors(
-                question_by_id[item.query_id],
-                item.anchors,
-            )
-            for item in response.output.questions
-        }
-        receipt = response.receipt
-        method = "codex_agent_extractive_validated"
-
+    """Compile deterministic, source-grounded hints for the Researcher loop."""
     return DiscoveryRetrievalPlanV3(
-        anchor_extraction_method=method,
-        planner_agent_receipt=receipt,
         retrievals=tuple(
-            _compile_one(item, llm_by_query.get(item.discovery_id, ()))
-            for item in discovery_questions
+            _compile_one(item) for item in discovery_questions
         ),
     )
 __all__ = ["GENERIC_FACET_TERMS", "compile_discovery_retrieval_plan"]

@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from specrag.config import AppConfig
-from specrag.infrastructure.structured_agent import CodexStructuredAgent
+from specrag.infrastructure.researcher_controller import (
+    StructuredResearcherController,
+)
 from specrag.models import ResearchTask
 from specrag.retrieval.hybrid import (
     HybridMarkdownRetriever,
@@ -37,7 +39,6 @@ from .models import (
     AgenticRetrievalExecution,
 )
 from .policy import (
-    CONTROLLER_INSTRUCTIONS,
     action_signature,
     validate_action,
 )
@@ -56,10 +57,9 @@ class _ResearchQuestion:
 class RegistryResearcherService:
     """Framework-independent application service for one Researcher worker."""
 
-    controller_agent: CodexStructuredAgent
+    controller_agent: StructuredResearcherController
     retriever: HybridMarkdownRetriever
     app_config: AppConfig
-    planner_agent: CodexStructuredAgent | None = None
     tool_registry: ToolRegistry | None = None
     memory_reader: Any | None = None
     max_rounds: int = 4
@@ -86,10 +86,7 @@ class RegistryResearcherService:
             )
             for task in tasks
         )
-        plan = compile_discovery_retrieval_plan(
-            questions,
-            planner_agent=self.planner_agent,
-        )
+        plan = compile_discovery_retrieval_plan(questions)
         memory_context: list[dict[str, object]] = []
         if self.memory_reader is not None:
             for task in tasks:
@@ -252,7 +249,7 @@ def _evidence_execution(
 def run_agentic_retrieval_loop(
     base_plan: DiscoveryRetrievalPlanV3,
     *,
-    controller_agent: CodexStructuredAgent,
+    controller_agent: StructuredResearcherController,
     retriever: HybridMarkdownRetriever,
     app_config: AppConfig,
     tool_registry: ToolRegistry | None = None,
@@ -331,6 +328,26 @@ def run_agentic_retrieval_loop(
                 }
                 for item in base_plan.retrievals
             ],
+            "deterministic_retrieval_hints": [
+                {
+                    "query_id": item.query_id,
+                    "planner_action": item.planner_action,
+                    "anchors": [
+                        anchor.model_dump(mode="json")
+                        for anchor in item.anchors
+                    ],
+                    "explicit_facets": [
+                        facet.model_dump(mode="json")
+                        for facet in item.explicit_facets
+                    ],
+                    "suggested_probes": [
+                        probe.model_dump(mode="json")
+                        for probe in item.retrieval_probes
+                    ],
+                    "warnings": list(item.warnings),
+                }
+                for item in base_plan.retrievals
+            ],
             "shared_context": dict(shared_context or {}),
             "available_specifications": sorted(available_specs),
             "available_tools": [
@@ -353,10 +370,7 @@ def run_agentic_retrieval_loop(
             "evidence_catalog": ledger.payload(),
         }
         try:
-            response = controller_agent.parse(
-                purpose="choose the next bounded Discovery retrieval tool calls",
-                prompt_version="agentic-discovery-retrieval-controller/v0.2",
-                instructions=CONTROLLER_INSTRUCTIONS,
+            response = controller_agent.decide(
                 input_payload=payload,
                 output_type=AgentRetrievalDecision,
             )

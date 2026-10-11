@@ -26,6 +26,9 @@ from specrag.infrastructure.research_planning import (
     StructuredQuestionRouter,
     StructuredResearchPlanner,
 )
+from specrag.infrastructure.researcher_controller import (
+    StructuredResearcherController,
+)
 from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
 from specrag.models import (
     ResearchBudget,
@@ -262,8 +265,7 @@ def build_research_application(
     router = StructuredQuestionRouter(planning_agent)
     planner = StructuredResearchPlanner(planning_agent)
     researcher_service = RegistryResearcherService(
-        controller_agent=planning_agent,
-        planner_agent=planning_agent,
+        controller_agent=StructuredResearcherController(planning_agent),
         retriever=retriever,
         app_config=app_config,
         tool_registry=tool_registry,

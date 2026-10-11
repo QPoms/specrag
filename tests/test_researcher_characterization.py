@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from specrag.agents.researcher import (
     AgentRetrievalAction,
     AgentRetrievalDecision,
+    RegistryResearcherService,
     run_agentic_retrieval_loop,
 )
 from specrag.config import AppConfig, RetrievalCfg
@@ -12,12 +13,26 @@ from specrag.infrastructure.structured_agent import (
     CodexAgentReceipt,
     CodexAgentResponse,
 )
-from specrag.retrieval.models import SourceDocument
+from specrag.infrastructure.researcher_controller import (
+    StructuredResearcherController,
+)
+from specrag.models import ResearchTask
+from specrag.prompts import (
+    RESEARCHER_CONTROLLER_INSTRUCTIONS,
+    RESEARCHER_CONTROLLER_PROMPT_VERSION,
+)
+from specrag.retrieval.models import CorpusScope, SourceDocument
 from specrag.retrieval.planner import (
     DiscoveryRetrievalPlanV3,
     PlannedDiscoveryRetrieval,
     ReferenceExpansionPolicy,
     RetrievalProbe,
+)
+from specrag.tools import (
+    RetrievalToolRequest,
+    RetrievalToolResult,
+    ToolCapability,
+    ToolRegistry,
 )
 
 
@@ -102,6 +117,29 @@ class _FailingController:
         raise RuntimeError("synthetic controller failure")
 
 
+class _NoHitsHybridTool:
+    name = "hybrid_search"
+    capability = ToolCapability(
+        name="hybrid_search",
+        description="Search the active corpus with lexical and semantic text.",
+        required_fields=("query", "semantic_query"),
+        execution_kind="deterministic",
+    )
+
+    def __init__(self) -> None:
+        self.requests: list[RetrievalToolRequest] = []
+
+    def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
+        self.requests.append(request)
+        return RetrievalToolResult(
+            request_id=request.request_id,
+            query_id=request.query_id,
+            tool_name=self.name,
+            status="no_hits",
+            corpus_scope=CorpusScope(release=17),
+        )
+
+
 def _config() -> AppConfig:
     return AppConfig(retrieval=RetrievalCfg(
         embedding_model="test",
@@ -118,7 +156,7 @@ def test_agent_finish_records_explicit_stop_reason_without_using_tools() -> None
 
     result = run_agentic_retrieval_loop(
         _plan(),
-        controller_agent=controller,
+        controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
     )
@@ -128,6 +166,75 @@ def test_agent_finish_records_explicit_stop_reason_without_using_tools() -> None
     assert result.search_actions_used == 0
     assert result.expansion_actions_used == 0
     assert result.status == "unavailable"
+
+
+def test_first_controller_round_is_the_only_model_planning_entry() -> None:
+    controller = _SequenceController(AgentRetrievalDecision(
+        assessment="Plan the first executable retrieval actions.",
+        actions=(_action("finish"),),
+    ))
+    service = RegistryResearcherService(
+        controller_agent=StructuredResearcherController(controller),
+        retriever=_retriever(),
+        app_config=_config(),
+    )
+
+    execution, mapping = service.run((ResearchTask(
+        task_id="T1",
+        question="What is the registration procedure?",
+        objective="Establish the normative procedure.",
+    ),))
+
+    assert execution.stop_reason == "agent_finish"
+    assert mapping == {"T1": "T1"}
+    assert len(controller.calls) == 1
+    first_payload = controller.calls[0]["input_payload"]
+    assert first_payload["history"] == []
+    assert first_payload["evidence_catalog"] == []
+    assert first_payload["available_tools"]
+    assert first_payload["deterministic_retrieval_hints"][0][
+        "suggested_probes"
+    ]
+    assert controller.calls[0]["prompt_version"] == (
+        RESEARCHER_CONTROLLER_PROMPT_VERSION
+    )
+    assert controller.calls[0]["instructions"] == (
+        RESEARCHER_CONTROLLER_INSTRUCTIONS
+    )
+
+
+def test_first_controller_round_can_emit_and_execute_a_tool_call() -> None:
+    controller = _SequenceController(
+        AgentRetrievalDecision(
+            assessment="Start with the strongest combined search.",
+            actions=(_action("hybrid_search", query_id="Q1"),),
+        ),
+        AgentRetrievalDecision(
+            assessment="No hits remain within this bounded test.",
+            actions=(_action("finish"),),
+        ),
+    )
+    registry = ToolRegistry()
+    tool = _NoHitsHybridTool()
+    registry.register(tool)
+
+    result = run_agentic_retrieval_loop(
+        _plan(),
+        controller_agent=StructuredResearcherController(controller),
+        retriever=_retriever(),
+        app_config=_config(),
+        tool_registry=registry,
+    )
+
+    assert len(tool.requests) == 1
+    assert tool.requests[0].query_id == "Q1"
+    assert result.turns[0].outcomes[0].status == "no_hits"
+    assert result.search_actions_used == 1
+    assert result.stop_reason == "agent_finish"
+    assert controller.calls[0]["input_payload"]["history"] == []
+    assert controller.calls[1]["input_payload"]["history"][0][
+        "tool"
+    ] == "hybrid_search"
 
 
 def test_controller_receives_and_is_instructed_to_use_dependency_context() -> None:
@@ -145,21 +252,23 @@ def test_controller_receives_and_is_instructed_to_use_dependency_context() -> No
 
     run_agentic_retrieval_loop(
         _plan(),
-        controller_agent=controller,
+        controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
         shared_context={"dependency_context": dependency_context},
     )
 
     call = controller.calls[0]
-    assert call["prompt_version"] == (
-        "agentic-discovery-retrieval-controller/v0.2"
-    )
+    assert call["prompt_version"] == RESEARCHER_CONTROLLER_PROMPT_VERSION
     assert call["input_payload"]["shared_context"][
         "dependency_context"
     ] == dependency_context
     assert "completed predecessor tasks" in call["instructions"]
     assert "seed_evidence_ids" in call["instructions"]
+    normalized_instructions = " ".join(call["instructions"].split())
+    assert "first round is the initial retrieval-planning round" in (
+        normalized_instructions
+    )
 
 
 def test_invalid_actions_stop_at_round_budget_and_remain_auditable() -> None:
@@ -171,7 +280,7 @@ def test_invalid_actions_stop_at_round_budget_and_remain_auditable() -> None:
 
     result = run_agentic_retrieval_loop(
         _plan(),
-        controller_agent=controller,
+        controller_agent=StructuredResearcherController(controller),
         retriever=_retriever(),
         app_config=_config(),
         max_rounds=2,
@@ -191,7 +300,7 @@ def test_invalid_actions_stop_at_round_budget_and_remain_auditable() -> None:
 def test_controller_failure_records_agent_error_stop_reason() -> None:
     result = run_agentic_retrieval_loop(
         _plan(),
-        controller_agent=_FailingController(),
+        controller_agent=StructuredResearcherController(_FailingController()),
         retriever=_retriever(),
         app_config=_config(),
     )

@@ -13,8 +13,9 @@ The target flow is:
 
 ```text
 user question or task
--> retrieval planning
--> hybrid or agentic retrieval
+-> Researcher first-round action planning
+-> trusted retrieval tool execution
+-> bounded observe-and-adapt loop
 -> candidate evidence
 -> source and sufficiency validation
 -> bounded gap retrieval
@@ -48,7 +49,12 @@ user question or task
 - `src/specrag/retrieval/normalization.py`: protocol identifier
   normalization.
 - `src/specrag/agents/`: separate Researcher models, evidence state, action
-  policy, and bounded loop execution through the unified Tool Registry.
+  policy, and bounded loop execution through the unified Tool Registry. The
+  first controller round receives deterministic source-grounded hints and the
+  live tool catalog, then emits the first concrete tool calls; later rounds
+  adapt to observed evidence.
+- `src/specrag/prompts/researcher.py`: versioned Researcher controller prompt
+  contract.
 - `src/specrag/tools/`: provider-neutral request/result schemas, capability
   descriptions, registry, and six trusted retrieval adapters.
 - `src/specrag/models/`: framework-independent research state contracts.
@@ -56,6 +62,9 @@ user question or task
   dependency-context handoff, bounded re-planning, checkpointing, and recovery.
 - `src/specrag/infrastructure/structured_agent.py`: structured-agent runtime
   adapter.
+- `src/specrag/infrastructure/researcher_controller.py`: binds the versioned
+  Researcher prompt to the structured-agent adapter behind a small decision
+  interface.
 - `src/specrag/infrastructure/llm.py`: structured OpenAI-compatible client
   with redacted receipts and retry policy.
 

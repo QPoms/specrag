@@ -67,8 +67,9 @@ The immediate migration target is:
 
 ```text
 research task
--> retrieval planning
--> hybrid/agentic retrieval
+-> Researcher first-round action planning
+-> trusted retrieval tool execution
+-> bounded observe-and-adapt loop
 -> source-verified evidence
 -> sufficiency/gap analysis
 -> bounded re-retrieval
@@ -77,7 +78,7 @@ research task
 
 All migrated modules import successfully. The canonical quality gate now
 passes the structure contract, validates every curated question's local source
-hash, R17 version, line locator, and exact excerpt, and passes all 80 focused
+hash, R17 version, line locator, and exact excerpt, and passes all 84 focused
 tests.
 
 The first behavioral refactor is complete. Corpus discovery/chunking, immutable
@@ -134,6 +135,15 @@ scope, Release, exact version, source path, document hash, heading path, and
 line locator. The bounded Researcher now invokes these capabilities only through
 the Tool Registry; its old direct retrieval branch has been removed. All six
 tools are verified independently from the agent loop.
+
+The Researcher no longer makes a separate model call to prepare a retrieval
+plan before its bounded loop. Pre-loop compilation is deterministic and emits
+only source-grounded anchors, explicit facets, and suggested probes. The first
+`researcher-controller/v1.0` round receives those hints, the registered tool
+capabilities, dependency context, and budget, then returns the first executable
+tool calls. Subsequent rounds use the same controller contract to observe the
+evidence ledger and choose only the next bounded actions. The versioned prompt
+text lives under `specrag.prompts`.
 
 The LangGraph runtime lives under `specrag/orchestration/`.
 It defines one unified `ResearchState`, injected handlers for Router, Planner,
@@ -395,9 +405,11 @@ the original question verbatim. This includes the four reviewed simple cases
 whose evidence targets span more than one clause or specification: their
 question still expresses one cohesive research objective, so source count does
 not justify a second high-level Planner call. These tasks proceed directly to
-Researcher, where the existing constrained retrieval-planning pass extracts
-question-grounded protocol anchors before search. The simple branch is therefore
-accepted without an additional task-decomposition model call.
+Researcher. Deterministic pre-processing extracts question-grounded retrieval
+hints without a model call, and the first Researcher controller round turns
+those hints into executable calls against the registered tools. The simple
+branch is therefore accepted without an additional task-decomposition or
+pre-loop retrieval-planning model call.
 
 Dependency scheduling now distinguishes normal plan execution from corrective
 re-planning. Pending tasks are not assessed before their dependencies complete,
