@@ -56,6 +56,17 @@ class EvidenceSufficiencyService:
             task_conflicts = tuple(
                 item for item in conflicts if item.task_id == task.task_id
             )
+            if (
+                task.status == "pending"
+                and not task_candidates
+                and not task_evidence
+                and not task_conflicts
+            ):
+                # A dependency-blocked task has not run yet. It has no evidence
+                # to assess and must not create a synthetic gap or consume a
+                # re-plan before its predecessors complete.
+                updated_tasks.append(task)
+                continue
             if task_conflicts:
                 description = "; ".join(
                     item.description for item in task_conflicts
@@ -124,7 +135,7 @@ class EvidenceSufficiencyService:
                 ))
 
         sufficient = bool(tasks) and all(
-            item.status == "sufficient" for item in assessments
+            item.status == "completed" for item in updated_tasks
         )
         return EvidenceSufficiencyBatch(
             assessments=tuple(assessments),

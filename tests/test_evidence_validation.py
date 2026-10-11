@@ -232,6 +232,37 @@ def test_sufficient_task_requires_and_records_supported_evidence() -> None:
     assert batch.gaps == ()
 
 
+def test_unattempted_dependency_task_is_not_assessed_as_a_gap() -> None:
+    assessment = TaskSufficiencyAssessment(
+        task_id="T1",
+        status="sufficient",
+        supporting_evidence_ids=("E1",),
+        rationale="The predecessor has complete supported evidence.",
+    )
+    service = EvidenceSufficiencyService(_SufficiencyAssessor(assessment))
+    predecessor = _task().model_copy(update={"status": "running"})
+    dependent = ResearchTask(
+        task_id="T2",
+        question="How is the established result used?",
+        objective="Establish the dependent relation.",
+        dependencies=("T1",),
+    )
+
+    batch = service.evaluate(
+        (predecessor, dependent),
+        (_candidate_placeholder(),),
+        (_validated(),),
+    )
+
+    assert tuple(item.task_id for item in batch.assessments) == ("T1",)
+    assert tuple(item.status for item in batch.tasks) == (
+        "completed",
+        "pending",
+    )
+    assert batch.gaps == ()
+    assert batch.evidence_sufficient is False
+
+
 def test_sufficiency_handler_rejects_unvalidated_evidence_reference() -> None:
     assessment = TaskSufficiencyAssessment(
         task_id="T1",

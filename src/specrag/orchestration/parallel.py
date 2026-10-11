@@ -21,10 +21,10 @@ from .workflow import (
     ResearchNodeHandlers,
     StateUpdate,
     _budget_guard,
+    _can_advance_without_replan,
     _in_memory_checkpointer,
     _node,
     _replanner_node,
-    _route_after_guard,
     _route_after_router,
 )
 
@@ -248,6 +248,18 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
     }
 
 
+def _route_after_parallel_guard(
+    state: ParallelResearchState,
+) -> str:
+    if state["evidence_sufficient"] is True:
+        return "synthesizer"
+    if state["stop_reason"] is not None:
+        return END
+    if _can_advance_without_replan(state):
+        return "dispatch"
+    return "replanner"
+
+
 def build_parallel_research_workflow(
     handlers: ResearchNodeHandlers,
     researcher: ParallelResearcherHandler,
@@ -276,7 +288,7 @@ def build_parallel_research_workflow(
     builder.add_edge("fan_in", "validator")
     builder.add_edge("validator", "sufficiency_judge")
     builder.add_edge("sufficiency_judge", "budget_guard")
-    builder.add_conditional_edges("budget_guard", _route_after_guard)
+    builder.add_conditional_edges("budget_guard", _route_after_parallel_guard)
     builder.add_edge("replanner", "dispatch")
     builder.add_edge("synthesizer", END)
 

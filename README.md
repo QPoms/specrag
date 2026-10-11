@@ -108,6 +108,8 @@ record a null prompt receipt because no Planner model call occurs.
 Planner dependencies represent validated information flow. A dependent
 Researcher starts only after its predecessors are sufficient and receives only
 their selected, source-valid supported evidence as scoped research context.
+Advancing to that newly ready dependency wave is normal execution and does not
+consume the Gap Re-planner budget; only attempted incomplete tasks do.
 
 ## Local environment
 

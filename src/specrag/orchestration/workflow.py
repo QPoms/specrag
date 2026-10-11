@@ -105,6 +105,33 @@ def _replanner_node(
     return invoke
 
 
+def _has_incomplete_attempted_task(state: ResearchState) -> bool:
+    return any(
+        task.status in {"running", "blocked"}
+        for task in state["research_tasks"]
+    )
+
+
+def _has_ready_pending_task(state: ResearchState) -> bool:
+    completed = {
+        task.task_id
+        for task in state["research_tasks"]
+        if task.status == "completed"
+    }
+    return any(
+        task.status == "pending"
+        and set(task.dependencies).issubset(completed)
+        for task in state["research_tasks"]
+    )
+
+
+def _can_advance_without_replan(state: ResearchState) -> bool:
+    return (
+        not _has_incomplete_attempted_task(state)
+        and _has_ready_pending_task(state)
+    )
+
+
 def _budget_guard(state: ResearchState) -> dict[str, object]:
     if state["evidence_sufficient"] is True or state["stop_reason"] is not None:
         return {}
@@ -113,7 +140,10 @@ def _budget_guard(state: ResearchState) -> dict[str, object]:
         return {"stop_reason": "iteration_budget"}
     if budget.tool_calls_used >= budget.max_tool_calls:
         return {"stop_reason": "tool_budget"}
-    if budget.replans_used >= budget.max_replans:
+    if (
+        not _can_advance_without_replan(state)
+        and budget.replans_used >= budget.max_replans
+    ):
         return {"stop_reason": "replan_budget"}
     return {}
 
@@ -126,11 +156,13 @@ def _route_after_router(state: ResearchState) -> Literal["planner", "__end__"]:
 
 def _route_after_guard(
     state: ResearchState,
-) -> Literal["replanner", "synthesizer", "__end__"]:
+) -> Literal["researcher", "replanner", "synthesizer", "__end__"]:
     if state["evidence_sufficient"] is True:
         return "synthesizer"
     if state["stop_reason"] is not None:
         return END
+    if _can_advance_without_replan(state):
+        return "researcher"
     return "replanner"
 
 

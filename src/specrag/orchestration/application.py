@@ -85,9 +85,10 @@ class GapReplanner:
         unresolved = tuple(gap for gap in state["gaps"] if not gap.resolved)
         if not unresolved:
             return {"stop_reason": "insufficient_evidence"}
+        gap_task_ids = {gap.task_id for gap in unresolved}
         tasks = tuple(
             task.model_copy(update={"status": "running"})
-            if task.status != "completed"
+            if task.task_id in gap_task_ids and task.status != "completed"
             else task
             for task in state["research_tasks"]
         )

@@ -399,5 +399,13 @@ Researcher, where the existing constrained retrieval-planning pass extracts
 question-grounded protocol anchors before search. The simple branch is therefore
 accepted without an additional task-decomposition model call.
 
+Dependency scheduling now distinguishes normal plan execution from corrective
+re-planning. Pending tasks are not assessed before their dependencies complete,
+so they do not create synthetic evidence gaps. When a predecessor becomes
+sufficient, its newly ready dependent task proceeds directly to the next
+Researcher wave without consuming `replans_used`. Gap Re-planner is reserved for
+tasks that have actually run and remain incomplete or blocked, and it reopens
+only tasks named by unresolved gaps.
+
 The live eight-stage progress checklist is maintained in
 `docs/plans/003-optimization-roadmap.md`.

@@ -55,6 +55,10 @@ not a formal evaluation framework.
   to the minimum scope needed by the original question.
 - [x] Pass each dependent Single or parallel Researcher only the predecessor
   evidence selected by a sufficient assessment and validated as supported.
+- [x] Separate normal dependency-wave advancement from evidence-gap re-planning.
+  A newly unlocked dependent task proceeds directly to Researcher without
+  consuming `replans_used`; only an attempted incomplete or blocked task enters
+  Gap Re-planner, while untouched dependent tasks remain pending.
 - [x] Preserve Planner execution provenance through a structured response and
   write the generation mode, contract version, prompt version, model metadata,
   request/response hashes, token counts, and latency into planning artifacts.

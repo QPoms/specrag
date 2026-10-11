@@ -9,11 +9,13 @@ from specrag.agents.models import (
 from specrag.infrastructure.structured_agent import CodexAgentReceipt
 from specrag.models import (
     ResearchBudget,
+    ResearchGap,
     ResearchPlan,
     ResearchTask,
     TaskSufficiencyAssessment,
     ValidatedEvidence,
 )
+from specrag.orchestration.application import GapReplanner
 from specrag.orchestration import (
     ParallelResearcherHandler,
     ResearchNodeHandlers,
@@ -260,7 +262,7 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
         new_parallel_research_state(
             research_id="dependency-test",
             user_question="Resolve a dependent research chain.",
-            budget=ResearchBudget(max_tool_calls=4, max_replans=2),
+            budget=ResearchBudget(max_tool_calls=4, max_replans=0),
         ),
         thread_id="dependency-test",
     )
@@ -268,7 +270,7 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
     assert service.calls == ["T1", "T2"]
     assert result["iteration"] == 2
     assert result["budget"].tool_calls_used == 2
-    assert result["budget"].replans_used == 1
+    assert result["budget"].replans_used == 0
     assert len(result["researcher_results"]) == 2
     assert result["researcher_results_processed"] == 2
     assert result["final_answer"] == "Multi-hop answer."
@@ -277,3 +279,122 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
     assert dependency_context[0]["supporting_evidence"][0][
         "evidence_id"
     ].startswith("E:T1:")
+
+
+def test_incomplete_predecessor_replans_before_dependent_task() -> None:
+    service = _FakeService()
+    first = ResearchTask(task_id="T1", question="Q1", objective="O1")
+    dependent = ResearchTask(
+        task_id="T2",
+        question="Q2",
+        objective="O2",
+        dependencies=("T1",),
+    )
+    plan = ResearchPlan(plan_id="P3", tasks=(first, dependent))
+
+    def validate(state):
+        return {
+            "validated_evidence": tuple(
+                ValidatedEvidence(
+                    evidence_id=item.evidence_id,
+                    task_id=item.task_id,
+                    source_valid=True,
+                    supports_target=True,
+                    validation_status="supported",
+                    rationale="The source supports its task.",
+                )
+                for item in state["candidate_evidence"]
+            )
+        }
+
+    def judge(state):
+        evidence_by_task = {
+            item.task_id: item.evidence_id
+            for item in state["candidate_evidence"]
+        }
+        if service.calls == ["T1"]:
+            missing = "The predecessor still lacks its required relation."
+            return {
+                "evidence_sufficient": False,
+                "research_tasks": (
+                    state["research_tasks"][0].model_copy(
+                        update={"status": "running"}
+                    ),
+                    state["research_tasks"][1],
+                ),
+                "sufficiency_assessments": (
+                    TaskSufficiencyAssessment(
+                        task_id="T1",
+                        status="partial",
+                        supporting_evidence_ids=(evidence_by_task["T1"],),
+                        missing_relation=missing,
+                        rationale=missing,
+                    ),
+                ),
+                "gaps": (ResearchGap(
+                    gap_id="G:T1:missing_relation",
+                    task_id="T1",
+                    kind="missing_relation",
+                    description=missing,
+                ),),
+            }
+        assessments = tuple(
+            TaskSufficiencyAssessment(
+                task_id=task_id,
+                status="sufficient",
+                supporting_evidence_ids=(evidence_id,),
+                rationale="The task has supported evidence.",
+            )
+            for task_id, evidence_id in evidence_by_task.items()
+        )
+        completed_ids = set(evidence_by_task)
+        tasks = tuple(
+            task.model_copy(update={"status": "completed"})
+            if task.task_id in completed_ids
+            else task
+            for task in state["research_tasks"]
+        )
+        return {
+            "evidence_sufficient": "T2" in completed_ids,
+            "research_tasks": tasks,
+            "sufficiency_assessments": assessments,
+            "gaps": (),
+        }
+
+    workflow = build_parallel_research_workflow(
+        ResearchNodeHandlers(
+            router=lambda state: {"route": "plan"},
+            planner=lambda state: {
+                "research_plan": plan,
+                "research_tasks": plan.tasks,
+            },
+            researcher=lambda state: {},
+            validator=validate,
+            sufficiency_judge=judge,
+            replanner=GapReplanner(),
+            synthesizer=lambda state: {
+                "final_answer": "Answer after predecessor retry.",
+                "stop_reason": "completed",
+            },
+        ),
+        ParallelResearcherHandler(service),
+    )
+
+    result = workflow.invoke(
+        new_parallel_research_state(
+            research_id="dependency-replan-test",
+            user_question="Retry a predecessor before its dependent task.",
+            budget=ResearchBudget(
+                max_iterations=4,
+                max_tool_calls=5,
+                max_replans=1,
+            ),
+        ),
+        thread_id="dependency-replan-test",
+    )
+
+    assert service.calls == ["T1", "T1", "T2"]
+    assert result["iteration"] == 3
+    assert result["budget"].replans_used == 1
+    assert result["budget"].tool_calls_used == 3
+    assert result["final_answer"] == "Answer after predecessor retry."
