@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from specrag.agents.models import ResearcherActionPlan
+from specrag.agents.planning import ResearcherPlanningService
 from specrag.agents.researcher import RegistryResearcherService
 from specrag.config import AppConfig, REPO_ROOT, load_config
 from specrag.evidence import (
@@ -48,7 +50,14 @@ from .workflow import (
     build_single_research_workflow,
 )
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
-from specrag.tools import build_retrieval_tool_registry
+from specrag.retrieval.corpus import (
+    corpus_scope_from_config,
+    discover_source_documents,
+)
+from specrag.tools import (
+    build_retrieval_tool_registry,
+    retrieval_tool_capabilities,
+)
 
 
 @dataclass(frozen=True)
@@ -202,6 +211,67 @@ class PlanningApplication:
         return route, response
 
 
+@dataclass(frozen=True)
+class ResearcherPlanningResponse:
+    """Planner output plus unexecuted first-turn Researcher proposals."""
+
+    planning: StructuredPlanResponse
+    first_turns: tuple[tuple[str, ResearcherActionPlan], ...]
+    deferred_task_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResearcherPlanningApplication:
+    """Generate inspectable Researcher actions without executing retrieval."""
+
+    planner: StructuredResearchPlanner
+    researcher: ResearcherPlanningService
+    release: int
+
+    def run_with_route(
+        self,
+        *,
+        research_id: str,
+        question: str,
+        route: ResearchRouteDecision,
+    ) -> ResearcherPlanningResponse:
+        planning = self.planner.plan_with_receipt(
+            research_id=research_id,
+            question=question,
+            route=route,
+        )
+        ready = tuple(
+            task.model_copy(update={"status": "running"})
+            for task in planning.output.tasks
+            if not task.dependencies
+        )
+        deferred = tuple(
+            task.task_id
+            for task in planning.output.tasks
+            if task.dependencies
+        )
+        first_turns = tuple(
+            (
+                task.task_id,
+                self.researcher.propose_first_turn(
+                    (task,),
+                    shared_context={
+                        "research_id": research_id,
+                        "iteration": 0,
+                        "unresolved_gaps": (),
+                        "dependency_context": (),
+                    },
+                ),
+            )
+            for task in ready
+        )
+        return ResearcherPlanningResponse(
+            planning=planning,
+            first_turns=first_turns,
+            deferred_task_ids=deferred,
+        )
+
+
 def build_planning_application(
     config: AppConfig | None = None,
 ) -> PlanningApplication:
@@ -231,6 +301,51 @@ def build_routing_application(
         config=app_config,
     )
     return RoutingApplication(router=StructuredQuestionRouter(planning_agent))
+
+
+def build_researcher_planning_application(
+    config: AppConfig | None = None,
+    *,
+    release: int = 17,
+) -> ResearcherPlanningApplication:
+    """Build planning-only Researcher inspection without retrieval indexes."""
+
+    if release < 1:
+        raise ValueError("retrieval Release must be positive")
+    app_config = config or load_config()
+    retrieval_config = app_config.retrieval.model_copy(update={
+        "version_policy": "highest_version_within_release",
+        "target_release": release,
+    })
+    app_config = app_config.model_copy(update={"retrieval": retrieval_config})
+    corpus_scope = corpus_scope_from_config(app_config.retrieval)
+    documents = discover_source_documents(app_config.retrieval, corpus_scope)
+    available_specifications = tuple(sorted({
+        document.specification
+        for document in documents
+        if document.specification is not None
+    }))
+    planning_agent = LLMApiStructuredAgent(
+        role="planning",
+        reasoning_effort="high",
+        config=app_config,
+    )
+    return ResearcherPlanningApplication(
+        planner=StructuredResearchPlanner(planning_agent),
+        researcher=ResearcherPlanningService(
+            controller_agent=StructuredResearcherController(planning_agent),
+            corpus_scope=corpus_scope,
+            available_specifications=available_specifications,
+            available_tools=retrieval_tool_capabilities(),
+            max_rounds=3,
+            max_search_actions=4,
+            max_expansion_actions=2,
+            max_total_actions=6,
+            hits_per_search=5,
+            max_evidence_per_question=12,
+        ),
+        release=release,
+    )
 
 
 def build_research_application(
@@ -309,9 +424,12 @@ __all__ = [
     "PlanningApplication",
     "QuestionRouterHandler",
     "ResearchApplication",
+    "ResearcherPlanningApplication",
+    "ResearcherPlanningResponse",
     "ResearchPlannerHandler",
     "RoutingApplication",
     "build_planning_application",
     "build_research_application",
+    "build_researcher_planning_application",
     "build_routing_application",
 ]

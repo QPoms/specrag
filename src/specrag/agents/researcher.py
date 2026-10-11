@@ -35,11 +35,10 @@ from .models import (
     AgentRetrievalTurn,
     AgenticRetrievalExecution,
 )
-from .policy import (
-    action_signature,
-    validate_action,
-)
+from .planning import propose_researcher_turn
+from .policy import action_signature
 from .state import EvidenceLedger
+
 
 @dataclass
 class RegistryResearcherService:
@@ -263,7 +262,6 @@ def run_agentic_retrieval_loop(
     if len(task_by_id) != len(research_tasks):
         raise ValueError("Researcher task IDs must be unique")
     query_ids = tuple(task_by_id)
-    query_id_set = frozenset(query_ids)
     available_specs = frozenset(
         document.specification
         for document in retriever.documents
@@ -301,118 +299,79 @@ def run_agentic_retrieval_loop(
             for turn in turns
             for outcome in turn.outcomes
         ]
-        payload = {
-            "research_tasks": [
-                task.model_dump(mode="json") for task in research_tasks
-            ],
-            "shared_context": dict(shared_context or {}),
-            "corpus_scope": active_scope.model_dump(mode="json"),
-            "available_specifications": sorted(available_specs),
-            "available_tools": [
-                capability.model_dump(mode="json")
-                for capability in registry.capabilities
-            ],
-            "budget": {
-                "rounds_remaining_including_this": max_rounds - round_number + 1,
-                "search_actions_remaining": max_search_actions - search_used,
-                "expansion_actions_remaining": (
-                    max_expansion_actions - expansion_used
-                ),
-                "tool_actions_remaining": (
-                    total_action_limit - search_used - expansion_used
-                ),
-                "hits_per_search_ceiling": hits_per_search,
-                "max_evidence_per_question": max_evidence_per_question,
-            },
-            "history": history,
-            "evidence_catalog": ledger.payload(),
-        }
         try:
-            response = controller_agent.decide(
-                input_payload=payload,
-                output_type=AgentRetrievalDecision,
+            proposal = propose_researcher_turn(
+                research_tasks,
+                controller_agent=controller_agent,
+                corpus_scope=active_scope,
+                available_specifications=tuple(sorted(available_specs)),
+                available_tools=registry.capabilities,
+                ledger=ledger,
+                shared_context=shared_context,
+                round_number=round_number,
+                max_rounds=max_rounds,
+                search_used=search_used,
+                max_search_actions=max_search_actions,
+                expansion_used=expansion_used,
+                max_expansion_actions=max_expansion_actions,
+                total_action_limit=total_action_limit,
+                hits_per_search=hits_per_search,
+                max_evidence_per_question=max_evidence_per_question,
+                history=history,
+                prior_signatures=frozenset(signatures),
             )
         except Exception as exc:
             errors.append(f"controller: {type(exc).__name__}: {exc}")
             stop_reason = "agent_error"
             break
 
-        actions = response.output.actions
+        actions = proposal.decision.actions
+        validations = proposal.validations
         if any(action.tool == "finish" for action in actions):
-            if len(actions) != 1 or actions[0].tool != "finish":
-                outcome = AgentActionOutcome(
+            outcomes = tuple(
+                AgentActionOutcome(
                     round_number=round_number,
-                    action=actions[0],
-                    status="rejected",
-                    errors=("finish must be the only action in a turn",),
+                    action=action,
+                    status="completed" if validation.accepted else "rejected",
+                    errors=validation.errors,
                 )
-                turns.append(AgentRetrievalTurn(
-                    round_number=round_number,
-                    assessment=response.output.assessment,
-                    receipt=response.receipt,
-                    outcomes=(outcome,),
-                ))
-                errors.extend(outcome.errors)
-                continue
-            finish_errors = validate_action(
-                actions[0],
-                query_ids=query_id_set,
-                available_specifications=available_specs,
-                ledger=ledger,
-            )
-            outcome = AgentActionOutcome(
-                round_number=round_number,
-                action=actions[0],
-                status="rejected" if finish_errors else "completed",
-                errors=finish_errors,
+                for action, validation in zip(
+                    actions,
+                    validations,
+                    strict=True,
+                )
             )
             turns.append(AgentRetrievalTurn(
                 round_number=round_number,
-                assessment=response.output.assessment,
-                receipt=response.receipt,
-                outcomes=(outcome,),
+                assessment=proposal.decision.assessment,
+                receipt=proposal.receipt,
+                outcomes=outcomes,
             ))
-            if finish_errors:
-                errors.extend(finish_errors)
+            turn_errors = tuple(
+                error for validation in validations for error in validation.errors
+            )
+            if turn_errors:
+                errors.extend(turn_errors)
                 continue
-            stop_reason = "agent_finish"
-            break
+            if len(actions) == 1 and actions[0].tool == "finish":
+                stop_reason = "agent_finish"
+                break
+            continue
 
         outcomes: list[AgentActionOutcome] = []
-        for action in actions:
-            action_errors = list(validate_action(
-                action,
-                query_ids=query_id_set,
-                available_specifications=available_specs,
-                ledger=ledger,
-            ))
-            signature = action_signature(action)
-            if signature in signatures:
-                action_errors.append("duplicate prior tool call")
-            if (
-                action.tool not in {"finish", "expand_same_section"}
-                and search_used >= max_search_actions
-            ):
-                action_errors.append("search action budget exhausted")
-            if (
-                action.tool == "expand_same_section"
-                and expansion_used >= max_expansion_actions
-            ):
-                action_errors.append("expansion action budget exhausted")
-            if search_used + expansion_used >= total_action_limit:
-                action_errors.append("total tool action budget exhausted")
-            if action_errors:
+        for action, validation in zip(actions, validations, strict=True):
+            if not validation.accepted:
                 outcome = AgentActionOutcome(
                     round_number=round_number,
                     action=action,
                     status="rejected",
-                    errors=tuple(action_errors),
+                    errors=validation.errors,
                 )
                 outcomes.append(outcome)
-                errors.extend(action_errors)
+                errors.extend(validation.errors)
                 continue
 
-            signatures.add(signature)
+            signatures.add(action_signature(action))
             if action.tool == "expand_same_section":
                 expansion_used += 1
             else:
@@ -459,8 +418,8 @@ def run_agentic_retrieval_loop(
 
         turns.append(AgentRetrievalTurn(
             round_number=round_number,
-            assessment=response.output.assessment,
-            receipt=response.receipt,
+            assessment=proposal.decision.assessment,
+            receipt=proposal.receipt,
             outcomes=tuple(outcomes),
         ))
         if (

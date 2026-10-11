@@ -15,15 +15,20 @@ from pydantic import TypeAdapter
 from specrag.orchestration.application import (
     PlanningApplication,
     ResearchApplication,
+    ResearcherPlanningApplication,
     RoutingApplication,
     build_planning_application,
     build_research_application,
+    build_researcher_planning_application,
     build_routing_application,
 )
 from specrag.config import REPO_ROOT
 from specrag.models import ResearchBudget, ResearchRouteDecision
 from specrag.orchestration import ResearchState
-from specrag.prompts import PLANNER_PROMPT_VERSION
+from specrag.prompts import (
+    PLANNER_PROMPT_VERSION,
+    RESEARCHER_CONTROLLER_PROMPT_VERSION,
+)
 
 
 QUESTION_SET = REPO_ROOT / "data" / "QA" / "questions.jsonl"
@@ -119,6 +124,16 @@ def _write_json(path: Path, value: object) -> None:
         json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _planner_metadata(response) -> dict[str, object]:
+    receipt = response.receipt
+    return {
+        "mode": response.mode,
+        "contract_version": response.contract_version,
+        "prompt_version": response.prompt_version,
+        "receipt": receipt.model_dump(mode="json") if receipt else None,
+    }
 
 
 def run_baseline(
@@ -244,16 +259,7 @@ def run_planning(
                 "finished_at": datetime.now(UTC).isoformat(),
                 "route_source": route_source,
                 "route": route.model_dump(mode="json"),
-                "planner": {
-                    "mode": planning_response.mode,
-                    "contract_version": planning_response.contract_version,
-                    "prompt_version": planning_response.prompt_version,
-                    "receipt": (
-                        planning_response.receipt.model_dump(mode="json")
-                        if planning_response.receipt is not None
-                        else None
-                    ),
-                },
+                "planner": _planner_metadata(planning_response),
                 "plan": plan.model_dump(mode="json"),
             }
             summary = {
@@ -383,6 +389,104 @@ def run_routing(
     return 1 if any(item["status"] == "error" for item in summaries) else 0
 
 
+def run_researcher_planning(
+    questions: tuple[BaselineQuestion, ...],
+    *,
+    output_directory: Path,
+    route_labels: dict[str, CuratedRouteLabel],
+    application: ResearcherPlanningApplication | None = None,
+    release: int = 17,
+) -> int:
+    """Generate and validate first-turn tool calls without executing them."""
+
+    app = application or build_researcher_planning_application(release=release)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    summaries: list[dict[str, object]] = []
+    for question in questions:
+        started = datetime.now(UTC)
+        try:
+            label = route_labels[question.question_id]
+            route = ResearchRouteDecision(
+                route=label.route,
+                complexity=label.difficulty,
+                rationale="Reviewed development label for Researcher inspection.",
+            )
+            response = app.run_with_route(
+                research_id=question.question_id,
+                question=question.question,
+                route=route,
+            )
+            planning = response.planning
+            first_turns = [
+                {
+                    "task_id": task_id,
+                    "proposal": proposal.model_dump(mode="json"),
+                }
+                for task_id, proposal in response.first_turns
+            ]
+            artifact = {
+                "schema_version": "specrag.researcher-planning-run/v1",
+                "question": {
+                    "id": question.question_id,
+                    "text": question.question,
+                },
+                "started_at": started.isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "route_source": "reviewed_label",
+                "route": route.model_dump(mode="json"),
+                "retrieval_scope": {"release": app.release},
+                "planner": _planner_metadata(planning),
+                "plan": planning.output.model_dump(mode="json"),
+                "researcher": {
+                    "prompt_version": RESEARCHER_CONTROLLER_PROMPT_VERSION,
+                    "execution_performed": False,
+                    "first_turns": first_turns,
+                    "deferred_task_ids": list(response.deferred_task_ids),
+                },
+            }
+            accepted = sum(p.accepted for _, p in response.first_turns)
+            summary = {
+                "id": question.question_id,
+                "status": "completed",
+                "complexity": route.complexity,
+                "task_count": len(planning.output.tasks),
+                "planned_ready_tasks": len(response.first_turns),
+                "accepted_first_turns": accepted,
+                "deferred_tasks": len(response.deferred_task_ids),
+            }
+        except Exception as exc:  # noqa: BLE001 - persist bounded run failure
+            artifact = {
+                "schema_version": "specrag.researcher-planning-run/v1",
+                "question": {
+                    "id": question.question_id,
+                    "text": question.question,
+                },
+                "retrieval_scope": {"release": app.release},
+                "started_at": started.isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "error": f"{type(exc).__name__}: {str(exc)[:1600]}",
+            }
+            summary = {
+                "id": question.question_id,
+                "status": "error",
+                "error_type": type(exc).__name__,
+            }
+        _write_json(output_directory / f"{question.question_id}.json", artifact)
+        summaries.append(summary)
+        print(json.dumps(summary, ensure_ascii=False))
+
+    _write_json(
+        output_directory / "summary.json",
+        {
+            "schema_version": "specrag.researcher-planning-summary/v1",
+            "researcher_prompt_version": RESEARCHER_CONTROLLER_PROMPT_VERSION,
+            "execution_performed": False,
+            "questions": summaries,
+        },
+    )
+    return 1 if any(item["status"] == "error" for item in summaries) else 0
+
+
 def _add_question_selection(parser: argparse.ArgumentParser) -> None:
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--id", dest="identifiers", action="append")
@@ -404,6 +508,11 @@ def _parser() -> argparse.ArgumentParser:
         help="plan reviewed questions without running retrieval",
     )
     _add_question_selection(planning)
+    researcher_planning = commands.add_parser(
+        "research-plan", help="inspect Researcher calls without executing them"
+    )
+    _add_question_selection(researcher_planning)
+    researcher_planning.add_argument("--release", type=int, default=17)
     baseline = commands.add_parser(
         "baseline",
         help="run curated development questions through the real workflow",
@@ -443,6 +552,17 @@ def main(argv: list[str] | None = None) -> int:
                 output_directory=output_directory,
                 route_labels=_load_route_labels(),
             )
+        if args.command == "research-plan":
+            output_directory = args.output_dir or (
+                DEFAULT_RUN_ROOT / "researcher-planning"
+                / f"release-{args.release}" / timestamp
+            )
+            return run_researcher_planning(
+                questions,
+                output_directory=output_directory,
+                route_labels=_load_route_labels(),
+                release=args.release,
+            )
         if args.command != "baseline":
             raise AssertionError(f"unhandled command: {args.command}")
         output_directory = args.output_dir or (
@@ -474,6 +594,7 @@ __all__ = [
     "main",
     "run_baseline",
     "run_planning",
+    "run_researcher_planning",
     "run_routing",
     "select_baseline_questions",
 ]

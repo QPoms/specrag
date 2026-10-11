@@ -98,12 +98,14 @@ Cross-version research compares isolated Release-scoped runs. Explicit latest,
 exact-version, and mixed-version scopes are also supported and retain each
 source document's exact identity.
 
-The supported product CLI now has staged `route`, `plan`, and `baseline`
-commands. `specrag route` selects `single_task/simple` or
+The supported product CLI now has staged `route`, `plan`, `research-plan`, and
+`baseline` commands. `specrag route` selects `single_task/simple` or
 `decompose/complex` and records one concise rationale; `specrag plan` uses the
 reviewed development labels to isolate and inspect bounded task decomposition
-without rerunning Router; `specrag baseline` continues through retrieval and evidence.
-Release is a `baseline` retrieval parameter, not a Router/Planner input. All
+without rerunning Router; `specrag research-plan` generates and validates each
+dependency-ready task's first tool calls but does not build an index or execute
+retrieval; `specrag baseline` continues through retrieval and evidence. Release
+is a Researcher/baseline retrieval parameter, not a Router/Planner input. All
 commands select individual questions with `--id` or the complete 50-question
 development set with `--all`. LangGraph is restricted to
 `specrag/orchestration/`; domain, retrieval, evidence, memory, and evaluation

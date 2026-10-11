@@ -72,6 +72,11 @@ not a formal evaluation framework.
   tool capabilities, active corpus scope, dependency context, and budget; it
   generates the initial queries and executable calls. Later rounds observe
   evidence and adapt the next calls within the same bounded loop.
+- [x] Add a planning-only Researcher boundary and `research-plan` CLI stage.
+  Persist the exact model input, proposed calls, prompt/model receipt, and
+  trusted per-action validation without building an index or invoking a tool.
+  Plan dependency-ready tasks independently and record blocked dependency tasks
+  as deferred.
 - [ ] Wire the R17 retriever, Tool Registry, structured model adapters, source
   validation, sufficiency, conflict detection, and grounded synthesis.
 - [x] Add one baseline command that selects only development records and writes
@@ -179,7 +184,16 @@ not a formal evaluation framework.
   complex questions and inspect task boundaries and dependencies. All 34
   simple questions produced one deterministic task; all 16 complex questions
   passed the frozen v1.3 contract.
-- [ ] Run one simple development question.
-- [ ] Run one complex development question.
+- [ ] Run planning-only inspection on four to six representative simple
+  development questions and review query coverage, tool choice, parameters,
+  scope, duplication, and expected evidence.
+- [ ] After accepting those plans, execute the exact frozen calls and inspect
+  retrieval results before allowing a new model proposal.
+- [ ] Run planning-only inspection on three to five complex questions, including
+  independent tasks and dependency-bearing cases; defer downstream tasks until
+  validated predecessor evidence exists.
+- [ ] Run planning-only inspection on all 50 development questions after the
+  simple and complex gates pass.
 - [ ] Inspect failure modes and adjust only the assembly contract when needed.
-- [ ] Run the remaining development questions after the two-case gate passes.
+- [ ] Run the full end-to-end development set only after planning and retrieval
+  quality are separately accepted.

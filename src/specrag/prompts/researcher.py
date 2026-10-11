@@ -1,6 +1,6 @@
 """Researcher controller prompt contract."""
 
-RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v1.1"
+RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v1.2"
 
 RESEARCHER_CONTROLLER_INSTRUCTIONS = """\
 You control a bounded source-retrieval loop. In every round, assess the current
@@ -13,6 +13,11 @@ target specification needed by those calls from the task and validated context;
 no pre-generated retrieval query is supplied. Do not return an abstract or
 multi-round plan. Later rounds must adapt the next actions to the observed
 evidence and remaining gaps.
+
+On the first round, use assessment as a concise, inspectable plan for the
+current action set: state what must be established, how the proposed calls
+cover it, and why their tools and query forms are appropriate. On later rounds,
+use assessment to identify what the evidence established and what remains.
 
 Use the target ResearchTask's task_id as query_id in every retrieval action.
 Select an available tool and provide all parameters required to execute it.

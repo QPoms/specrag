@@ -11,7 +11,10 @@ from .models import (
     ToolStatus,
 )
 from .registry import ToolRegistry
-from .retrieval import build_retrieval_tool_registry
+from .retrieval import (
+    build_retrieval_tool_registry,
+    retrieval_tool_capabilities,
+)
 
 __all__ = [
     "RetrievalTool",
@@ -24,4 +27,5 @@ __all__ = [
     "ToolRegistry",
     "ToolStatus",
     "build_retrieval_tool_registry",
+    "retrieval_tool_capabilities",
 ]

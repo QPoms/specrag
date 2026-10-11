@@ -78,7 +78,7 @@ research task
 
 All migrated modules import successfully. The canonical quality gate now
 passes the structure contract, validates every curated question's local source
-hash, R17 version, line locator, and exact excerpt, and passes all 81 focused
+hash, R17 version, line locator, and exact excerpt, and passes all 85 focused
 tests.
 
 The first behavioral refactor is complete. Corpus discovery/chunking, immutable
@@ -136,13 +136,22 @@ tools are verified independently from the agent loop.
 
 The Researcher no longer prepares a retrieval plan before its bounded loop,
 either through a separate model call or through deterministic anchor, facet,
-and query generation. The first `researcher-controller/v1.1` round receives
+and query generation. The first `researcher-controller/v1.2` round receives
 the Planner's `ResearchTask` items directly, together with the registered tool
 capabilities, active corpus scope, dependency context, and budget. It generates
 the initial query strings and executable tool calls itself. Subsequent rounds
 use the same controller contract to observe the evidence ledger and choose only
 the next bounded actions. The versioned prompt text lives under
 `specrag.prompts`.
+
+A planning-only Researcher boundary now exposes that first turn before any
+retrieval execution. It records the exact task/context/tool/budget payload, the
+model decision and receipt, and per-action trusted validation. The
+`research-plan` CLI uses reviewed Planner labels, discovers only the selected
+corpus document identities, and does not build retrieval indexes or invoke a
+tool. Independent dependency-ready tasks receive separate proposals; tasks
+whose dependencies have not produced validated evidence are recorded as
+deferred rather than planned prematurely.
 
 The LangGraph runtime lives under `specrag/orchestration/`.
 It defines one unified `ResearchState`, injected handlers for Router, Planner,

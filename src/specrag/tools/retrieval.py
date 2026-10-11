@@ -356,6 +356,20 @@ class RerankTool(_RetrieverTool):
         )
 
 
+def retrieval_tool_capabilities() -> tuple[ToolCapability, ...]:
+    """Describe the executable retrieval tools without constructing indexes."""
+
+    capabilities = (
+        KeywordSearchTool.capability,
+        SemanticSearchTool.capability,
+        HybridSearchTool.capability,
+        RerankTool.capability,
+        ClauseLookupTool.capability,
+        ExpandSameSectionTool.capability,
+    )
+    return tuple(sorted(capabilities, key=lambda item: item.name))
+
+
 def build_retrieval_tool_registry(
     retriever: HybridMarkdownRetriever,
     *,
@@ -382,4 +396,5 @@ __all__ = [
     "RerankTool",
     "SemanticSearchTool",
     "build_retrieval_tool_registry",
+    "retrieval_tool_capabilities",
 ]
