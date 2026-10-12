@@ -10,9 +10,7 @@ from .knowledge import (
 from .research import (
     CandidateEvidence,
     EvidenceBackedClaim,
-    EvidenceConflict,
     EvidenceSynthesis,
-    EvidenceSupportAssessment,
     ResearchBudget,
     ResearchGap,
     ResearchPlan,
@@ -31,9 +29,7 @@ from .research import (
 __all__ = [
     "CandidateEvidence",
     "EvidenceBackedClaim",
-    "EvidenceConflict",
     "EvidenceSynthesis",
-    "EvidenceSupportAssessment",
     "ResearchBudget",
     "ResearchGap",
     "ResearchPlan",

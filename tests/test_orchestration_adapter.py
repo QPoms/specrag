@@ -64,11 +64,10 @@ def _execution() -> AgenticRetrievalExecution:
         query_id="Q1",
         lexical_query="registration",
         semantic_query="registration procedure",
+        hypothetical_document="",
         target_specifications=("24.501",),
         seed_evidence_ids=(),
         max_results=4,
-        rationale="Find the normative procedure.",
-        expected_evidence="A directly cited registration requirement.",
     )
     outcome = AgentActionOutcome(
         round_number=1,
@@ -103,7 +102,7 @@ def _execution() -> AgenticRetrievalExecution:
     )
     return AgenticRetrievalExecution(
         status="completed",
-        stop_reason="agent_finish",
+        stop_reason="submitted_for_validation",
         rounds_used=1,
         search_actions_used=1,
         expansion_actions_used=0,
@@ -180,7 +179,7 @@ def test_researcher_execution_preserves_provenance_and_accounting() -> None:
     assert candidate.document_sha256 == "A" * 64
     assert update["tool_calls"][0].evidence_ids == (candidate.evidence_id,)
     assert update["budget"].tool_calls_used == 1
-    assert update["last_researcher_stop_reason"] == "agent_finish"
+    assert update["last_researcher_stop_reason"] == "submitted_for_validation"
 
 
 def test_single_researcher_handler_runs_one_dependency_ready_task() -> None:
@@ -340,7 +339,7 @@ def test_single_researcher_handler_runs_inside_state_graph() -> None:
             "research_tasks": plan.tasks,
         },
         researcher=SingleResearcherHandler(FakeService()),
-        validator=lambda state: {},
+        source_validator=lambda state: {},
         sufficiency_judge=lambda state: {"evidence_sufficient": True},
         replanner=lambda state: {},
         synthesizer=lambda state: {
@@ -406,7 +405,7 @@ def test_insufficient_evidence_routes_gap_back_to_researcher() -> None:
             "research_tasks": plan.tasks,
         },
         researcher=SingleResearcherHandler(service),
-        validator=lambda state: {},
+        source_validator=lambda state: {},
         sufficiency_judge=judge,
         replanner=lambda state: {},
         synthesizer=lambda state: {

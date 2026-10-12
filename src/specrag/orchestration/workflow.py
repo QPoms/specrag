@@ -13,7 +13,6 @@ from langgraph.graph import END, START, StateGraph
 
 from specrag.models import (
     CandidateEvidence,
-    EvidenceConflict,
     EvidenceSynthesis,
     ResearchBudget,
     ResearchGap,
@@ -36,7 +35,6 @@ NodeHandler = Callable[[ResearchState], StateUpdate]
 
 _CHECKPOINT_MODEL_ALLOWLIST = (
     CandidateEvidence,
-    EvidenceConflict,
     EvidenceSynthesis,
     ResearchBudget,
     ResearchGap,
@@ -65,7 +63,7 @@ class ResearchNodeHandlers:
     router: NodeHandler
     planner: NodeHandler
     researcher: NodeHandler
-    validator: NodeHandler
+    source_validator: NodeHandler
     sufficiency_judge: NodeHandler
     replanner: NodeHandler
     synthesizer: NodeHandler
@@ -209,7 +207,10 @@ def build_single_research_workflow(
     builder.add_node("router", _node(handlers.router))
     builder.add_node("planner", _node(handlers.planner))
     builder.add_node("researcher", _researcher_node(handlers.researcher))
-    builder.add_node("validator", _node(handlers.validator))
+    builder.add_node(
+        "source_validator",
+        _node(handlers.source_validator),
+    )
     builder.add_node("sufficiency_judge", _node(handlers.sufficiency_judge))
     builder.add_node("budget_guard", _budget_guard)
     builder.add_node("replanner", _replanner_node(handlers.replanner))
@@ -218,8 +219,8 @@ def build_single_research_workflow(
     builder.add_edge(START, "router")
     builder.add_conditional_edges("router", _route_after_router)
     builder.add_edge("planner", "researcher")
-    builder.add_edge("researcher", "validator")
-    builder.add_edge("validator", "sufficiency_judge")
+    builder.add_edge("researcher", "source_validator")
+    builder.add_edge("source_validator", "sufficiency_judge")
     builder.add_edge("sufficiency_judge", "budget_guard")
     builder.add_conditional_edges("budget_guard", _route_after_guard)
     builder.add_edge("replanner", "researcher")

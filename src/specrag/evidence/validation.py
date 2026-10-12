@@ -7,29 +7,17 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
-from typing import Protocol
 
 from specrag.models import (
     CandidateEvidence,
-    EvidenceSupportAssessment,
     ResearchTask,
     SourceValidationResult,
-    ValidatedEvidence,
 )
 
 
-class EvidenceSupportAssessor(Protocol):
-    def assess(
-        self,
-        task: ResearchTask,
-        evidence: CandidateEvidence,
-    ) -> EvidenceSupportAssessment: ...
-
-
 @dataclass(frozen=True)
-class EvidenceValidationBatch:
+class SourceValidationBatch:
     source_validations: tuple[SourceValidationResult, ...]
-    validated_evidence: tuple[ValidatedEvidence, ...]
 
 
 def _normalized_text(value: str) -> str:
@@ -146,65 +134,35 @@ class SourceEvidenceValidator:
         )
 
 
-class EvidenceValidationService:
+class SourceValidationService:
     def __init__(
         self,
         source_validator: SourceEvidenceValidator,
-        support_assessor: EvidenceSupportAssessor,
     ) -> None:
         self.source_validator = source_validator
-        self.support_assessor = support_assessor
 
     def validate(
         self,
         tasks: tuple[ResearchTask, ...],
         candidates: tuple[CandidateEvidence, ...],
-    ) -> EvidenceValidationBatch:
-        task_by_id = {task.task_id: task for task in tasks}
+    ) -> SourceValidationBatch:
+        task_ids = {task.task_id for task in tasks}
         source_results: list[SourceValidationResult] = []
-        validated: list[ValidatedEvidence] = []
         for candidate in deduplicate_candidates(candidates):
-            try:
-                task = task_by_id[candidate.task_id]
-            except KeyError as exc:
+            if candidate.task_id not in task_ids:
                 raise ValueError(
                     f"candidate references unknown task: {candidate.task_id}"
-                ) from exc
+                )
             source_result = self.source_validator.validate(candidate)
             source_results.append(source_result)
-            if not source_result.valid:
-                validated.append(ValidatedEvidence(
-                    evidence_id=candidate.evidence_id,
-                    task_id=candidate.task_id,
-                    source_valid=False,
-                    supports_target=False,
-                    validation_status="rejected",
-                    rationale="; ".join(source_result.errors),
-                ))
-                continue
-            assessment = self.support_assessor.assess(task, candidate)
-            if assessment.evidence_id != candidate.evidence_id:
-                raise ValueError(
-                    "support assessment returned a mismatched evidence ID"
-                )
-            validated.append(ValidatedEvidence(
-                evidence_id=candidate.evidence_id,
-                task_id=candidate.task_id,
-                source_valid=True,
-                supports_target=assessment.status == "supported",
-                validation_status=assessment.status,
-                rationale=assessment.rationale,
-            ))
-        return EvidenceValidationBatch(
+        return SourceValidationBatch(
             source_validations=tuple(source_results),
-            validated_evidence=tuple(validated),
         )
 
 
 __all__ = [
-    "EvidenceSupportAssessor",
-    "EvidenceValidationBatch",
-    "EvidenceValidationService",
+    "SourceValidationBatch",
+    "SourceValidationService",
     "SourceEvidenceValidator",
     "deduplicate_candidates",
 ]

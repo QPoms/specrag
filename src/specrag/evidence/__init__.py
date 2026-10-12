@@ -1,11 +1,9 @@
 """Framework-independent evidence validation and sufficiency services."""
 
-from .conflicts import EvidenceConflictAssessor, EvidenceConflictService
 from .validation import (
-    EvidenceSupportAssessor,
-    EvidenceValidationBatch,
-    EvidenceValidationService,
     SourceEvidenceValidator,
+    SourceValidationBatch,
+    SourceValidationService,
     deduplicate_candidates,
 )
 from .sufficiency import (
@@ -16,16 +14,13 @@ from .sufficiency import (
 from .synthesis import EvidenceSynthesisGenerator, EvidenceSynthesisService
 
 __all__ = [
-    "EvidenceSupportAssessor",
-    "EvidenceConflictAssessor",
-    "EvidenceConflictService",
     "EvidenceSufficiencyBatch",
     "EvidenceSufficiencyService",
     "EvidenceSynthesisGenerator",
     "EvidenceSynthesisService",
-    "EvidenceValidationBatch",
-    "EvidenceValidationService",
     "SourceEvidenceValidator",
+    "SourceValidationBatch",
+    "SourceValidationService",
     "TaskSufficiencyAssessor",
     "deduplicate_candidates",
 ]

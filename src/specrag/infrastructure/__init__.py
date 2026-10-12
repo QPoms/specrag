@@ -1,8 +1,6 @@
 """Adapters for external model and runtime services."""
 
 from .research_assessors import (
-    StructuredEvidenceConflictAssessor,
-    StructuredEvidenceSupportAssessor,
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
@@ -16,8 +14,6 @@ from .research_planning import (
 )
 
 __all__ = [
-    "StructuredEvidenceConflictAssessor",
-    "StructuredEvidenceSupportAssessor",
     "StructuredEvidenceSynthesisGenerator",
     "StructuredTaskSufficiencyAssessor",
     "InMemoryKnowledgeStore",

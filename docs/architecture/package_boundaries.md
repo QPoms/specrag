@@ -85,6 +85,11 @@ must preserve each source document's exact version and Release identity.
 The first orchestration implementation is `orchestration/workflow.py`. It owns
 the `StateGraph`, conditional edges, budget guard, checkpointer, and recovery
 API. Node business behavior is supplied through `ResearchNodeHandlers`.
+The evidence path has one deterministic `source_validator` node followed by
+one model-backed `sufficiency_judge`: source validation checks provenance and
+exact locators, while the judge alone selects supporting evidence and decides
+task completeness. A Researcher submission is only a handoff to these nodes,
+not a sufficiency verdict.
 Framework-independent workflow contracts live in `models/research.py`, and the
 tool protocol remains under `tools/`. `memory/service.py` owns validated-only
 distillation, search, supersession, conflict, and invalidation rules; its JSONL

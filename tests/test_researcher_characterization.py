@@ -6,8 +6,11 @@ from specrag.agents.researcher import (
     AgentRetrievalAction,
     AgentRetrievalDecision,
     RegistryResearcherService,
+    build_retrieval_tool_request,
     run_agentic_retrieval_loop,
 )
+from specrag.agents.models import AgentEvidenceSelection
+from specrag.agents.state import EvidenceLedger
 from specrag.config import AppConfig, RetrievalCfg
 from specrag.infrastructure.structured_agent import (
     CodexAgentReceipt,
@@ -25,6 +28,7 @@ from specrag.retrieval.models import CorpusScope, SourceDocument
 from specrag.tools import (
     RetrievalToolRequest,
     RetrievalToolResult,
+    ToolEvidence,
     ToolCapability,
     ToolRegistry,
 )
@@ -44,18 +48,17 @@ def _receipt() -> CodexAgentReceipt:
 
 
 def _action(tool: str, *, query_id: str = "") -> AgentRetrievalAction:
-    is_finish = tool == "finish"
+    is_submission = tool == "submit_for_validation"
     return AgentRetrievalAction(
         action_id=f"ACTION-{tool}",
         tool=tool,
         query_id=query_id,
-        lexical_query="" if is_finish else "registration",
-        semantic_query="" if is_finish else "registration procedure",
+        lexical_query="" if is_submission else "registration",
+        semantic_query="" if is_submission else "registration procedure",
+        hypothetical_document="",
         target_specifications=(),
         seed_evidence_ids=(),
         max_results=1,
-        rationale="characterization",
-        expected_evidence="normative text",
     )
 
 
@@ -121,6 +124,39 @@ class _NoHitsHybridTool:
         )
 
 
+class _EvidenceHybridTool(_NoHitsHybridTool):
+    def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
+        self.requests.append(request)
+        evidence = tuple(
+            ToolEvidence(
+                evidence_id=f"RAW-{index}",
+                chunk_id=f"24.501:17.1.0:chunk-{index}",
+                rank=index,
+                match_kind="hybrid_search",
+                score=1.0 / index,
+                score_kind="rrf",
+                specification="24.501",
+                release=17,
+                version="17.1.0",
+                source_path="data/3gpp/24.501/v17.1.0/source.md",
+                document_sha256="A" * 64,
+                heading_path=(f"5.{index} Registration",),
+                line_start=index,
+                line_end=index,
+                excerpt=f"Candidate evidence {index}.",
+            )
+            for index in (1, 2)
+        )
+        return RetrievalToolResult(
+            request_id=request.request_id,
+            query_id=request.query_id,
+            tool_name=self.name,
+            status="completed",
+            corpus_scope=CorpusScope(release=17),
+            evidence=evidence,
+        )
+
+
 def _config() -> AppConfig:
     return AppConfig(retrieval=RetrievalCfg(
         embedding_model="test",
@@ -129,10 +165,10 @@ def _config() -> AppConfig:
     ))
 
 
-def test_agent_finish_records_explicit_stop_reason_without_using_tools() -> None:
+def test_submission_records_explicit_stop_reason_without_using_tools() -> None:
     controller = _SequenceController(AgentRetrievalDecision(
         assessment="Evidence is sufficient.",
-        actions=(_action("finish"),),
+        actions=(_action("submit_for_validation"),),
     ))
 
     result = run_agentic_retrieval_loop(
@@ -142,17 +178,39 @@ def test_agent_finish_records_explicit_stop_reason_without_using_tools() -> None
         app_config=_config(),
     )
 
-    assert result.stop_reason == "agent_finish"
+    assert result.stop_reason == "submitted_for_validation"
     assert result.rounds_used == 1
     assert result.search_actions_used == 0
     assert result.expansion_actions_used == 0
     assert result.status == "unavailable"
 
 
+def test_hyde_action_maps_hypothetical_document_into_tool_request() -> None:
+    action = _action("semantic_search", query_id="Q1").model_copy(update={
+        "tool": "hyde_search",
+        "lexical_query": "",
+        "semantic_query": "",
+        "hypothetical_document": "The UE shall perform the required action.",
+    })
+
+    request = build_retrieval_tool_request(
+        action,
+        round_number=1,
+        ledger=EvidenceLedger(("Q1",), max_per_question=4),
+        result_limit=5,
+    )
+
+    assert request.query == ""
+    assert request.semantic_query is None
+    assert request.hypothetical_document == (
+        "The UE shall perform the required action."
+    )
+
+
 def test_first_controller_round_is_the_only_model_planning_entry() -> None:
     controller = _SequenceController(AgentRetrievalDecision(
         assessment="Plan the first executable retrieval actions.",
-        actions=(_action("finish"),),
+        actions=(_action("submit_for_validation"),),
     ))
     service = RegistryResearcherService(
         controller_agent=StructuredResearcherController(controller),
@@ -166,12 +224,14 @@ def test_first_controller_round_is_the_only_model_planning_entry() -> None:
         objective="Establish the normative procedure.",
     ),))
 
-    assert execution.stop_reason == "agent_finish"
+    assert execution.stop_reason == "submitted_for_validation"
     assert mapping == {"T1": "T1"}
     assert len(controller.calls) == 1
     first_payload = controller.calls[0]["input_payload"]
     assert first_payload["history"] == []
-    assert first_payload["evidence_catalog"] == []
+    assert first_payload["active_evidence"] == []
+    assert first_payload["pending_candidates"] == []
+    assert first_payload["inactive_candidates"] == []
     assert first_payload["available_tools"]
     assert first_payload["research_tasks"] == [{
         "task_id": "T1",
@@ -198,7 +258,7 @@ def test_first_controller_round_can_emit_and_execute_a_tool_call() -> None:
         ),
         AgentRetrievalDecision(
             assessment="No hits remain within this bounded test.",
-            actions=(_action("finish"),),
+            actions=(_action("submit_for_validation"),),
         ),
     )
     registry = ToolRegistry()
@@ -217,17 +277,62 @@ def test_first_controller_round_can_emit_and_execute_a_tool_call() -> None:
     assert tool.requests[0].query_id == "Q1"
     assert result.turns[0].outcomes[0].status == "no_hits"
     assert result.search_actions_used == 1
-    assert result.stop_reason == "agent_finish"
+    assert result.stop_reason == "submitted_for_validation"
     assert controller.calls[0]["input_payload"]["history"] == []
     assert controller.calls[1]["input_payload"]["history"][0][
         "tool"
     ] == "hybrid_search"
 
 
+def test_budget_exhaustion_gets_one_final_evidence_selection_turn() -> None:
+    controller = _SequenceController(
+        AgentRetrievalDecision(
+            assessment="Retrieve candidate passages.",
+            actions=(_action("hybrid_search", query_id="Q1"),),
+        ),
+        AgentRetrievalDecision(
+            assessment="Retain the direct passage and submit it.",
+            evidence_selections=(AgentEvidenceSelection(
+                query_id="Q1",
+                retained_evidence_ids=("E-Q1:2",),
+            ),),
+            actions=(_action("submit_for_validation"),),
+        ),
+    )
+    registry = ToolRegistry()
+    tool = _EvidenceHybridTool()
+    registry.register(tool)
+
+    result = run_agentic_retrieval_loop(
+        _tasks(),
+        controller_agent=StructuredResearcherController(controller),
+        retriever=_retriever(),
+        app_config=_config(),
+        tool_registry=registry,
+        max_rounds=1,
+        max_total_actions=1,
+        max_evidence_per_question=1,
+    )
+
+    assert result.stop_reason == "submitted_for_validation"
+    assert result.rounds_used == 1
+    assert tuple(turn.phase for turn in result.turns) == (
+        "retrieval",
+        "finalization",
+    )
+    assert controller.calls[1]["input_payload"]["execution_mode"] == (
+        "finalization_only"
+    )
+    assert len(controller.calls[1]["input_payload"]["pending_candidates"]) == 2
+    assert result.evidence_execution.tasks[0].hits[0].hit_id == "E-Q1:2"
+    assert len(result.evidence_execution.tasks[0].hits) == 1
+    assert len(result.candidate_evidence_execution.tasks[0].hits) == 2
+
+
 def test_controller_receives_and_is_instructed_to_use_dependency_context() -> None:
     controller = _SequenceController(AgentRetrievalDecision(
         assessment="Use the predecessor finding to scope the next search.",
-        actions=(_action("finish"),),
+        actions=(_action("submit_for_validation"),),
     ))
     dependency_context = ({
         "task_id": "T1",

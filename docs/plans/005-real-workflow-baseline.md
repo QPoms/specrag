@@ -184,14 +184,87 @@ not a formal evaluation framework.
   complex questions and inspect task boundaries and dependencies. All 34
   simple questions produced one deterministic task; all 16 complex questions
   passed the frozen v1.3 contract.
-- [ ] Run planning-only inspection on four to six representative simple
-  development questions and review query coverage, tool choice, parameters,
-  scope, duplication, and expected evidence.
-- [ ] After accepting those plans, execute the exact frozen calls and inspect
-  retrieval results before allowing a new model proposal.
+- [x] Replace the first-turn Researcher action contract with
+  `researcher-controller/v1.4`: remove per-action rationale and
+  expected-evidence prose, require direct tool coverage for every substantive
+  answer unit, clarify specification scoping and tool-selection boundaries,
+  and allow any number of actions that fits the explicit worker budget.
+- [x] Add `hyde_search` as a thin retrieval tool. The controller supplies an
+  untrusted hypothetical normative passage, the tool embeds it to retrieve real
+  source chunks, and only those source chunks may become evidence.
+- [x] Reject the v1.3 diagnostic first-turn run after one plan guessed an
+  unavailable specification and another incorrectly narrowed a security rule.
+  V1.4 binds a specification only when its exact number appears in the task or
+  validated shared context, avoids keyword calls that merely repeat a hybrid
+  anchor, and separates answer units likely governed by different rules.
+- [x] Remove separate search and section-expansion quotas from the Researcher.
+  Every executed retrieval capability now consumes the same bounded total tool
+  budget across all controller rounds; per-kind counts remain audit metadata.
+- [x] Run planning-only inspection on ten representative simple development
+  questions. V1.4 produced 23 actions and all ten first turns passed trusted
+  validation. Because none of the questions explicitly names a TS number, all
+  calls correctly left specification scope open across the active Release.
+- [x] Execute the exact 23 frozen calls without a second model round. All calls
+  completed; strict source-path, document-hash, and line-overlap scoring found
+  10/12 evidence targets and complete target coverage for 8/10 questions.
+  Question 003 selected a neighboring sidelink-RLF procedure, while question
+  035 found the resume rule but not the separate 33.501 Annex A.10 derivation.
+- [x] Run the complete bounded Researcher loop for simple questions 003, 035,
+  and 044. Question 035 covered both targets; 003 stopped at an answer-bearing
+  passage that delegated SRB detail to clause 5.8.9.1a.3; 044 recognized its
+  refusal-path gap but same-section expansion could not reach the adjacent
+  unsuccessful-operation subsection before the action budget was exhausted.
+- [x] Implement `researcher-controller/v1.5` without changing the rejected
+  closure-assessment schema. Follow only answer-bearing normative references,
+  permit clause identifiers and source specifications copied from trusted
+  evidence, reject ungrounded clause/specification scope, and replace the old
+  same-section capability with bounded source-context expansion across
+  immediately adjacent sibling subsections.
+- [x] Run the complete v1.5 loop on the same ten simple questions. All ten
+  covered every annotated target (12/12 total); 044 reached both adjacent
+  unsuccessful-operation subsections through source-context expansion, and no
+  tool action was rejected or unavailable. Question 003 collected complete
+  target evidence but ended at the three-round limit after its final expansion.
+- [x] Run a fresh complete v1.5 loop on all 34 simple questions. It covered all
+  targets for 32/34 questions and 36/38 targets overall, with no rejected,
+  unavailable, or no-hit action. Later retrieval repaired five initially
+  incomplete target sets, but 003 and 044 prematurely finished with different
+  missing answer units despite succeeding in the earlier focused run. Do not
+  freeze v1.5 until this finish-decision instability is addressed and retested.
+- [x] Remove the overlapping evidence judgments before tuning closure quality.
+  Rename the Researcher terminal action to `submit_for_validation`; retain only
+  deterministic deduplication and source provenance checks in the
+  `source_validator`; remove the per-evidence support model and separate
+  conflict-model call; and make the task-level Sufficiency Judge solely
+  responsible for selecting support, deciding completeness/conflict, and
+  generating `ResearchGap` feedback for another bounded Researcher pass.
+- [x] Run a live `researcher-controller/v1.6` compatibility check on simple
+  questions 003, 033, and 044 without providing QA answers or evidence targets.
+  All model actions passed trusted validation; 003 and 033 submitted in round
+  two, while 044 used its six-action budget after filling the 12-item evidence
+  ledger and is retained as a bounded-retrieval observation.
+- [x] Replace the first-arrival 12-item ledger cap with the
+  `researcher-controller/v1.7` candidate-pool/active-set contract. Preserve all
+  unique tool hits for audit, require structured model selection of the bounded
+  active set, permit later gap-closing evidence to replace weaker early items,
+  and add one no-tools finalization turn after retrieval budget exhaustion.
+- [x] Rerun simple question 044 with v1.7. The loop retained 12 active items
+  from 15 candidates, promoted the late XnAP refusal passage (`E-T1:15`),
+  discarded redundant and irrelevant early results, covered both annotated
+  sources, and submitted after four tool actions without errors.
 - [ ] Run planning-only inspection on three to five complex questions, including
   independent tasks and dependency-bearing cases; defer downstream tasks until
   validated predecessor evidence exists.
+- [x] Run the first full Researcher-loop complex gate on question 007 using its
+  frozen two-task dependency-free plan. Both isolated workers submitted without
+  errors and their final active evidence covered all four annotated facts and
+  both annotated source locations.
+- [x] Run the first dependency-bearing diagnostic on question 045 with the
+  existing six-call global budget. T1 passed source validation and the
+  Sufficiency Judge with no gap, but consumed all six calls, so the budget guard
+  stopped before the now-ready T2 could receive dependency context.
+- [ ] Define complex-task budget allocation so one predecessor cannot consume
+  the calls required by pending dependent tasks, then rerun 045 through T2.
 - [ ] Run planning-only inspection on all 50 development questions after the
   simple and complex gates pass.
 - [ ] Inspect failure modes and adjust only the assembly contract when needed.

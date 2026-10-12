@@ -1,4 +1,4 @@
-"""Deterministic clause lookup and same-section source navigation."""
+"""Deterministic clause lookup and bounded source-context navigation."""
 
 from __future__ import annotations
 
@@ -59,13 +59,13 @@ def lookup_clause_chunks(
     )[:limit])
 
 
-def expand_same_section_chunks(
+def expand_source_context_chunks(
     chunks: tuple[MarkdownChunk, ...],
     seed_chunk_ids: tuple[str, ...],
     *,
     limit: int = 8,
 ) -> tuple[MarkdownChunk, ...]:
-    """Return bounded source neighbours from each seed's exact section."""
+    """Return bounded same-section and adjacent-sibling source context."""
 
     if not seed_chunk_ids:
         raise ValueError("at least one seed chunk is required")
@@ -80,29 +80,52 @@ def expand_same_section_chunks(
     seen: set[str] = set()
     for seed_id in seed_chunk_ids:
         seed = by_id[seed_id]
-        siblings = sorted(
+        document_chunks = sorted(
             (
                 chunk
                 for chunk in chunks
                 if chunk.source_path == seed.source_path
                 and chunk.specification == seed.specification
                 and chunk.version == seed.version
-                and chunk.heading_path == seed.heading_path
             ),
             key=lambda chunk: (chunk.line_start, chunk.line_end, chunk.chunk_id),
         )
-        seed_index = next(
-            index for index, chunk in enumerate(siblings) if chunk.chunk_id == seed_id
+        same_section = tuple(
+            chunk
+            for chunk in document_chunks
+            if chunk.heading_path == seed.heading_path
         )
-        candidate_indexes = tuple(dict.fromkeys((
-            seed_index - 1,
-            seed_index + 1,
-            0,
-        )))
-        for index in candidate_indexes:
-            if not 0 <= index < len(siblings):
-                continue
-            candidate = siblings[index]
+        seed_index = next(
+            index
+            for index, chunk in enumerate(same_section)
+            if chunk.chunk_id == seed_id
+        )
+        candidates = [
+            same_section[index]
+            for index in tuple(dict.fromkeys((seed_index - 1, seed_index + 1, 0)))
+            if 0 <= index < len(same_section)
+        ]
+
+        depth = len(seed.heading_path)
+        if depth:
+            parent = seed.heading_path[:-1]
+            section_openings: list[MarkdownChunk] = []
+            section_paths: list[tuple[str, ...]] = []
+            for chunk in document_chunks:
+                if len(chunk.heading_path) < depth:
+                    continue
+                section_path = chunk.heading_path[:depth]
+                if section_path[:-1] != parent or section_path in section_paths:
+                    continue
+                section_paths.append(section_path)
+                section_openings.append(chunk)
+            current_path = seed.heading_path[:depth]
+            section_index = section_paths.index(current_path)
+            for index in (section_index - 1, section_index + 1):
+                if 0 <= index < len(section_openings):
+                    candidates.append(section_openings[index])
+
+        for candidate in candidates:
             if candidate.chunk_id in seed_ids or candidate.chunk_id in seen:
                 continue
             seen.add(candidate.chunk_id)
@@ -112,4 +135,4 @@ def expand_same_section_chunks(
     return tuple(selected)
 
 
-__all__ = ["expand_same_section_chunks", "lookup_clause_chunks"]
+__all__ = ["expand_source_context_chunks", "lookup_clause_chunks"]

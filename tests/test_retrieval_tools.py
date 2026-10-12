@@ -6,7 +6,13 @@ from specrag.retrieval.models import CorpusScope, MarkdownChunk, RetrievalHit
 from specrag.tools import RetrievalToolRequest, build_retrieval_tool_registry
 
 
-def _chunk(chunk_id: str, line_start: int, text: str) -> MarkdownChunk:
+def _chunk(
+    chunk_id: str,
+    line_start: int,
+    text: str,
+    *,
+    heading_path: tuple[str, ...] = ("5.1Registration procedure",),
+) -> MarkdownChunk:
     return MarkdownChunk(
         chunk_id=chunk_id,
         source_collection="3gpp_markdown",
@@ -14,7 +20,7 @@ def _chunk(chunk_id: str, line_start: int, text: str) -> MarkdownChunk:
         version="17.1.0",
         source_path="data/3gpp/24.501/v17.1.0/source.md",
         document_sha256="A" * 64,
-        heading_path=("5.1Registration procedure",),
+        heading_path=heading_path,
         line_start=line_start,
         line_end=line_start + 1,
         text=text,
@@ -49,7 +55,7 @@ class _Reranker:
         return tuple(float(index) for index, _ in enumerate(passages, 1))
 
 
-def _registry():
+def _registry(semantic_queries: list[str] | None = None):
     first = _chunk("C1", 10, "The UE shall initiate registration.")
     second = _chunk("C2", 12, "The network shall process registration.")
     chunks = (first, second)
@@ -61,7 +67,10 @@ def _registry():
         chunks=chunks,
         chunk_by_id={chunk.chunk_id: chunk for chunk in chunks},
         keyword_candidates=lambda query, **kwargs: [("C1", 3.0)],
-        semantic_candidates=lambda query, **kwargs: [("C2", 0.1)],
+        semantic_candidates=lambda query, **kwargs: (
+            semantic_queries.append(query) if semantic_queries is not None else None,
+            [("C2", 0.1)],
+        )[1],
         hybrid_hits=lambda request_id, query, **kwargs: ((_hit(first),), ()),
     )
     return build_retrieval_tool_registry(retriever, reranker=_Reranker())
@@ -83,15 +92,16 @@ def test_registry_exposes_all_retrieval_capabilities_and_schemas() -> None:
 
     assert registry.names == (
         "clause_lookup",
-        "expand_same_section",
+        "expand_source_context",
         "hybrid_search",
+        "hyde_search",
         "keyword_search",
         "rerank",
         "semantic_search",
     )
     bundle = registry.schema_bundle()
     assert bundle["request"]["title"] == "RetrievalToolRequest"
-    assert len(bundle["capabilities"]) == 6
+    assert len(bundle["capabilities"]) == 7
 
 
 def test_keyword_tool_returns_source_grounded_evidence() -> None:
@@ -124,6 +134,27 @@ def test_hybrid_tool_preserves_rrf_score() -> None:
     assert result.evidence[0].chunk_id == "C1"
     assert result.evidence[0].score_kind == "rrf"
     assert result.evidence[0].score == 0.03
+
+
+def test_hyde_tool_embeds_hypothetical_text_but_returns_real_source() -> None:
+    semantic_queries: list[str] = []
+    result = _registry(semantic_queries).invoke(
+        "hyde_search",
+        _request(
+            query="",
+            hypothetical_document=(
+                "The UE shall initiate the registration procedure."
+            ),
+        ),
+    )
+
+    assert semantic_queries == [
+        "The UE shall initiate the registration procedure."
+    ]
+    assert result.status == "completed"
+    assert result.evidence[0].chunk_id == "C2"
+    assert result.evidence[0].match_kind == "hyde_search"
+    assert result.evidence[0].score_kind == "semantic_distance"
 
 
 def test_rerank_tool_accepts_only_trusted_seed_chunks() -> None:
@@ -167,11 +198,46 @@ def test_clause_lookup_tool_matches_title_and_normalizes_heading_spacing() -> No
     assert [item.chunk_id for item in combined_result.evidence] == ["C1", "C2"]
 
 
-def test_same_section_tool_expands_from_trusted_seed() -> None:
+def test_source_context_tool_expands_from_trusted_seed() -> None:
     result = _registry().invoke(
-        "expand_same_section",
+        "expand_source_context",
         _request(query="", seed_chunk_ids=("C1",)),
     )
 
     assert result.status == "completed"
     assert [item.chunk_id for item in result.evidence] == ["C2"]
+
+
+def test_source_context_tool_includes_adjacent_sibling_subsection() -> None:
+    successful = _chunk(
+        "SUCCESS",
+        20,
+        "The peer shall acknowledge the accepted change.",
+        heading_path=("8.4.9Mobility Settings Change", "8.4.9.2Successful Operation"),
+    )
+    unsuccessful = _chunk(
+        "FAILURE",
+        30,
+        "The peer shall send MOBILITY CHANGE FAILURE when it refuses.",
+        heading_path=("8.4.9Mobility Settings Change", "8.4.9.3Unsuccessful Operation"),
+    )
+    retriever = SimpleNamespace(
+        corpus_scope=CorpusScope(release=17),
+        chunks=(successful, unsuccessful),
+        chunk_by_id={
+            successful.chunk_id: successful,
+            unsuccessful.chunk_id: unsuccessful,
+        },
+        keyword_candidates=lambda query, **kwargs: [],
+        semantic_candidates=lambda query, **kwargs: [],
+        hybrid_hits=lambda request_id, query, **kwargs: ((), ()),
+    )
+    registry = build_retrieval_tool_registry(retriever, reranker=_Reranker())
+
+    result = registry.invoke(
+        "expand_source_context",
+        _request(query="", seed_chunk_ids=("SUCCESS",)),
+    )
+
+    assert result.status == "completed"
+    assert [item.chunk_id for item in result.evidence] == ["FAILURE"]

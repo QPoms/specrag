@@ -9,10 +9,9 @@ from typing import cast
 from specrag.agents.models import AgenticRetrievalExecution
 from specrag.agents.researcher import RegistryResearcherService
 from specrag.evidence import (
-    EvidenceConflictService,
     EvidenceSufficiencyService,
     EvidenceSynthesisService,
-    EvidenceValidationService,
+    SourceValidationService,
 )
 from specrag.memory import MemoryDistiller, ValidatedMemoryService
 from specrag.models import CandidateEvidence, ToolCallRecord
@@ -81,30 +80,18 @@ class SingleResearcherHandler:
 
 
 @dataclass(frozen=True)
-class EvidenceValidationHandler:
-    """Expose the framework-independent validator as a graph node handler."""
+class SourceValidationHandler:
+    """Expose deterministic source validation as a graph node handler."""
 
-    service: EvidenceValidationService
-    conflict_service: EvidenceConflictService | None = None
+    service: SourceValidationService
 
     def __call__(self, state: ResearchState) -> dict[str, object]:
         batch = self.service.validate(
             state["research_tasks"],
             state["candidate_evidence"],
         )
-        conflicts = (
-            self.conflict_service.detect(
-                state["research_tasks"],
-                state["candidate_evidence"],
-                batch.validated_evidence,
-            )
-            if self.conflict_service is not None
-            else ()
-        )
         return {
             "source_validations": batch.source_validations,
-            "validated_evidence": batch.validated_evidence,
-            "evidence_conflicts": conflicts,
         }
 
 
@@ -118,11 +105,11 @@ class EvidenceSufficiencyHandler:
         batch = self.service.evaluate(
             state["research_tasks"],
             state["candidate_evidence"],
-            state["validated_evidence"],
-            state["evidence_conflicts"],
+            state["source_validations"],
         )
         return {
             "research_tasks": batch.tasks,
+            "validated_evidence": batch.validated_evidence,
             "sufficiency_assessments": batch.assessments,
             "gaps": batch.gaps,
             "evidence_sufficient": batch.evidence_sufficient,
@@ -246,7 +233,7 @@ def researcher_execution_update(
     iteration = state["iteration"] + 1
     for turn in execution.turns:
         for outcome in turn.outcomes:
-            if outcome.action.tool == "finish":
+            if outcome.action.tool == "submit_for_validation":
                 continue
             task_id = query_to_task.get(
                 outcome.action.query_id,
@@ -292,7 +279,7 @@ def researcher_execution_update(
 
 
 __all__ = [
-    "EvidenceValidationHandler",
+    "SourceValidationHandler",
     "EvidenceSufficiencyHandler",
     "EvidenceSynthesisHandler",
     "MemoryWriteHandler",

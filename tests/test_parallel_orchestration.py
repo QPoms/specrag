@@ -38,11 +38,10 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
         query_id=query_id,
         lexical_query="registration",
         semantic_query="registration procedure",
+        hypothetical_document="",
         target_specifications=("24.501",),
         seed_evidence_ids=(),
         max_results=4,
-        rationale="Find the normative procedure.",
-        expected_evidence="A directly cited requirement.",
     )
     outcome = AgentActionOutcome(
         round_number=1,
@@ -86,7 +85,7 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
     )
     return AgenticRetrievalExecution(
         status="completed",
-        stop_reason="agent_finish",
+        stop_reason="submitted_for_validation",
         rounds_used=1,
         search_actions_used=1,
         expansion_actions_used=0,
@@ -145,7 +144,7 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
                 "research_tasks": plan.tasks,
             },
             researcher=lambda state: {},
-            validator=lambda state: {},
+            source_validator=lambda state: {},
             sufficiency_judge=lambda state: {
                 "evidence_sufficient": True,
                 "research_tasks": tuple(
@@ -247,7 +246,7 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
                 "research_tasks": plan.tasks,
             },
             researcher=lambda state: {},
-            validator=validate,
+            source_validator=validate,
             sufficiency_judge=judge,
             replanner=lambda state: {},
             synthesizer=lambda state: {
@@ -369,7 +368,7 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
                 "research_tasks": plan.tasks,
             },
             researcher=lambda state: {},
-            validator=validate,
+            source_validator=validate,
             sufficiency_judge=judge,
             replanner=GapReplanner(),
             synthesizer=lambda state: {

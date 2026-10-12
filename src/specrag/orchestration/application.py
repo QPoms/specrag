@@ -10,15 +10,12 @@ from specrag.agents.planning import ResearcherPlanningService
 from specrag.agents.researcher import RegistryResearcherService
 from specrag.config import AppConfig, REPO_ROOT, load_config
 from specrag.evidence import (
-    EvidenceConflictService,
     EvidenceSufficiencyService,
     EvidenceSynthesisService,
-    EvidenceValidationService,
     SourceEvidenceValidator,
+    SourceValidationService,
 )
 from specrag.infrastructure.research_assessors import (
-    StructuredEvidenceConflictAssessor,
-    StructuredEvidenceSupportAssessor,
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
@@ -40,7 +37,7 @@ from specrag.models import (
 from .adapters import (
     EvidenceSufficiencyHandler,
     EvidenceSynthesisHandler,
-    EvidenceValidationHandler,
+    SourceValidationHandler,
     SingleResearcherHandler,
 )
 from .state import ResearchState, new_research_state
@@ -338,8 +335,6 @@ def build_researcher_planning_application(
             available_specifications=available_specifications,
             available_tools=retrieval_tool_capabilities(),
             max_rounds=3,
-            max_search_actions=4,
-            max_expansion_actions=2,
             max_total_actions=6,
             hits_per_search=5,
             max_evidence_per_question=12,
@@ -385,18 +380,13 @@ def build_research_application(
         app_config=app_config,
         tool_registry=tool_registry,
         max_rounds=3,
-        max_search_actions=4,
-        max_expansion_actions=2,
+        max_total_actions=6,
         hits_per_search=5,
         max_evidence_per_question=12,
     )
 
-    validation = EvidenceValidationService(
+    validation = SourceValidationService(
         SourceEvidenceValidator(repository_root),
-        StructuredEvidenceSupportAssessor(summary_agent),
-    )
-    conflicts = EvidenceConflictService(
-        StructuredEvidenceConflictAssessor(summary_agent)
     )
     sufficiency = EvidenceSufficiencyService(
         StructuredTaskSufficiencyAssessor(summary_agent)
@@ -408,7 +398,7 @@ def build_research_application(
         router=QuestionRouterHandler(router),
         planner=ResearchPlannerHandler(planner),
         researcher=SingleResearcherHandler(researcher_service),
-        validator=EvidenceValidationHandler(validation, conflicts),
+        source_validator=SourceValidationHandler(validation),
         sufficiency_judge=EvidenceSufficiencyHandler(sufficiency),
         replanner=GapReplanner(),
         synthesizer=EvidenceSynthesisHandler(synthesis),

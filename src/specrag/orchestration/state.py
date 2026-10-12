@@ -7,7 +7,6 @@ from typing import Annotated, Literal, TypedDict
 
 from specrag.models import (
     CandidateEvidence,
-    EvidenceConflict,
     EvidenceSynthesis,
     ResearchBudget,
     ResearchGap,
@@ -25,7 +24,7 @@ from specrag.models import (
 
 
 class ResearchState(TypedDict):
-    schema_version: Literal["research-state/v1.0"]
+    schema_version: Literal["research-state/v1.1"]
     research_id: str
     user_question: str
     route: Literal["plan", "finish"]
@@ -34,7 +33,6 @@ class ResearchState(TypedDict):
     research_tasks: tuple[ResearchTask, ...]
     candidate_evidence: tuple[CandidateEvidence, ...]
     source_validations: tuple[SourceValidationResult, ...]
-    evidence_conflicts: tuple[EvidenceConflict, ...]
     validated_evidence: tuple[ValidatedEvidence, ...]
     sufficiency_assessments: tuple[TaskSufficiencyAssessment, ...]
     gaps: tuple[ResearchGap, ...]
@@ -65,7 +63,7 @@ def new_research_state(
     if not user_question.strip():
         raise ValueError("user_question must not be blank")
     return ResearchState(
-        schema_version="research-state/v1.0",
+        schema_version="research-state/v1.1",
         research_id=research_id,
         user_question=user_question,
         route="plan",
@@ -74,7 +72,6 @@ def new_research_state(
         research_tasks=(),
         candidate_evidence=(),
         source_validations=(),
-        evidence_conflicts=(),
         validated_evidence=(),
         sufficiency_assessments=(),
         gaps=(),

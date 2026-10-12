@@ -52,11 +52,19 @@ user question or task
   policy, and bounded loop execution through the unified Tool Registry. The
   first controller round receives Planner tasks directly with the live tool
   catalog and generates the initial queries and concrete tool calls; later
-  rounds adapt to observed evidence.
+  rounds adapt to observed evidence. Retrieved chunks enter a deduplicated
+  candidate pool; the controller maintains a bounded active evidence set and
+  may replace weaker early items with later gap-closing evidence without
+  deleting the audit trail. All retrieval capabilities share one total
+  tool-call budget across rounds; there are no per-tool-category quotas. One
+  finalization-only controller turn may review the last results after the
+  retrieval budget is exhausted, but it cannot invoke another tool.
 - `src/specrag/prompts/researcher.py`: versioned Researcher controller prompt
   contract.
 - `src/specrag/tools/`: provider-neutral request/result schemas, capability
-  descriptions, registry, and six trusted retrieval adapters.
+  descriptions, registry, and seven trusted retrieval adapters. HyDE embeds an
+  untrusted controller-generated passage for retrieval; only returned source
+  chunks can become evidence.
 - `src/specrag/models/`: framework-independent research state contracts.
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
   dependency-context handoff, bounded re-planning, checkpointing, and recovery.
@@ -67,6 +75,9 @@ user question or task
   interface.
 - `src/specrag/infrastructure/llm.py`: structured OpenAI-compatible client
   with redacted receipts and retry policy.
+- `scripts/evaluate_first_turn.py`: executes frozen Researcher first-turn
+  artifacts without another model call and reports strict annotated-source
+  recall for offline inspection.
 
 The historical attacker-capability validation line, including its versioned
 agents, deterministic gates, Gold/Shadow evaluations, prompts, cases, and
@@ -121,6 +132,17 @@ Researcher starts only after its predecessors are sufficient and receives only
 their selected, source-valid supported evidence as scoped research context.
 Advancing to that newly ready dependency wave is normal execution and does not
 consume the Gap Re-planner budget; only attempted incomplete tasks do.
+
+The supported evidence loop is `Researcher -> source_validator ->
+sufficiency_judge`. Researcher uses `submit_for_validation` to hand off its
+current active evidence; this is not a completeness decision. The complete
+candidate pool remains attached to the Researcher execution for audit. The
+`source_validator` is deterministic and checks deduplication, allowed paths,
+document hashes, line locators, and exact excerpts without calling a model. The
+single task-level Sufficiency Judge selects which source-valid passages
+support the task, decides completeness or conflict, and emits a concrete `ResearchGap`
+when more research is required. An unresolved gap returns to Researcher within
+the global iteration, re-plan, and tool-call budgets.
 
 ## Local environment
 

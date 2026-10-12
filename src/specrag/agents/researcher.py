@@ -17,13 +17,10 @@ from specrag.retrieval.hybrid import (
 )
 from specrag.retrieval.planner import (
     PlannedRetrievalExecution,
-    PlannedRetrievalHit,
     PlannedRetrievalTaskResult,
 )
 from specrag.tools import (
     RetrievalToolRequest,
-    RetrievalToolResult,
-    ToolEvidence,
     ToolRegistry,
     build_retrieval_tool_registry,
 )
@@ -38,6 +35,7 @@ from .models import (
 from .planning import propose_researcher_turn
 from .policy import action_signature
 from .state import EvidenceLedger
+from .tool_results import planned_hits_from_tool
 
 
 @dataclass
@@ -50,10 +48,10 @@ class RegistryResearcherService:
     tool_registry: ToolRegistry | None = None
     memory_reader: Any | None = None
     max_rounds: int = 4
-    max_search_actions: int = 6
-    max_expansion_actions: int = 3
+    max_total_actions: int = 9
     hits_per_search: int = 8
     max_evidence_per_question: int = 28
+    max_finalization_turns: int = 1
 
     def run(
         self,
@@ -82,16 +80,19 @@ class RegistryResearcherService:
                 "validated_memory": memory_context,
             },
             max_rounds=self.max_rounds,
-            max_search_actions=self.max_search_actions,
-            max_expansion_actions=self.max_expansion_actions,
-            max_total_actions=max_tool_calls,
+            max_total_actions=(
+                max_tool_calls
+                if max_tool_calls is not None
+                else self.max_total_actions
+            ),
             hits_per_search=self.hits_per_search,
             max_evidence_per_question=self.max_evidence_per_question,
+            max_finalization_turns=self.max_finalization_turns,
         )
         return execution, {task.task_id: task.task_id for task in tasks}
 
 
-def _tool_request(
+def build_retrieval_tool_request(
     action: AgentRetrievalAction,
     *,
     round_number: int,
@@ -119,76 +120,12 @@ def _tool_request(
         query_id=action.query_id,
         query=query,
         semantic_query=semantic_query,
+        hypothetical_document=action.hypothetical_document or None,
         target_specifications=action.target_specifications,
         clause=action.clause or None,
         seed_chunk_ids=seeds,
         limit=min(action.max_results, result_limit),
     )
-
-
-def _evidence_score(evidence: ToolEvidence) -> float:
-    if evidence.score is None:
-        return 1.0 / evidence.rank
-    if evidence.score_kind == "semantic_distance":
-        return 1.0 / (1.0 + max(evidence.score, 0.0))
-    return evidence.score
-
-
-def _planned_hits_from_tool(
-    result: RetrievalToolResult,
-    *,
-    task: ResearchTask,
-) -> tuple[PlannedRetrievalHit, ...]:
-    hits: list[PlannedRetrievalHit] = []
-    for evidence in result.evidence:
-        score = _evidence_score(evidence)
-        hits.append(PlannedRetrievalHit(
-            hit_id=evidence.evidence_id,
-            chunk_id=evidence.chunk_id,
-            collection_rank=evidence.rank,
-            specification=evidence.specification,
-            release=evidence.release,
-            version=evidence.version,
-            source_path=evidence.source_path,
-            document_sha256=evidence.document_sha256,
-            heading_path=evidence.heading_path,
-            line_start=evidence.line_start,
-            line_end=evidence.line_end,
-            excerpt=evidence.excerpt,
-            evidence_roles=(task.objective,),
-            probe_ids=(result.request_id,),
-            retrieval_sources=(f"tool:{result.tool_name}",),
-            retrieval_hop=(
-                2 if result.tool_name == "expand_same_section" else 1
-            ),
-            semantic_rank=(
-                evidence.rank
-                if result.tool_name in {"semantic_search", "hybrid_search"}
-                else None
-            ),
-            lexical_rank=(
-                evidence.rank
-                if result.tool_name in {"keyword_search", "hybrid_search"}
-                else None
-            ),
-            rrf_score=(
-                max(evidence.score or 0.0, 0.0)
-                if evidence.score_kind == "rrf"
-                else 0.0
-            ),
-            route_score=0.0,
-            anchor_score=0.0,
-            heading_score=0.0,
-            agreement_score=0.0,
-            noise_penalty=0.0,
-            reranker_score=(
-                evidence.score
-                if evidence.score_kind == "cross_encoder"
-                else None
-            ),
-            final_score=score,
-        ))
-    return tuple(hits)
 
 
 def _evidence_execution(
@@ -197,11 +134,16 @@ def _evidence_execution(
     ledger: EvidenceLedger,
     retriever: HybridMarkdownRetriever,
     app_config: AppConfig,
+    candidate_pool: bool = False,
 ) -> PlannedRetrievalExecution:
     active_scope = effective_corpus_scope(app_config.retrieval, retriever)
     tasks: list[PlannedRetrievalTaskResult] = []
     for task in research_tasks:
-        hits = ledger.hits(task.task_id)
+        hits = (
+            ledger.candidate_hits(task.task_id)
+            if candidate_pool
+            else ledger.active_hits(task.task_id)
+        )
         tasks.append(PlannedRetrievalTaskResult(
             retrieval_id=f"RET-{task.task_id}",
             query_id=task.task_id,
@@ -231,11 +173,10 @@ def run_agentic_retrieval_loop(
     tool_registry: ToolRegistry | None = None,
     shared_context: Mapping[str, Any] | None = None,
     max_rounds: int = 4,
-    max_search_actions: int = 6,
-    max_expansion_actions: int = 3,
-    max_total_actions: int | None = None,
+    max_total_actions: int = 9,
     hits_per_search: int = 8,
     max_evidence_per_question: int = 28,
+    max_finalization_turns: int = 1,
 ) -> AgenticRetrievalExecution:
     """Let an agent choose bounded calls to trusted local retrieval tools."""
 
@@ -244,19 +185,15 @@ def run_agentic_retrieval_loop(
 
     for name, value in (
         ("max_rounds", max_rounds),
-        ("max_search_actions", max_search_actions),
+        ("max_total_actions", max_total_actions),
         ("hits_per_search", hits_per_search),
         ("max_evidence_per_question", max_evidence_per_question),
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
-    if max_expansion_actions < 0:
-        raise ValueError("max_expansion_actions cannot be negative")
-    if max_total_actions is not None and max_total_actions < 1:
-        raise ValueError("max_total_actions must be positive when supplied")
-    total_action_limit = max_total_actions or (
-        max_search_actions + max_expansion_actions
-    )
+    if max_finalization_turns not in {0, 1}:
+        raise ValueError("max_finalization_turns must be zero or one")
+    total_action_limit = max_total_actions
 
     task_by_id = {task.task_id: task for task in research_tasks}
     if len(task_by_id) != len(research_tasks):
@@ -279,7 +216,7 @@ def run_agentic_retrieval_loop(
     expansion_used = 0
     registry = tool_registry or build_retrieval_tool_registry(retriever)
     stop_reason: Literal[
-        "agent_finish",
+        "submitted_for_validation",
         "round_budget",
         "action_budget",
         "agent_error",
@@ -310,10 +247,7 @@ def run_agentic_retrieval_loop(
                 shared_context=shared_context,
                 round_number=round_number,
                 max_rounds=max_rounds,
-                search_used=search_used,
-                max_search_actions=max_search_actions,
-                expansion_used=expansion_used,
-                max_expansion_actions=max_expansion_actions,
+                actions_used=search_used + expansion_used,
                 total_action_limit=total_action_limit,
                 hits_per_search=hits_per_search,
                 max_evidence_per_question=max_evidence_per_question,
@@ -327,7 +261,47 @@ def run_agentic_retrieval_loop(
 
         actions = proposal.decision.actions
         validations = proposal.validations
-        if any(action.tool == "finish" for action in actions):
+        selection_errors = tuple(
+            error
+            for validation in proposal.selection_validations
+            for error in validation.errors
+        )
+        if selection_errors:
+            outcomes = tuple(
+                AgentActionOutcome(
+                    round_number=round_number,
+                    action=action,
+                    status="rejected",
+                    errors=tuple((*selection_errors, *validation.errors)),
+                )
+                for action, validation in zip(
+                    actions,
+                    validations,
+                    strict=True,
+                )
+            )
+            turns.append(AgentRetrievalTurn(
+                round_number=round_number,
+                assessment=proposal.decision.assessment,
+                evidence_selections=proposal.decision.evidence_selections,
+                selection_validations=proposal.selection_validations,
+                receipt=proposal.receipt,
+                outcomes=outcomes,
+            ))
+            errors.extend(selection_errors)
+            errors.extend(
+                error for validation in validations for error in validation.errors
+            )
+            continue
+
+        for selection in proposal.decision.evidence_selections:
+            ledger.select(
+                selection.query_id,
+                selection.retained_evidence_ids,
+            )
+        if any(
+            action.tool == "submit_for_validation" for action in actions
+        ):
             outcomes = tuple(
                 AgentActionOutcome(
                     round_number=round_number,
@@ -344,6 +318,8 @@ def run_agentic_retrieval_loop(
             turns.append(AgentRetrievalTurn(
                 round_number=round_number,
                 assessment=proposal.decision.assessment,
+                evidence_selections=proposal.decision.evidence_selections,
+                selection_validations=proposal.selection_validations,
                 receipt=proposal.receipt,
                 outcomes=outcomes,
             ))
@@ -353,8 +329,11 @@ def run_agentic_retrieval_loop(
             if turn_errors:
                 errors.extend(turn_errors)
                 continue
-            if len(actions) == 1 and actions[0].tool == "finish":
-                stop_reason = "agent_finish"
+            if (
+                len(actions) == 1
+                and actions[0].tool == "submit_for_validation"
+            ):
+                stop_reason = "submitted_for_validation"
                 break
             continue
 
@@ -372,11 +351,11 @@ def run_agentic_retrieval_loop(
                 continue
 
             signatures.add(action_signature(action))
-            if action.tool == "expand_same_section":
+            if action.tool == "expand_source_context":
                 expansion_used += 1
             else:
                 search_used += 1
-            request = _tool_request(
+            request = build_retrieval_tool_request(
                 action,
                 round_number=round_number,
                 ledger=ledger,
@@ -388,7 +367,7 @@ def run_agentic_retrieval_loop(
                     raise RuntimeError(
                         "tool result corpus scope differs from the active run"
                     )
-                planned_hits = _planned_hits_from_tool(
+                planned_hits = planned_hits_from_tool(
                     result,
                     task=task_by_id[action.query_id],
                 )
@@ -419,22 +398,128 @@ def run_agentic_retrieval_loop(
         turns.append(AgentRetrievalTurn(
             round_number=round_number,
             assessment=proposal.decision.assessment,
+            evidence_selections=proposal.decision.evidence_selections,
+            selection_validations=proposal.selection_validations,
             receipt=proposal.receipt,
             outcomes=tuple(outcomes),
         ))
-        if (
-            search_used + expansion_used >= total_action_limit
-            or search_used >= max_search_actions
-            and expansion_used >= max_expansion_actions
-        ):
+        if search_used + expansion_used >= total_action_limit:
             stop_reason = "action_budget"
             break
+
+    has_pending_candidates = any(
+        ledger.pending_evidence_ids(query_id) for query_id in query_ids
+    )
+    if (
+        max_finalization_turns == 1
+        and stop_reason in {"round_budget", "action_budget"}
+        and has_pending_candidates
+    ):
+        finalization_round = len(turns) + 1
+        history = [
+            {
+                "round": outcome.round_number,
+                "action_id": outcome.action.action_id,
+                "tool": outcome.action.tool,
+                "query_id": outcome.action.query_id,
+                "status": outcome.status,
+                "new_evidence_ids": list(outcome.new_evidence_ids),
+                "errors": list(outcome.errors),
+            }
+            for turn in turns
+            for outcome in turn.outcomes
+        ]
+        try:
+            proposal = propose_researcher_turn(
+                research_tasks,
+                controller_agent=controller_agent,
+                corpus_scope=active_scope,
+                available_specifications=tuple(sorted(available_specs)),
+                available_tools=registry.capabilities,
+                ledger=ledger,
+                shared_context=shared_context,
+                round_number=finalization_round,
+                max_rounds=max_rounds,
+                actions_used=search_used + expansion_used,
+                total_action_limit=total_action_limit,
+                hits_per_search=hits_per_search,
+                max_evidence_per_question=max_evidence_per_question,
+                history=history,
+                prior_signatures=frozenset(signatures),
+                finalization_only=True,
+            )
+        except Exception as exc:
+            errors.append(f"controller: {type(exc).__name__}: {exc}")
+            stop_reason = "agent_error"
+        else:
+            selection_errors = tuple(
+                error
+                for validation in proposal.selection_validations
+                for error in validation.errors
+            )
+            action_errors = tuple(
+                error
+                for validation in proposal.validations
+                for error in validation.errors
+            )
+            accepted = not selection_errors and not action_errors
+            if accepted:
+                for selection in proposal.decision.evidence_selections:
+                    ledger.select(
+                        selection.query_id,
+                        selection.retained_evidence_ids,
+                    )
+            outcomes = tuple(
+                AgentActionOutcome(
+                    round_number=finalization_round,
+                    action=action,
+                    status=(
+                        "completed"
+                        if accepted and validation.accepted
+                        else "rejected"
+                    ),
+                    errors=tuple((
+                        *selection_errors,
+                        *validation.errors,
+                    )),
+                )
+                for action, validation in zip(
+                    proposal.decision.actions,
+                    proposal.validations,
+                    strict=True,
+                )
+            )
+            turns.append(AgentRetrievalTurn(
+                round_number=finalization_round,
+                phase="finalization",
+                assessment=proposal.decision.assessment,
+                evidence_selections=proposal.decision.evidence_selections,
+                selection_validations=proposal.selection_validations,
+                receipt=proposal.receipt,
+                outcomes=outcomes,
+            ))
+            errors.extend(selection_errors)
+            errors.extend(action_errors)
+            if (
+                accepted
+                and len(proposal.decision.actions) == 1
+                and proposal.decision.actions[0].tool
+                == "submit_for_validation"
+            ):
+                stop_reason = "submitted_for_validation"
 
     evidence = _evidence_execution(
         research_tasks=research_tasks,
         ledger=ledger,
         retriever=retriever,
         app_config=app_config,
+    )
+    candidate_evidence = _evidence_execution(
+        research_tasks=research_tasks,
+        ledger=ledger,
+        retriever=retriever,
+        app_config=app_config,
+        candidate_pool=True,
     )
     has_hits = any(task.hits for task in evidence.tasks)
     every_question_has_hits = all(task.hits for task in evidence.tasks)
@@ -448,11 +533,12 @@ def run_agentic_retrieval_loop(
     return AgenticRetrievalExecution(
         status=status,
         stop_reason=stop_reason,
-        rounds_used=len(turns),
+        rounds_used=sum(turn.phase == "retrieval" for turn in turns),
         search_actions_used=search_used,
         expansion_actions_used=expansion_used,
         turns=tuple(turns),
         evidence_execution=evidence,
+        candidate_evidence_execution=candidate_evidence,
         errors=tuple(errors),
     )
 
@@ -464,5 +550,6 @@ __all__ = [
     "AgentRetrievalTurn",
     "AgenticRetrievalExecution",
     "RegistryResearcherService",
+    "build_retrieval_tool_request",
     "run_agentic_retrieval_loop",
 ]

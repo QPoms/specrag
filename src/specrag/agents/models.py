@@ -16,7 +16,7 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-AgentToolName = RetrievalToolName | Literal["finish"]
+AgentToolName = RetrievalToolName | Literal["submit_for_validation"]
 
 
 class AgentRetrievalAction(_StrictModel):
@@ -27,17 +27,24 @@ class AgentRetrievalAction(_StrictModel):
     query_id: str
     lexical_query: str
     semantic_query: str
+    hypothetical_document: str = Field(max_length=4000)
     clause: str = ""
     target_specifications: tuple[str, ...] = Field(max_length=6)
     seed_evidence_ids: tuple[str, ...] = Field(max_length=4)
     max_results: int = Field(ge=1, le=12)
-    rationale: str = Field(min_length=1)
-    expected_evidence: str = Field(min_length=1)
+
+
+class AgentEvidenceSelection(_StrictModel):
+    """Candidate evidence retained as the active set for one research task."""
+
+    query_id: str = Field(min_length=1)
+    retained_evidence_ids: tuple[str, ...] = ()
 
 
 class AgentRetrievalDecision(_StrictModel):
     assessment: str = Field(min_length=1)
-    actions: tuple[AgentRetrievalAction, ...] = Field(min_length=1, max_length=3)
+    evidence_selections: tuple[AgentEvidenceSelection, ...] = ()
+    actions: tuple[AgentRetrievalAction, ...] = Field(min_length=1)
 
 
 class AgentActionValidation(_StrictModel):
@@ -52,15 +59,28 @@ class AgentActionValidation(_StrictModel):
         return self
 
 
+class AgentEvidenceSelectionValidation(_StrictModel):
+    query_id: str = Field(min_length=1)
+    accepted: bool
+    errors: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _coherent_acceptance(self) -> "AgentEvidenceSelectionValidation":
+        if self.accepted == bool(self.errors):
+            raise ValueError("accepted must be true exactly when errors is empty")
+        return self
+
+
 class ResearcherActionPlan(_StrictModel):
     """One model-proposed turn plus trusted pre-execution validation."""
 
-    schema_version: Literal["researcher-action-plan/v1"] = (
-        "researcher-action-plan/v1"
+    schema_version: Literal["researcher-action-plan/v2"] = (
+        "researcher-action-plan/v2"
     )
     input_payload: dict[str, Any]
     decision: AgentRetrievalDecision
     receipt: CodexAgentReceipt
+    selection_validations: tuple[AgentEvidenceSelectionValidation, ...] = ()
     validations: tuple[AgentActionValidation, ...]
     accepted: bool
 
@@ -72,7 +92,7 @@ class ResearcherActionPlan(_StrictModel):
             raise ValueError("action validations must preserve decision order")
         expected = bool(self.validations) and all(
             item.accepted for item in self.validations
-        )
+        ) and all(item.accepted for item in self.selection_validations)
         if self.accepted != expected:
             raise ValueError("plan acceptance must match action validations")
         return self
@@ -95,14 +115,17 @@ class AgentActionOutcome(_StrictModel):
 
 class AgentRetrievalTurn(_StrictModel):
     round_number: int = Field(ge=1)
+    phase: Literal["retrieval", "finalization"] = "retrieval"
     assessment: str = Field(min_length=1)
+    evidence_selections: tuple[AgentEvidenceSelection, ...] = ()
+    selection_validations: tuple[AgentEvidenceSelectionValidation, ...] = ()
     receipt: CodexAgentReceipt
     outcomes: tuple[AgentActionOutcome, ...]
 
 
 class AgenticRetrievalExecution(_StrictModel):
-    schema_version: Literal["agentic-retrieval-execution/v0.1"] = (
-        "agentic-retrieval-execution/v0.1"
+    schema_version: Literal["agentic-retrieval-execution/v0.2"] = (
+        "agentic-retrieval-execution/v0.2"
     )
     status: Literal["completed", "partial", "unavailable"]
     stop_reason: ResearcherStopReason
@@ -111,12 +134,15 @@ class AgenticRetrievalExecution(_StrictModel):
     expansion_actions_used: int = Field(ge=0)
     turns: tuple[AgentRetrievalTurn, ...] = ()
     evidence_execution: PlannedRetrievalExecution
+    candidate_evidence_execution: PlannedRetrievalExecution | None = None
     errors: tuple[str, ...] = ()
 
 
 __all__ = [
     "AgentActionValidation",
     "AgentActionOutcome",
+    "AgentEvidenceSelection",
+    "AgentEvidenceSelectionValidation",
     "AgentRetrievalAction",
     "AgentRetrievalDecision",
     "AgentRetrievalTurn",

@@ -12,6 +12,7 @@ from .models import (
 )
 from .registry import ToolRegistry
 from .retrieval import (
+    HyDESearchTool,
     build_retrieval_tool_registry,
     retrieval_tool_capabilities,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "ToolCapability",
     "ToolRegistry",
     "ToolStatus",
+    "HyDESearchTool",
     "build_retrieval_tool_registry",
     "retrieval_tool_capabilities",
 ]

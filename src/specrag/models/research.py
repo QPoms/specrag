@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TaskStatus = Literal["pending", "running", "completed", "blocked", "failed"]
 ResearcherStopReason = Literal[
-    "agent_finish",
+    "submitted_for_validation",
     "round_budget",
     "action_budget",
     "agent_error",
@@ -149,12 +149,6 @@ class SourceValidationResult(_StrictModel):
     errors: tuple[str, ...] = ()
 
 
-class EvidenceSupportAssessment(_StrictModel):
-    evidence_id: str = Field(min_length=1)
-    status: Literal["supported", "partial", "rejected", "conflict"]
-    rationale: str = Field(min_length=1)
-
-
 class TaskSufficiencyAssessment(_StrictModel):
     task_id: str = Field(min_length=1)
     status: Literal["sufficient", "partial", "insufficient", "conflict"]
@@ -190,20 +184,6 @@ class EvidenceBackedClaim(_StrictModel):
 class EvidenceSynthesis(_StrictModel):
     answer: str = Field(min_length=1)
     claims: tuple[EvidenceBackedClaim, ...] = Field(min_length=1)
-
-
-class EvidenceConflict(_StrictModel):
-    conflict_id: str = Field(min_length=1)
-    task_id: str = Field(min_length=1)
-    evidence_ids: tuple[str, str]
-    kind: Literal["semantic_conflict", "version_conflict"]
-    description: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _distinct_evidence(self) -> "EvidenceConflict":
-        if self.evidence_ids[0] == self.evidence_ids[1]:
-            raise ValueError("conflict requires two different evidence items")
-        return self
 
 
 class ResearchGap(_StrictModel):
@@ -257,9 +237,7 @@ class ResearchBudget(_StrictModel):
 
 __all__ = [
     "CandidateEvidence",
-    "EvidenceSupportAssessment",
     "EvidenceBackedClaim",
-    "EvidenceConflict",
     "EvidenceSynthesis",
     "ResearchBudget",
     "ResearchGap",

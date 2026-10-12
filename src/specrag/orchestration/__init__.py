@@ -6,7 +6,7 @@ from .adapters import (
     EvidenceSufficiencyHandler,
     EvidenceSynthesisHandler,
     MemoryWriteHandler,
-    EvidenceValidationHandler,
+    SourceValidationHandler,
     SingleResearcherHandler,
     researcher_execution_update,
 )
@@ -26,7 +26,7 @@ from .parallel import (
 __all__ = [
     "ResearchNodeHandlers",
     "ResearchState",
-    "EvidenceValidationHandler",
+    "SourceValidationHandler",
     "EvidenceSufficiencyHandler",
     "EvidenceSynthesisHandler",
     "MemoryWriteHandler",

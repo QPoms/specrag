@@ -14,9 +14,10 @@ RetrievalToolName = Literal[
     "keyword_search",
     "semantic_search",
     "hybrid_search",
+    "hyde_search",
     "rerank",
     "clause_lookup",
-    "expand_same_section",
+    "expand_source_context",
 ]
 ToolStatus = Literal["completed", "partial", "no_hits", "unavailable", "rejected"]
 ScoreKind = Literal[
@@ -48,6 +49,7 @@ class RetrievalToolRequest(_StrictModel):
     query_id: str = Field(min_length=1)
     query: str = Field(default="", max_length=4000)
     semantic_query: str | None = Field(default=None, max_length=4000)
+    hypothetical_document: str | None = Field(default=None, max_length=4000)
     target_specifications: tuple[str, ...] = Field(default=(), max_length=12)
     clause: str | None = Field(default=None, max_length=64)
     seed_chunk_ids: tuple[str, ...] = Field(default=(), max_length=50)

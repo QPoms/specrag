@@ -4,45 +4,30 @@ import hashlib
 from pathlib import Path
 
 from specrag.evidence import (
-    EvidenceConflictService,
     EvidenceSufficiencyService,
     EvidenceSynthesisService,
-    EvidenceValidationService,
     SourceEvidenceValidator,
+    SourceValidationService,
     deduplicate_candidates,
 )
 from specrag.models import (
     CandidateEvidence,
     EvidenceBackedClaim,
-    EvidenceConflict,
     EvidenceSynthesis,
-    EvidenceSupportAssessment,
     ResearchPlan,
     ResearchTask,
+    SourceValidationResult,
     TaskSufficiencyAssessment,
     ValidatedEvidence,
 )
 from specrag.orchestration import (
     EvidenceSufficiencyHandler,
     EvidenceSynthesisHandler,
-    EvidenceValidationHandler,
+    SourceValidationHandler,
     ResearchNodeHandlers,
     build_single_research_workflow,
     new_research_state,
 )
-
-
-class _SupportingAssessor:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def assess(self, task, evidence):
-        self.calls += 1
-        return EvidenceSupportAssessment(
-            evidence_id=evidence.evidence_id,
-            status="supported",
-            rationale="The source directly states the requested relation.",
-        )
 
 
 def _source(tmp_path: Path) -> tuple[str, str]:
@@ -103,22 +88,15 @@ def test_source_validation_checks_hash_locator_and_exact_excerpt(
     assert result.errors == ()
 
 
-def test_invalid_source_is_rejected_before_support_assessment(
+def test_invalid_source_is_rejected_deterministically(
     tmp_path: Path,
 ) -> None:
-    assessor = _SupportingAssessor()
-    service = EvidenceValidationService(
-        SourceEvidenceValidator(tmp_path),
-        assessor,
-    )
+    service = SourceValidationService(SourceEvidenceValidator(tmp_path))
     candidate = _candidate(tmp_path, document_sha256="B" * 64)
 
     batch = service.validate((_task(),), (candidate,))
 
-    assert assessor.calls == 0
     assert batch.source_validations[0].document_hash_valid is False
-    assert batch.validated_evidence[0].validation_status == "rejected"
-    assert batch.validated_evidence[0].source_valid is False
 
 
 def test_overlapping_duplicate_candidates_are_collapsed(tmp_path: Path) -> None:
@@ -136,10 +114,7 @@ def test_overlapping_duplicate_candidates_are_collapsed(tmp_path: Path) -> None:
 def test_validation_handler_updates_graph_state_without_sufficiency_decision(
     tmp_path: Path,
 ) -> None:
-    service = EvidenceValidationService(
-        SourceEvidenceValidator(tmp_path),
-        _SupportingAssessor(),
-    )
+    service = SourceValidationService(SourceEvidenceValidator(tmp_path))
     state = new_research_state(
         research_id="R1",
         user_question="What starts registration?",
@@ -147,11 +122,10 @@ def test_validation_handler_updates_graph_state_without_sufficiency_decision(
     state["research_tasks"] = (_task(),)
     state["candidate_evidence"] = (_candidate(tmp_path),)
 
-    update = EvidenceValidationHandler(service)(state)
+    update = SourceValidationHandler(service)(state)
 
     assert update["source_validations"][0].valid is True
-    assert update["validated_evidence"][0].source_valid is True
-    assert update["validated_evidence"][0].supports_target is True
+    assert "validated_evidence" not in update
     assert "evidence_sufficient" not in update
 
 
@@ -186,8 +160,24 @@ class _SufficiencyAssessor:
     def __init__(self, assessment: TaskSufficiencyAssessment) -> None:
         self.assessment = assessment
 
-    def assess(self, task, candidates, evidence):
+    def assess(self, task, evidence):
         return self.assessment
+
+
+def _source_validation(
+    evidence_id: str = "E1",
+    *,
+    valid: bool = True,
+) -> SourceValidationResult:
+    return SourceValidationResult(
+        evidence_id=evidence_id,
+        valid=valid,
+        path_allowed=valid,
+        document_hash_valid=valid,
+        locator_valid=valid,
+        excerpt_valid=valid,
+        errors=() if valid else ("invalid source",),
+    )
 
 
 def test_supported_item_can_still_leave_task_level_missing_relation() -> None:
@@ -203,13 +193,14 @@ def test_supported_item_can_still_leave_task_level_missing_relation() -> None:
     batch = service.evaluate(
         (_task(),),
         (_candidate_placeholder(),),
-        (_validated(),),
+        (_source_validation(),),
     )
 
     assert batch.evidence_sufficient is False
     assert batch.tasks[0].status == "running"
     assert batch.gaps[0].kind == "missing_relation"
     assert batch.gaps[0].description == assessment.missing_relation
+    assert batch.validated_evidence[0].validation_status == "partial"
 
 
 def test_sufficient_task_requires_and_records_supported_evidence() -> None:
@@ -224,12 +215,40 @@ def test_sufficient_task_requires_and_records_supported_evidence() -> None:
     batch = service.evaluate(
         (_task(),),
         (_candidate_placeholder(),),
-        (_validated(),),
+        (_source_validation(),),
     )
 
     assert batch.evidence_sufficient is True
     assert batch.tasks[0].status == "completed"
     assert batch.gaps == ()
+    assert batch.validated_evidence[0].validation_status == "supported"
+
+
+def test_source_invalid_candidate_never_reaches_sufficiency_assessor() -> None:
+    assessment = TaskSufficiencyAssessment(
+        task_id="T1",
+        status="insufficient",
+        missing_relation="No source-valid evidence was supplied.",
+        rationale="The invalid passage cannot support the task.",
+    )
+
+    class RecordingAssessor:
+        evidence = None
+
+        def assess(self, task, evidence):
+            self.evidence = evidence
+            return assessment
+
+    assessor = RecordingAssessor()
+    batch = EvidenceSufficiencyService(assessor).evaluate(
+        (_task(),),
+        (_candidate_placeholder(),),
+        (_source_validation(valid=False),),
+    )
+
+    assert assessor.evidence == ()
+    assert batch.validated_evidence[0].source_valid is False
+    assert batch.validated_evidence[0].validation_status == "rejected"
 
 
 def test_unattempted_dependency_task_is_not_assessed_as_a_gap() -> None:
@@ -251,7 +270,7 @@ def test_unattempted_dependency_task_is_not_assessed_as_a_gap() -> None:
     batch = service.evaluate(
         (predecessor, dependent),
         (_candidate_placeholder(),),
-        (_validated(),),
+        (_source_validation(),),
     )
 
     assert tuple(item.task_id for item in batch.assessments) == ("T1",)
@@ -276,7 +295,8 @@ def test_sufficiency_handler_rejects_unvalidated_evidence_reference() -> None:
         user_question="What starts registration?",
     )
     state["research_tasks"] = (_task(),)
-    state["validated_evidence"] = (_validated(),)
+    state["candidate_evidence"] = (_candidate_placeholder(),)
+    state["source_validations"] = (_source_validation(),)
 
     try:
         EvidenceSufficiencyHandler(service)(state)
@@ -349,7 +369,9 @@ def test_synthesis_handler_records_claim_to_evidence_chain(tmp_path: Path) -> No
     assert update["synthesis"].claims[0].evidence_ids == ("E1",)
 
 
-def test_validated_conflict_becomes_source_conflict_gap(tmp_path: Path) -> None:
+def test_sufficiency_judge_conflict_becomes_source_conflict_gap(
+    tmp_path: Path,
+) -> None:
     first = _candidate(
         tmp_path,
         line_end=2,
@@ -363,20 +385,7 @@ def test_validated_conflict_becomes_source_conflict_gap(tmp_path: Path) -> None:
         line_end=3,
         excerpt="The network shall process the request.",
     )
-    validation = EvidenceValidationService(
-        SourceEvidenceValidator(tmp_path),
-        _SupportingAssessor(),
-    )
-
-    class ConflictAssessor:
-        def detect(self, task, evidence):
-            return (EvidenceConflict(
-                conflict_id="X1",
-                task_id=task.task_id,
-                evidence_ids=("E1", "E2"),
-                kind="version_conflict",
-                description="The applicable version conditions disagree.",
-            ),)
+    validation = SourceValidationService(SourceEvidenceValidator(tmp_path))
 
     state = new_research_state(
         research_id="R1",
@@ -384,14 +393,17 @@ def test_validated_conflict_becomes_source_conflict_gap(tmp_path: Path) -> None:
     )
     state["research_tasks"] = (_task(),)
     state["candidate_evidence"] = (first, second)
-    validation_update = EvidenceValidationHandler(
-        validation,
-        EvidenceConflictService(ConflictAssessor()),
-    )(state)
+    validation_update = SourceValidationHandler(validation)(state)
     state.update(validation_update)
 
     sufficiency = EvidenceSufficiencyService(
-        _SufficiencyAssessor(_sufficient_assessment())
+        _SufficiencyAssessor(TaskSufficiencyAssessment(
+            task_id="T1",
+            status="conflict",
+            supporting_evidence_ids=("E1", "E2"),
+            missing_relation="The applicable version conditions disagree.",
+            rationale="The two passages directly conflict.",
+        ))
     )
     update = EvidenceSufficiencyHandler(sufficiency)(state)
 
@@ -406,9 +418,8 @@ def test_real_evidence_handlers_complete_single_research_graph(
 ) -> None:
     task = _task()
     plan = ResearchPlan(plan_id="P1", tasks=(task,))
-    validator = EvidenceValidationHandler(EvidenceValidationService(
+    source_validator = SourceValidationHandler(SourceValidationService(
         SourceEvidenceValidator(tmp_path),
-        _SupportingAssessor(),
     ))
     sufficiency = EvidenceSufficiencyHandler(EvidenceSufficiencyService(
         _SufficiencyAssessor(_sufficient_assessment())
@@ -424,9 +435,9 @@ def test_real_evidence_handlers_complete_single_research_graph(
         },
         researcher=lambda state: {
             "candidate_evidence": (_candidate(tmp_path),),
-            "last_researcher_stop_reason": "agent_finish",
+            "last_researcher_stop_reason": "submitted_for_validation",
         },
-        validator=validator,
+        source_validator=source_validator,
         sufficiency_judge=sufficiency,
         replanner=lambda state: {},
         synthesizer=synthesizer,

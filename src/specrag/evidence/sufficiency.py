@@ -7,9 +7,9 @@ from typing import Protocol
 
 from specrag.models import (
     CandidateEvidence,
-    EvidenceConflict,
     ResearchGap,
     ResearchTask,
+    SourceValidationResult,
     TaskSufficiencyAssessment,
     ValidatedEvidence,
 )
@@ -19,8 +19,7 @@ class TaskSufficiencyAssessor(Protocol):
     def assess(
         self,
         task: ResearchTask,
-        candidates: tuple[CandidateEvidence, ...],
-        evidence: tuple[ValidatedEvidence, ...],
+        evidence: tuple[CandidateEvidence, ...],
     ) -> TaskSufficiencyAssessment: ...
 
 
@@ -29,6 +28,7 @@ class EvidenceSufficiencyBatch:
     assessments: tuple[TaskSufficiencyAssessment, ...]
     gaps: tuple[ResearchGap, ...]
     tasks: tuple[ResearchTask, ...]
+    validated_evidence: tuple[ValidatedEvidence, ...]
     evidence_sufficient: bool
 
 
@@ -40,59 +40,55 @@ class EvidenceSufficiencyService:
         self,
         tasks: tuple[ResearchTask, ...],
         candidates: tuple[CandidateEvidence, ...],
-        evidence: tuple[ValidatedEvidence, ...],
-        conflicts: tuple[EvidenceConflict, ...] = (),
+        source_validations: tuple[SourceValidationResult, ...],
     ) -> EvidenceSufficiencyBatch:
+        candidate_by_id = {item.evidence_id: item for item in candidates}
+        if len(candidate_by_id) != len(candidates):
+            raise ValueError("candidate evidence IDs must be unique")
+        validation_by_id = {
+            item.evidence_id: item for item in source_validations
+        }
+        if len(validation_by_id) != len(source_validations):
+            raise ValueError("source validation evidence IDs must be unique")
+        unknown_validations = set(validation_by_id) - set(candidate_by_id)
+        if unknown_validations:
+            raise ValueError(
+                "source validation references unknown evidence: "
+                + ", ".join(sorted(unknown_validations))
+            )
+
         assessments: list[TaskSufficiencyAssessment] = []
         gaps: list[ResearchGap] = []
         updated_tasks: list[ResearchTask] = []
+        assessment_by_task: dict[str, TaskSufficiencyAssessment] = {}
         for task in tasks:
             task_candidates = tuple(
                 item for item in candidates if item.task_id == task.task_id
             )
-            task_evidence = tuple(
-                item for item in evidence if item.task_id == task.task_id
-            )
-            task_conflicts = tuple(
-                item for item in conflicts if item.task_id == task.task_id
+            valid_candidates = tuple(
+                item
+                for item in task_candidates
+                if (
+                    item.evidence_id in validation_by_id
+                    and validation_by_id[item.evidence_id].valid
+                )
             )
             if (
                 task.status == "pending"
                 and not task_candidates
-                and not task_evidence
-                and not task_conflicts
             ):
                 # A dependency-blocked task has not run yet. It has no evidence
                 # to assess and must not create a synthetic gap or consume a
                 # re-plan before its predecessors complete.
                 updated_tasks.append(task)
                 continue
-            if task_conflicts:
-                description = "; ".join(
-                    item.description for item in task_conflicts
-                )
-                assessment = TaskSufficiencyAssessment(
-                    task_id=task.task_id,
-                    status="conflict",
-                    supporting_evidence_ids=(),
-                    missing_relation=description,
-                    rationale="Conflicting validated evidence requires resolution.",
-                )
-            else:
-                assessment = self.assessor.assess(
-                    task,
-                    task_candidates,
-                    task_evidence,
-                )
+            assessment = self.assessor.assess(task, valid_candidates)
             if assessment.task_id != task.task_id:
                 raise ValueError(
                     "sufficiency assessment returned a mismatched task ID"
                 )
             eligible = {
-                item.evidence_id
-                for item in task_evidence
-                if item.source_valid
-                and item.validation_status in {"supported", "partial"}
+                item.evidence_id for item in valid_candidates
             }
             unknown = set(assessment.supporting_evidence_ids) - eligible
             if unknown:
@@ -100,20 +96,16 @@ class EvidenceSufficiencyService:
                     "sufficiency assessment cites ineligible evidence: "
                     + ", ".join(sorted(unknown))
                 )
-            if assessment.status == "sufficient" and not (
-                set(assessment.supporting_evidence_ids)
-                & {
-                    item.evidence_id
-                    for item in task_evidence
-                    if item.source_valid
-                    and item.validation_status == "supported"
-                }
+            if (
+                assessment.status == "sufficient"
+                and not assessment.supporting_evidence_ids
             ):
                 raise ValueError(
-                    "sufficient task requires at least one supported evidence item"
+                    "sufficient task requires at least one selected evidence item"
                 )
 
             assessments.append(assessment)
+            assessment_by_task[task.task_id] = assessment
             if assessment.status == "sufficient":
                 status = "completed"
             elif assessment.status == "conflict":
@@ -134,6 +126,57 @@ class EvidenceSufficiencyService:
                     description=assessment.missing_relation or assessment.rationale,
                 ))
 
+        validated: list[ValidatedEvidence] = []
+        for candidate in candidates:
+            source_result = validation_by_id.get(candidate.evidence_id)
+            if source_result is None:
+                continue
+            assessment = assessment_by_task.get(candidate.task_id)
+            selected = bool(
+                assessment
+                and candidate.evidence_id
+                in assessment.supporting_evidence_ids
+            )
+            if not source_result.valid:
+                validated.append(ValidatedEvidence(
+                    evidence_id=candidate.evidence_id,
+                    task_id=candidate.task_id,
+                    source_valid=False,
+                    supports_target=False,
+                    validation_status="rejected",
+                    rationale=(
+                        "; ".join(source_result.errors)
+                        or "Source provenance validation failed."
+                    ),
+                ))
+            elif not selected:
+                validated.append(ValidatedEvidence(
+                    evidence_id=candidate.evidence_id,
+                    task_id=candidate.task_id,
+                    source_valid=True,
+                    supports_target=False,
+                    validation_status="rejected",
+                    rationale=(
+                        "Not selected by the task-level sufficiency assessment."
+                    ),
+                ))
+            else:
+                assert assessment is not None
+                validation_status = {
+                    "sufficient": "supported",
+                    "partial": "partial",
+                    "insufficient": "partial",
+                    "conflict": "conflict",
+                }[assessment.status]
+                validated.append(ValidatedEvidence(
+                    evidence_id=candidate.evidence_id,
+                    task_id=candidate.task_id,
+                    source_valid=True,
+                    supports_target=assessment.status != "conflict",
+                    validation_status=validation_status,
+                    rationale=assessment.rationale,
+                ))
+
         sufficient = bool(tasks) and all(
             item.status == "completed" for item in updated_tasks
         )
@@ -141,6 +184,7 @@ class EvidenceSufficiencyService:
             assessments=tuple(assessments),
             gaps=tuple(gaps),
             tasks=tuple(updated_tasks),
+            validated_evidence=tuple(validated),
             evidence_sufficient=sufficient,
         )
 

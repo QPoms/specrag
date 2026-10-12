@@ -8,7 +8,7 @@ from specrag.retrieval.hybrid import HybridMarkdownRetriever
 from specrag.retrieval.index import searchable_text
 from specrag.retrieval.models import MarkdownChunk, RetrievalHit
 from specrag.retrieval.navigation import (
-    expand_same_section_chunks,
+    expand_source_context_chunks,
     lookup_clause_chunks,
 )
 from specrag.retrieval.reranker import CrossEncoderReranker
@@ -125,7 +125,11 @@ class KeywordSearchTool(_RetrieverTool):
     name: RetrievalToolName = "keyword_search"
     capability = ToolCapability(
         name=name,
-        description="Deterministic BM25 search over the active 3GPP corpus scope.",
+        description=(
+            "BM25 search for short exact protocol identifiers, message names, "
+            "information elements, acronyms, or distinctive source wording; "
+            "avoid long concatenations of conceptual terms."
+        ),
         required_fields=("query",),
         optional_fields=("target_specifications", "limit"),
         execution_kind="deterministic",
@@ -164,7 +168,10 @@ class SemanticSearchTool(_RetrieverTool):
     name: RetrievalToolName = "semantic_search"
     capability = ToolCapability(
         name=name,
-        description="Embedding search over the active 3GPP corpus scope.",
+        description=(
+            "Embedding search for behavior, conditions, responsibilities, or "
+            "relationships whose source wording may differ from the question."
+        ),
         required_fields=("query",),
         optional_fields=("target_specifications", "limit"),
         execution_kind="model_scored",
@@ -204,7 +211,10 @@ class HybridSearchTool(_RetrieverTool):
     name: RetrievalToolName = "hybrid_search"
     capability = ToolCapability(
         name=name,
-        description="BM25 and semantic retrieval fused with reciprocal rank fusion.",
+        description=(
+            "BM25 and embedding retrieval fused with reciprocal rank fusion; "
+            "use when exact protocol anchors and conceptual meaning both matter."
+        ),
         required_fields=("query",),
         optional_fields=("semantic_query", "target_specifications", "limit"),
         execution_kind="model_scored",
@@ -230,13 +240,60 @@ class HybridSearchTool(_RetrieverTool):
         )
 
 
+class HyDESearchTool(_RetrieverTool):
+    name: RetrievalToolName = "hyde_search"
+    capability = ToolCapability(
+        name=name,
+        description=(
+            "Embed an untrusted model-generated hypothetical normative passage "
+            "to retrieve similar real 3GPP source chunks; the passage is never "
+            "evidence."
+        ),
+        required_fields=("hypothetical_document",),
+        optional_fields=("target_specifications", "limit"),
+        execution_kind="model_scored",
+    )
+
+    def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
+        hypothetical_document = request.hypothetical_document or ""
+        if not hypothetical_document.strip():
+            return self._reject(
+                request,
+                "hyde_search requires a hypothetical document",
+            )
+        try:
+            candidates = self.retriever.semantic_candidates(
+                hypothetical_document,
+                allowed_specifications=request.target_specifications,
+                limit=request.limit,
+            )
+        except Exception as exc:
+            return self._result(
+                request,
+                errors=(f"{type(exc).__name__}: {exc}",),
+            )
+        return self._result(
+            request,
+            (
+                self._chunk_evidence(
+                    self.retriever.chunk_by_id[chunk_id],
+                    request=request,
+                    rank=rank,
+                    score=distance,
+                    score_kind="semantic_distance",
+                )
+                for rank, (chunk_id, distance) in enumerate(candidates, 1)
+            ),
+        )
+
+
 class ClauseLookupTool(_RetrieverTool):
     name: RetrievalToolName = "clause_lookup"
     capability = ToolCapability(
         name=name,
         description=(
-            "Exact clause identifier, title, or combined-heading lookup in "
-            "indexed 3GPP source chunks."
+            "Lookup by a known clause identifier, exact title, or combined "
+            "heading; do not use a guessed clause number."
         ),
         required_fields=("clause",),
         optional_fields=("target_specifications", "limit"),
@@ -264,11 +321,15 @@ class ClauseLookupTool(_RetrieverTool):
         )
 
 
-class ExpandSameSectionTool(_RetrieverTool):
-    name: RetrievalToolName = "expand_same_section"
+class ExpandSourceContextTool(_RetrieverTool):
+    name: RetrievalToolName = "expand_source_context"
     capability = ToolCapability(
         name=name,
-        description="Bounded source-order expansion around trusted seed chunks.",
+        description=(
+            "Bounded source-order expansion around trusted seed chunks, "
+            "including the current subsection and its immediately adjacent "
+            "sibling subsections within the same parent section."
+        ),
         required_fields=("seed_chunk_ids",),
         optional_fields=("limit",),
         execution_kind="deterministic",
@@ -276,7 +337,7 @@ class ExpandSameSectionTool(_RetrieverTool):
 
     def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
         try:
-            chunks = expand_same_section_chunks(
+            chunks = expand_source_context_chunks(
                 self.retriever.chunks,
                 request.seed_chunk_ids,
                 limit=request.limit,
@@ -296,7 +357,10 @@ class RerankTool(_RetrieverTool):
     name: RetrievalToolName = "rerank"
     capability = ToolCapability(
         name=name,
-        description="Cross-encoder reranking of trusted candidate source chunks.",
+        description=(
+            "Cross-encoder reranking of already observed trusted candidate "
+            "chunks; this does not discover new source candidates."
+        ),
         required_fields=("query", "seed_chunk_ids"),
         optional_fields=("limit",),
         execution_kind="model_scored",
@@ -366,9 +430,10 @@ def retrieval_tool_capabilities() -> tuple[ToolCapability, ...]:
         KeywordSearchTool.capability,
         SemanticSearchTool.capability,
         HybridSearchTool.capability,
+        HyDESearchTool.capability,
         RerankTool.capability,
         ClauseLookupTool.capability,
-        ExpandSameSectionTool.capability,
+        ExpandSourceContextTool.capability,
     )
     return tuple(sorted(capabilities, key=lambda item: item.name))
 
@@ -383,9 +448,10 @@ def build_retrieval_tool_registry(
         KeywordSearchTool(retriever),
         SemanticSearchTool(retriever),
         HybridSearchTool(retriever),
+        HyDESearchTool(retriever),
         RerankTool(retriever, reranker),
         ClauseLookupTool(retriever),
-        ExpandSameSectionTool(retriever),
+        ExpandSourceContextTool(retriever),
     ):
         registry.register(tool)
     return registry
@@ -393,8 +459,9 @@ def build_retrieval_tool_registry(
 
 __all__ = [
     "ClauseLookupTool",
-    "ExpandSameSectionTool",
+    "ExpandSourceContextTool",
     "HybridSearchTool",
+    "HyDESearchTool",
     "KeywordSearchTool",
     "RerankTool",
     "SemanticSearchTool",

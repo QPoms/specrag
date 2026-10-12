@@ -274,7 +274,10 @@ def build_parallel_research_workflow(
     builder.add_node("dispatch", lambda state: {})
     builder.add_node("researcher_worker", _worker_node(researcher))
     builder.add_node("fan_in", _fan_in)
-    builder.add_node("validator", _node(handlers.validator))
+    builder.add_node(
+        "source_validator",
+        _node(handlers.source_validator),
+    )
     builder.add_node("sufficiency_judge", _node(handlers.sufficiency_judge))
     builder.add_node("budget_guard", _budget_guard)
     builder.add_node("replanner", _replanner_node(handlers.replanner))
@@ -285,8 +288,8 @@ def build_parallel_research_workflow(
     builder.add_edge("planner", "dispatch")
     builder.add_conditional_edges("dispatch", _dispatch_workers)
     builder.add_edge("researcher_worker", "fan_in")
-    builder.add_edge("fan_in", "validator")
-    builder.add_edge("validator", "sufficiency_judge")
+    builder.add_edge("fan_in", "source_validator")
+    builder.add_edge("source_validator", "sufficiency_judge")
     builder.add_edge("sufficiency_judge", "budget_guard")
     builder.add_conditional_edges("budget_guard", _route_after_parallel_guard)
     builder.add_edge("replanner", "dispatch")
