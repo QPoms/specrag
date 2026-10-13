@@ -32,7 +32,10 @@ class StructuredTaskSufficiencyAssessor:
             prompt_version=SUFFICIENCY_PROMPT_VERSION,
             instructions=SUFFICIENCY_INSTRUCTIONS,
             input_payload={
-                "task": task.model_dump(mode="json"),
+                "task": {
+                    "task_id": task.task_id,
+                    "question": task.question,
+                },
                 "source_valid_evidence": [
                     item.model_dump(mode="json") for item in evidence
                 ],

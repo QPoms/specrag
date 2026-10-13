@@ -203,9 +203,30 @@ class ToolCallRecord(_StrictModel):
     call_id: str = Field(min_length=1)
     task_id: str = Field(min_length=1)
     tool_name: str = Field(min_length=1)
+    query_id: str = ""
+    lexical_query: str = ""
+    semantic_query: str = ""
+    hypothetical_document: str = ""
+    clause: str = ""
+    target_specifications: tuple[str, ...] = ()
+    seed_evidence_ids: tuple[str, ...] = ()
     status: Literal["completed", "partial", "no_hits", "unavailable", "rejected"]
     evidence_ids: tuple[str, ...] = ()
+    new_evidence_ids: tuple[str, ...] = ()
+    observed_evidence: tuple[CandidateEvidence, ...] = ()
     error: str | None = None
+
+
+class ResearcherEvidenceSelectionRecord(_StrictModel):
+    """One audited replacement of a task's bounded active evidence set."""
+
+    selection_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    round_number: int = Field(ge=1)
+    phase: Literal["retrieval", "finalization"]
+    query_id: str = Field(min_length=1)
+    retained_evidence_ids: tuple[str, ...] = ()
+    assessment: str = Field(min_length=1)
 
 
 class ResearchWorkerResult(_StrictModel):
@@ -214,6 +235,7 @@ class ResearchWorkerResult(_StrictModel):
     task_id: str = Field(min_length=1)
     candidate_evidence: tuple[CandidateEvidence, ...] = ()
     tool_calls: tuple[ToolCallRecord, ...] = ()
+    evidence_selections: tuple[ResearcherEvidenceSelectionRecord, ...] = ()
     tool_calls_used: int = Field(default=0, ge=0)
     stop_reason: ResearcherStopReason
     errors: tuple[str, ...] = ()
@@ -224,15 +246,60 @@ class ResearchBudget(_StrictModel):
     max_tool_calls: int = Field(default=12, ge=1)
     max_replans: int = Field(default=3, ge=0)
     tool_calls_used: int = Field(default=0, ge=0)
+    tool_calls_used_by_task: tuple[tuple[str, int], ...] = ()
     replans_used: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _within_limits(self) -> "ResearchBudget":
-        if self.tool_calls_used > self.max_tool_calls:
-            raise ValueError("tool call usage exceeds its budget")
+        seen: set[str] = set()
+        accounted = 0
+        for task_id, used in self.tool_calls_used_by_task:
+            if not task_id.strip():
+                raise ValueError("task tool-call usage requires a task ID")
+            if task_id in seen:
+                raise ValueError("task tool-call usage IDs must be unique")
+            if used < 0:
+                raise ValueError("task tool-call usage cannot be negative")
+            if used > self.max_tool_calls:
+                raise ValueError("task tool-call usage exceeds its budget")
+            seen.add(task_id)
+            accounted += used
+        if accounted != self.tool_calls_used:
+            raise ValueError("aggregate tool-call usage must match task usage")
         if self.replans_used > self.max_replans:
             raise ValueError("re-plan usage exceeds its budget")
         return self
+
+    def tool_calls_used_for(self, task_id: str) -> int:
+        """Return calls charged to one ResearchTask."""
+
+        return dict(self.tool_calls_used_by_task).get(task_id, 0)
+
+    def remaining_tool_calls_for(self, task_id: str) -> int:
+        """Return the independent remaining allowance for one ResearchTask."""
+
+        return self.max_tool_calls - self.tool_calls_used_for(task_id)
+
+    def record_tool_calls(self, task_id: str, count: int) -> "ResearchBudget":
+        """Charge tool calls to one task while retaining aggregate audit data."""
+
+        if not task_id.strip():
+            raise ValueError("task ID must not be blank")
+        if count < 0:
+            raise ValueError("tool-call increment cannot be negative")
+        usage = dict(self.tool_calls_used_by_task)
+        updated = usage.get(task_id, 0) + count
+        if updated > self.max_tool_calls:
+            raise ValueError(
+                f"ResearchTask {task_id} used {updated} tool calls against "
+                f"its budget {self.max_tool_calls}"
+            )
+        usage[task_id] = updated
+        ordered = tuple(sorted(usage.items()))
+        return self.model_copy(update={
+            "tool_calls_used": sum(value for _, value in ordered),
+            "tool_calls_used_by_task": ordered,
+        })
 
 
 __all__ = [

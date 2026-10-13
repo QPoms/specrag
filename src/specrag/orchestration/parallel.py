@@ -77,11 +77,16 @@ class ParallelResearcherHandler:
             cast(ResearchState, state),
             execution,
             query_to_task=query_to_task,
+            task_id=task.task_id,
         )
         old_candidates = {
             evidence.evidence_id for evidence in state["candidate_evidence"]
         }
         old_calls = {call.call_id for call in state["tool_calls"]}
+        old_selections = {
+            item.selection_id
+            for item in state["researcher_evidence_selections"]
+        }
         return ResearchWorkerResult(
             task_id=task.task_id,
             candidate_evidence=tuple(
@@ -93,6 +98,11 @@ class ParallelResearcherHandler:
                 call
                 for call in update["tool_calls"]
                 if call.call_id not in old_calls
+            ),
+            evidence_selections=tuple(
+                item
+                for item in update["researcher_evidence_selections"]
+                if item.selection_id not in old_selections
             ),
             tool_calls_used=(
                 execution.search_actions_used
@@ -172,22 +182,23 @@ def _ready_tasks(state: ParallelResearchState) -> tuple[ResearchTask, ...]:
 
 
 def _dispatch_workers(state: ParallelResearchState) -> list[Send] | str:
-    tasks = _ready_tasks(state)
+    budget = state["budget"]
+    tasks = tuple(
+        task
+        for task in _ready_tasks(state)
+        if budget.remaining_tool_calls_for(task.task_id) > 0
+    )
     if not tasks:
         return "budget_guard"
-    remaining = state["budget"].max_tool_calls - state["budget"].tool_calls_used
-    if remaining < len(tasks):
-        tasks = tasks[:remaining]
-    if not tasks:
-        return "budget_guard"
-    per_worker = max(1, remaining // len(tasks))
     return [
         Send(
             "researcher_worker",
             {
                 "state": state,
                 "task": task,
-                "max_tool_calls": per_worker,
+                "max_tool_calls": budget.remaining_tool_calls_for(
+                    task.task_id
+                ),
             },
         )
         for task in tasks
@@ -213,10 +224,12 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
     candidate_ids = {item.evidence_id for item in existing_candidates}
     existing_calls = list(state["tool_calls"])
     call_ids = {item.call_id for item in existing_calls}
+    existing_selections = list(state["researcher_evidence_selections"])
+    selection_ids = {item.selection_id for item in existing_selections}
     tasks = list(state["research_tasks"])
     task_by_id = {task.task_id: task for task in tasks}
-    total_used = 0
     errors = list(state["errors"])
+    budget = state["budget"]
     new_results = state["researcher_results"][
         state["researcher_results_processed"]:
     ]
@@ -229,19 +242,23 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
             if call.call_id not in call_ids:
                 existing_calls.append(call)
                 call_ids.add(call.call_id)
-        total_used += result.tool_calls_used
+        for selection in result.evidence_selections:
+            if selection.selection_id not in selection_ids:
+                existing_selections.append(selection)
+                selection_ids.add(selection.selection_id)
+        budget = budget.record_tool_calls(
+            result.task_id,
+            result.tool_calls_used,
+        )
         errors.extend(result.errors)
         task = task_by_id[result.task_id]
         task_by_id[result.task_id] = task.model_copy(update={"status": "running"})
-    budget = state["budget"]
-    used = budget.tool_calls_used + total_used
-    if used > budget.max_tool_calls:
-        raise ValueError("parallel Researcher workers exceeded tool budget")
     return {
         "candidate_evidence": tuple(existing_candidates),
         "tool_calls": tuple(existing_calls),
+        "researcher_evidence_selections": tuple(existing_selections),
         "research_tasks": tuple(task_by_id[task.task_id] for task in tasks),
-        "budget": budget.model_copy(update={"tool_calls_used": used}),
+        "budget": budget,
         "iteration": state["iteration"] + 1,
         "errors": tuple(errors),
         "researcher_results_processed": len(state["researcher_results"]),

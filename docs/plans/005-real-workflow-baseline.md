@@ -263,8 +263,58 @@ not a formal evaluation framework.
   existing six-call global budget. T1 passed source validation and the
   Sufficiency Judge with no gap, but consumed all six calls, so the budget guard
   stopped before the now-ready T2 could receive dependency context.
-- [ ] Define complex-task budget allocation so one predecessor cannot consume
-  the calls required by pending dependent tasks, then rerun 045 through T2.
+- [x] Define tool-call budgets per ResearchTask rather than per question. Keep
+  aggregate usage for audit, but let every independent or dependency-ready
+  task receive its own remaining allowance so a predecessor cannot consume a
+  dependent task's calls. Regression tests cover parallel siblings and a
+  dependency wave. A frozen-plan complex evaluation runner preserves the
+  reviewed Planner decomposition while exercising the real downstream graph;
+  rerunning 045 through T2 remains the live acceptance gate.
+- [x] Tighten task-level sufficiency so a successful procedure instance or
+  related mechanism cannot substitute for a directly stated normative
+  eligibility condition, decision criterion, required branch, or fallback.
+  A controlled replay of 045's former evidence set, without TS 38.331,
+  returned `partial` with the correct missing-condition/fallback gap; a fresh
+  frozen-plan run retrieved TS 38.331 directly and completed T1 then T2.
+- [x] Require cross-hop or cross-stage tasks to search for an end-to-end
+  procedure containing consecutive before/after values instead of exhausting
+  the task budget inside one interface message schema. Rerun frozen-plan 048
+  and require coverage of both TS 29.274 and TS 23.401. The v1.11/v1.6 run
+  completed both tasks with evidence from both specifications.
+- [x] Treat specifications found in dependency context as grounded follow-up
+  options, not automatic scope restrictions for a new dependent objective.
+  Persist exact tool queries and target-specification scopes in graph audit
+  records, then rerun 048 with at least one unrestricted cross-stage search.
+  T2 used direct grounded clause lookups and an unrestricted hybrid comparison
+  query before completing with five calls.
+- [x] Preserve the Researcher's complete per-call observed candidate evidence,
+  newly discovered evidence IDs, and every active-set selection in graph audit
+  state. Keep only the selected active evidence on the validation path, so the
+  audit distinguishes retrieval-recall failures from model-selection failures
+  without changing evidence semantics.
+- [x] Judge sufficiency at the semantic granularity explicitly requested by the
+  task. Do not require exhaustive per-parameter, per-information-element, or
+  per-branch coverage unless the question or objective asks for it.
+- [x] Clarify sufficiency evidence semantics: explicit factual premises may
+  collectively establish the requested conclusion, while the task objective
+  clarifies the research target without increasing answer granularity beyond
+  the question. Descriptions, mappings, comparisons, and evolution may be
+  established collectively. An overall permitting, triggering, continuation,
+  selection, or success criterion must be explicitly stated at the requested
+  scope rather than constructed from a locally successful branch. Require a
+  failure or fallback branch only when the task requests it. Controlled frozen-
+  evidence replays accept 048 T2's cross-passage content comparison while
+  keeping 045 T1 without its overall TS 38.331 continuation criterion partial.
+- [x] Separate clause-address hypotheses from evidence grounding. Permit a
+  model-proposed clause lookup while keeping specification scope constrained;
+  only source content returned by the lookup may enter the candidate pool.
+- [x] Make HyDE retrieval hybrid: fuse BM25 over concise exact protocol anchors
+  with embedding retrieval over the hypothetical normative passage instead of
+  relying on dense retrieval alone.
+- [x] Prefer direct clause lookup when trusted evidence names an exact
+  answer-bearing specification and clause. Keep the specification in
+  `target_specifications`, keep the clause value free of a duplicated
+  specification prefix, and reserve source-context expansion for local gaps.
 - [ ] Run planning-only inspection on all 50 development questions after the
   simple and complex gates pass.
 - [ ] Inspect failure modes and adjust only the assembly contract when needed.

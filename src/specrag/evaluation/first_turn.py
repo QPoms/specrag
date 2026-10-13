@@ -53,7 +53,7 @@ def run_first_turn_evaluation(
     question_set: Path = QUESTION_SET,
     config: AppConfig | None = None,
 ) -> dict[str, Any]:
-    """Execute accepted first-turn actions without making another model call."""
+    """Execute accepted first-turn native calls without another model call."""
 
     if release < 1:
         raise ValueError("retrieval Release must be positive")
@@ -90,36 +90,33 @@ def run_first_turn_evaluation(
         result_limit = int(
             plan.input_payload["budget"]["hits_per_search_ceiling"]
         )
-        action_results: list[dict[str, Any]] = []
+        tool_call_results: list[dict[str, Any]] = []
         collected_evidence: list[ToolEvidence] = []
 
-        for action, validation in zip(
-            plan.decision.actions,
+        for call, validation in zip(
+            plan.retrieval_calls,
             plan.validations,
             strict=True,
         ):
-            action_record: dict[str, Any] = {
-                "action": action.model_dump(mode="json"),
+            call_record: dict[str, Any] = {
+                "call": call.model_dump(mode="json"),
                 "validation": validation.model_dump(mode="json"),
             }
-            if (
-                not validation.accepted
-                or action.tool == "submit_for_validation"
-            ):
-                action_record["result"] = None
-                action_results.append(action_record)
+            if not validation.accepted:
+                call_record["result"] = None
+                tool_call_results.append(call_record)
                 continue
             request = build_retrieval_tool_request(
-                action,
+                call,
                 round_number=1,
                 ledger=ledger,
                 result_limit=result_limit,
             )
-            result = registry.invoke(action.tool, request)
+            result = registry.invoke(call.tool, request)
             collected_evidence.extend(result.evidence)
-            action_record["request"] = request.model_dump(mode="json")
-            action_record["result"] = result.model_dump(mode="json")
-            action_results.append(action_record)
+            call_record["request"] = request.model_dump(mode="json")
+            call_record["result"] = result.model_dump(mode="json")
+            tool_call_results.append(call_record)
 
         target_coverage: list[dict[str, Any]] = []
         for target in questions[question_id]["evidence_targets"]:
@@ -140,7 +137,7 @@ def run_first_turn_evaluation(
 
         targets_hit = sum(item["hit"] for item in target_coverage)
         question_result = {
-            "schema_version": "specrag.researcher-first-turn-evaluation/v1",
+            "schema_version": "specrag.researcher-first-turn-evaluation/v2",
             "question_id": question_id,
             "planning_artifact": artifact_path.relative_to(REPO_ROOT).as_posix(),
             "planning_artifact_sha256": hashlib.sha256(
@@ -149,7 +146,7 @@ def run_first_turn_evaluation(
             "prompt_version": artifact["researcher"]["prompt_version"],
             "execution_scope": retriever.corpus_scope.model_dump(mode="json"),
             "second_round_model_called": False,
-            "action_results": action_results,
+            "tool_call_results": tool_call_results,
             "unique_source_chunks": len({
                 evidence.chunk_id for evidence in collected_evidence
             }),
@@ -167,13 +164,13 @@ def run_first_turn_evaluation(
 
     summary = {
         "schema_version": (
-            "specrag.researcher-first-turn-evaluation-summary/v1"
+            "specrag.researcher-first-turn-evaluation-summary/v2"
         ),
         "planning_directory": planning_directory.relative_to(REPO_ROOT).as_posix(),
         "prompt_version": question_results[0]["prompt_version"],
         "question_count": len(question_results),
-        "action_count": sum(
-            len(item["action_results"]) for item in question_results
+        "tool_call_count": sum(
+            len(item["tool_call_results"]) for item in question_results
         ),
         "questions_with_all_targets_hit": sum(
             item["all_targets_hit"] for item in question_results

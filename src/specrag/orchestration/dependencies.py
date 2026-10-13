@@ -15,10 +15,10 @@ def build_dependency_context(
 ) -> tuple[dict[str, Any], ...]:
     """Return source-backed findings required by one dependent task.
 
-    Only evidence selected by a sufficient predecessor assessment and validated
-    as supported is exposed. Dependency evidence remains owned by its original
-    task; the downstream Researcher uses it to scope new research rather than
-    relabelling it as evidence for the dependent task.
+    Only evidence selected by a sufficient predecessor assessment and
+    validated as supported is exposed. Dependency evidence remains owned by
+    its original task; downstream uses it to scope new research rather than
+    relabeling it.
     """
 
     if not task.dependencies:

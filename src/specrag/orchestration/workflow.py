@@ -19,6 +19,7 @@ from specrag.models import (
     ResearchPlan,
     ResearchRouteDecision,
     ResearchTask,
+    ResearcherEvidenceSelectionRecord,
     ResearchWorkerResult,
     SourceValidationResult,
     TaskSufficiencyAssessment,
@@ -41,6 +42,7 @@ _CHECKPOINT_MODEL_ALLOWLIST = (
     ResearchPlan,
     ResearchRouteDecision,
     ResearchTask,
+    ResearcherEvidenceSelectionRecord,
     ResearchWorkerResult,
     SourceValidationResult,
     TaskSufficiencyAssessment,
@@ -136,7 +138,20 @@ def _budget_guard(state: ResearchState) -> dict[str, object]:
     budget = state["budget"]
     if state["iteration"] >= budget.max_iterations:
         return {"stop_reason": "iteration_budget"}
-    if budget.tool_calls_used >= budget.max_tool_calls:
+    completed = {
+        task.task_id
+        for task in state["research_tasks"]
+        if task.status == "completed"
+    }
+    ready = (
+        task
+        for task in state["research_tasks"]
+        if task.status in {"pending", "running"}
+        and set(task.dependencies).issubset(completed)
+    )
+    if not any(
+        budget.remaining_tool_calls_for(task.task_id) > 0 for task in ready
+    ):
         return {"stop_reason": "tool_budget"}
     if (
         not _can_advance_without_replan(state)

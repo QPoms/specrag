@@ -14,7 +14,11 @@ from specrag.evidence import (
     SourceValidationService,
 )
 from specrag.memory import MemoryDistiller, ValidatedMemoryService
-from specrag.models import CandidateEvidence, ToolCallRecord
+from specrag.models import (
+    CandidateEvidence,
+    ResearcherEvidenceSelectionRecord,
+    ToolCallRecord,
+)
 
 from .dependencies import build_dependency_context
 from .state import ResearchState
@@ -40,16 +44,23 @@ class SingleResearcherHandler:
         )
         if not ready:
             raise ValueError("no dependency-ready research task is available")
-        selected = ready[0]
+        budget = state["budget"]
+        selected = next(
+            (
+                task
+                for task in ready
+                if budget.remaining_tool_calls_for(task.task_id) > 0
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError("Researcher task tool-call budgets are exhausted")
         running = selected.model_copy(update={"status": "running"})
         tasks = tuple(
             running if task.task_id == selected.task_id else task
             for task in state["research_tasks"]
         )
-        budget = state["budget"]
-        remaining_calls = budget.max_tool_calls - budget.tool_calls_used
-        if remaining_calls < 1:
-            raise ValueError("Researcher tool-call budget is exhausted")
+        remaining_calls = budget.remaining_tool_calls_for(selected.task_id)
 
         relevant_gaps = tuple(
             gap.model_dump(mode="json")
@@ -74,6 +85,7 @@ class SingleResearcherHandler:
             adapted_state,
             execution,
             query_to_task=query_to_task,
+            task_id=selected.task_id,
         )
         update["research_tasks"] = tasks
         return update
@@ -173,6 +185,7 @@ def researcher_execution_update(
     execution: AgenticRetrievalExecution,
     *,
     query_to_task: Mapping[str, str],
+    task_id: str | None = None,
 ) -> dict[str, object]:
     """Translate an audited Researcher execution into a state update.
 
@@ -194,85 +207,162 @@ def researcher_execution_update(
         (candidate.task_id, candidate.chunk_id): candidate.evidence_id
         for candidate in candidates
     }
+    evidence_by_id = {
+        candidate.evidence_id: candidate for candidate in candidates
+    }
     evidence_ids: dict[tuple[str, str], str] = {}
-    for task_result in execution.evidence_execution.tasks:
-        try:
-            task_id = query_to_task[task_result.query_id]
-        except KeyError as exc:
-            raise ValueError(
-                f"missing research-task mapping for {task_result.query_id}"
-            ) from exc
-        for hit in task_result.hits:
-            source_identity = (task_id, hit.chunk_id)
-            candidate_id = known_sources.get(
-                source_identity,
-                _candidate_id(task_id, hit.chunk_id),
-            )
-            evidence_ids[(task_result.query_id, hit.hit_id)] = candidate_id
-            if source_identity in known_sources:
-                continue
-            if hit.release is None:
-                raise ValueError(f"retrieval hit has no Release: {hit.hit_id}")
-            candidates.append(CandidateEvidence(
-                evidence_id=candidate_id,
-                task_id=task_id,
-                chunk_id=hit.chunk_id,
-                specification=hit.specification,
-                release=hit.release,
-                version=hit.version,
-                source_path=hit.source_path,
-                document_sha256=hit.document_sha256,
-                heading_path=hit.heading_path,
-                line_start=hit.line_start,
-                line_end=hit.line_end,
-                excerpt=hit.excerpt,
-            ))
-            known_sources[source_identity] = candidate_id
+
+    def convert_hits(retrieval_execution, *, promote: bool) -> None:
+        for task_result in retrieval_execution.tasks:
+            try:
+                mapped_task_id = query_to_task[task_result.query_id]
+            except KeyError as exc:
+                raise ValueError(
+                    "missing research-task mapping for "
+                    f"{task_result.query_id}"
+                ) from exc
+            for hit in task_result.hits:
+                source_identity = (mapped_task_id, hit.chunk_id)
+                candidate_id = known_sources.get(
+                    source_identity,
+                    _candidate_id(mapped_task_id, hit.chunk_id),
+                )
+                evidence_ids[(task_result.query_id, hit.hit_id)] = candidate_id
+                candidate = evidence_by_id.get(candidate_id)
+                if candidate is None:
+                    if hit.release is None:
+                        raise ValueError(
+                            f"retrieval hit has no Release: {hit.hit_id}"
+                        )
+                    candidate = CandidateEvidence(
+                        evidence_id=candidate_id,
+                        task_id=mapped_task_id,
+                        chunk_id=hit.chunk_id,
+                        specification=hit.specification,
+                        release=hit.release,
+                        version=hit.version,
+                        source_path=hit.source_path,
+                        document_sha256=hit.document_sha256,
+                        heading_path=hit.heading_path,
+                        line_start=hit.line_start,
+                        line_end=hit.line_end,
+                        excerpt=hit.excerpt,
+                    )
+                    evidence_by_id[candidate_id] = candidate
+                if promote and source_identity not in known_sources:
+                    candidates.append(candidate)
+                    known_sources[source_identity] = candidate_id
+
+    convert_hits(
+        execution.candidate_evidence_execution
+        or execution.evidence_execution,
+        promote=False,
+    )
+    convert_hits(execution.evidence_execution, promote=True)
 
     calls = list(state["tool_calls"])
     iteration = state["iteration"] + 1
     for turn in execution.turns:
         for outcome in turn.outcomes:
-            if outcome.action.tool == "submit_for_validation":
-                continue
-            task_id = query_to_task.get(
-                outcome.action.query_id,
+            arguments = outcome.call.arguments
+            query_id = str(arguments.get("query_id", ""))
+            outcome_task_id = query_to_task.get(
+                query_id,
                 "unassigned",
             )
             calls.append(ToolCallRecord(
-                call_id=(
-                    f"I{iteration}:R{turn.round_number}:"
-                    f"{outcome.action.action_id}"
+                call_id=outcome.call.call_id,
+                task_id=outcome_task_id,
+                tool_name=outcome.call.tool,
+                query_id=query_id,
+                lexical_query=str(arguments.get("lexical_query", "")),
+                semantic_query=str(arguments.get("semantic_query", "")),
+                hypothetical_document=str(
+                    arguments.get("hypothetical_document", "")
                 ),
-                task_id=task_id,
-                tool_name=outcome.action.tool,
+                clause=str(arguments.get("clause", "")),
+                target_specifications=tuple(
+                    arguments.get("target_specifications", ())
+                ),
+                seed_evidence_ids=tuple(
+                    arguments.get("seed_evidence_ids", ())
+                ),
                 status=outcome.status,
                 evidence_ids=tuple(
                     evidence_ids.get(
-                        (outcome.action.query_id, evidence_id),
+                        (query_id, evidence_id),
                         evidence_id,
                     )
                     for evidence_id in outcome.evidence_ids
                 ),
+                new_evidence_ids=tuple(
+                    evidence_ids.get(
+                        (query_id, evidence_id),
+                        evidence_id,
+                    )
+                    for evidence_id in outcome.new_evidence_ids
+                ),
+                observed_evidence=tuple(
+                    evidence_by_id[mapped_id]
+                    for evidence_id in outcome.evidence_ids
+                    if (
+                        mapped_id := evidence_ids.get(
+                            (query_id, evidence_id),
+                            evidence_id,
+                        )
+                    ) in evidence_by_id
+                ),
                 error="; ".join(outcome.errors) or None,
             ))
 
+    selections = list(state["researcher_evidence_selections"])
+    for turn in execution.turns:
+        if turn.control_call is None:
+            continue
+        for selection in turn.control_call.review.evidence_selections:
+            mapped_task_id = query_to_task.get(selection.query_id)
+            if mapped_task_id is None:
+                raise ValueError(
+                    f"missing research-task mapping for {selection.query_id}"
+                )
+            selections.append(ResearcherEvidenceSelectionRecord(
+                selection_id=(
+                    f"I{iteration}:R{turn.round_number}:"
+                    f"{selection.query_id}"
+                ),
+                task_id=mapped_task_id,
+                round_number=turn.round_number,
+                phase=turn.phase,
+                query_id=selection.query_id,
+                retained_evidence_ids=tuple(
+                    evidence_ids.get(
+                        (selection.query_id, evidence_id),
+                        evidence_id,
+                    )
+                    for evidence_id in selection.retained_evidence_ids
+                ),
+                assessment=turn.control_call.review.assessment,
+            ))
+
     budget = state["budget"]
-    used = (
-        budget.tool_calls_used
-        + execution.search_actions_used
-        + execution.expansion_actions_used
+    actions_used = (
+        execution.search_actions_used + execution.expansion_actions_used
     )
-    if used > budget.max_tool_calls:
-        raise ValueError(
-            f"Researcher used {used} tool calls against budget "
-            f"{budget.max_tool_calls}"
-        )
+    charged_task_id = task_id
+    if charged_task_id is None:
+        mapped_task_ids = set(query_to_task.values())
+        if len(mapped_task_ids) != 1:
+            raise ValueError(
+                "Researcher execution accounting requires one task ID"
+            )
+        charged_task_id = mapped_task_ids.pop()
+    budget = budget.record_tool_calls(charged_task_id, actions_used)
 
     return {
         "candidate_evidence": tuple(candidates),
         "tool_calls": tuple(calls),
-        "budget": budget.model_copy(update={"tool_calls_used": used}),
+        "researcher_evidence_selections": tuple(selections),
+        "budget": budget,
         "last_researcher_stop_reason": execution.stop_reason,
         "errors": tuple((*state["errors"], *execution.errors)),
     }

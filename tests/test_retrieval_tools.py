@@ -55,7 +55,10 @@ class _Reranker:
         return tuple(float(index) for index, _ in enumerate(passages, 1))
 
 
-def _registry(semantic_queries: list[str] | None = None):
+def _registry(
+    semantic_queries: list[str] | None = None,
+    hybrid_queries: list[tuple[str, str | None]] | None = None,
+):
     first = _chunk("C1", 10, "The UE shall initiate registration.")
     second = _chunk("C2", 12, "The network shall process registration.")
     chunks = (first, second)
@@ -71,7 +74,12 @@ def _registry(semantic_queries: list[str] | None = None):
             semantic_queries.append(query) if semantic_queries is not None else None,
             [("C2", 0.1)],
         )[1],
-        hybrid_hits=lambda request_id, query, **kwargs: ((_hit(first),), ()),
+        hybrid_hits=lambda request_id, query, **kwargs: (
+            hybrid_queries.append((query, kwargs.get("semantic_query")))
+            if hybrid_queries is not None
+            else None,
+            ((_hit(first),), ()),
+        )[1],
     )
     return build_retrieval_tool_registry(retriever, reranker=_Reranker())
 
@@ -100,8 +108,18 @@ def test_registry_exposes_all_retrieval_capabilities_and_schemas() -> None:
         "semantic_search",
     )
     bundle = registry.schema_bundle()
-    assert bundle["request"]["title"] == "RetrievalToolRequest"
+    assert len(bundle["tools"]) == 7
     assert len(bundle["capabilities"]) == 7
+    definitions = {item["name"]: item for item in bundle["tools"]}
+    hybrid_properties = definitions["hybrid_search"]["parameters"]["properties"]
+    assert set(hybrid_properties) == {
+        "query_id",
+        "max_results",
+        "target_specifications",
+        "lexical_query",
+        "semantic_query",
+    }
+    assert "hypothetical_document" not in hybrid_properties
 
 
 def test_keyword_tool_returns_source_grounded_evidence() -> None:
@@ -136,25 +154,26 @@ def test_hybrid_tool_preserves_rrf_score() -> None:
     assert result.evidence[0].score == 0.03
 
 
-def test_hyde_tool_embeds_hypothetical_text_but_returns_real_source() -> None:
-    semantic_queries: list[str] = []
-    result = _registry(semantic_queries).invoke(
+def test_hyde_tool_fuses_lexical_and_hypothetical_queries() -> None:
+    hybrid_queries: list[tuple[str, str | None]] = []
+    result = _registry(hybrid_queries=hybrid_queries).invoke(
         "hyde_search",
         _request(
-            query="",
+            query="registration procedure",
             hypothetical_document=(
                 "The UE shall initiate the registration procedure."
             ),
         ),
     )
 
-    assert semantic_queries == [
-        "The UE shall initiate the registration procedure."
-    ]
+    assert hybrid_queries == [(
+        "registration procedure",
+        "The UE shall initiate the registration procedure.",
+    )]
     assert result.status == "completed"
-    assert result.evidence[0].chunk_id == "C2"
+    assert result.evidence[0].chunk_id == "C1"
     assert result.evidence[0].match_kind == "hyde_search"
-    assert result.evidence[0].score_kind == "semantic_distance"
+    assert result.evidence[0].score_kind == "rrf"
 
 
 def test_rerank_tool_accepts_only_trusted_seed_chunks() -> None:

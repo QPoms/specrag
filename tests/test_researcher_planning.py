@@ -4,32 +4,31 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from specrag.agents.models import (
-    AgentEvidenceSelection,
-    AgentRetrievalAction,
-    AgentRetrievalDecision,
-)
 from specrag.agents.planning import (
     ResearcherPlanningService,
     propose_researcher_turn,
 )
 from specrag.agents.state import EvidenceLedger
-from specrag.cli import (
-    BaselineQuestion,
-    CuratedRouteLabel,
-    run_researcher_planning,
-)
+from specrag.cli import BaselineQuestion, CuratedRouteLabel, run_researcher_planning
 from specrag.infrastructure.research_planning import StructuredResearchPlanner
 from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
-from specrag.infrastructure.structured_agent import CodexAgentReceipt
-from specrag.models import ResearchPlan, ResearchRouteDecision, ResearchTask
+from specrag.infrastructure.structured_agent import (
+    CodexAgentReceipt,
+    CodexAgentToolResponse,
+)
+from specrag.models import (
+    NativeFunctionCall,
+    ResearchPlan,
+    ResearchRouteDecision,
+    ResearchTask,
+)
 from specrag.orchestration.application import ResearcherPlanningApplication
 from specrag.prompts import RESEARCHER_CONTROLLER_PROMPT_VERSION
 from specrag.retrieval.models import CorpusScope
 from specrag.retrieval.planner import PlannedRetrievalHit
-from specrag.tools import ToolCapability
+from specrag.tools import retrieval_tool_definitions
 
 
 def _receipt(prompt_version: str) -> CodexAgentReceipt:
@@ -47,7 +46,7 @@ def _receipt(prompt_version: str) -> CodexAgentReceipt:
     )
 
 
-class _Agent:
+class _PlanningAgent:
     def __init__(self, *outputs: object) -> None:
         self.outputs = list(outputs)
         self.calls: list[dict[str, object]] = []
@@ -60,59 +59,84 @@ class _Agent:
         )
 
 
-def _action(task_id: str, *, specification: str = ""):
-    return AgentRetrievalAction(
-        action_id=f"A-{task_id}",
-        tool="hybrid_search",
-        query_id=task_id,
-        lexical_query="registration security context",
-        semantic_query=(
-            "Normative requirements for the registration security context"
-        ),
-        hypothetical_document="",
-        target_specifications=(specification,) if specification else (),
-        seed_evidence_ids=(),
-        max_results=5,
+class _NativeAgent:
+    def __init__(self, *batches: tuple[NativeFunctionCall, ...]) -> None:
+        self.batches = list(batches)
+        self.calls: list[dict[str, object]] = []
+
+    def call_tools(self, **kwargs):
+        self.calls.append(kwargs)
+        calls = self.batches.pop(0)
+        return CodexAgentToolResponse(
+            calls=calls,
+            replay_items=(),
+            receipt=_receipt(kwargs["prompt_version"]),
+        )
+
+
+def _control(*, retained: tuple[str, ...] = ()) -> NativeFunctionCall:
+    return NativeFunctionCall(
+        call_id="control",
+        name="update_research_state",
+        arguments={
+            "assessment": "Search directly for the normative rule.",
+            "evidence_selections": (
+                [{
+                    "query_id": "T1",
+                    "retained_evidence_ids": list(retained),
+                }]
+                if retained else []
+            ),
+            "unresolved_gaps": [{
+                "query_id": "T1",
+                "description": "The requested normative rule is unsupported.",
+            }],
+        },
     )
 
 
-def _decision(task_id: str, *, specification: str = ""):
-    return AgentRetrievalDecision(
-        assessment="Search directly for the normative rule.",
-        actions=(_action(task_id, specification=specification),),
-    )
-
-
-def _researcher(*decisions: AgentRetrievalDecision) -> tuple[
-    ResearcherPlanningService,
-    _Agent,
-]:
-    agent = _Agent(*decisions)
-    capability = ToolCapability(
+def _hybrid_call(
+    task_id: str,
+    *,
+    call_id: str = "call-hybrid",
+    specification: str = "",
+) -> NativeFunctionCall:
+    return NativeFunctionCall(
+        call_id=call_id,
         name="hybrid_search",
-        description="Combined lexical and semantic retrieval.",
-        required_fields=("query", "semantic_query"),
-        optional_fields=("target_specifications", "limit"),
-        execution_kind="model_scored",
+        arguments={
+            "query_id": task_id,
+            "lexical_query": "registration security context",
+            "semantic_query": (
+                "Normative requirements for the registration security context"
+            ),
+            "target_specifications": [specification] if specification else [],
+            "max_results": 5,
+        },
     )
-    return ResearcherPlanningService(
+
+
+def _researcher(*batches: tuple[NativeFunctionCall, ...]):
+    agent = _NativeAgent(*batches)
+    service = ResearcherPlanningService(
         controller_agent=StructuredResearcherController(agent),
         corpus_scope=CorpusScope(release=17),
         available_specifications=("24.501", "38.331"),
-        available_tools=(capability,),
+        available_tools=retrieval_tool_definitions(),
         max_rounds=3,
         max_total_actions=6,
         hits_per_search=5,
         max_evidence_per_question=12,
-    ), agent
+    )
+    return service, agent
 
 
-def test_planning_only_artifact_contains_validated_calls_without_execution(
+def test_planning_artifact_contains_native_calls_without_execution(
     tmp_path: Path,
 ) -> None:
-    researcher, controller_agent = _researcher(_decision("T1"))
+    researcher, agent = _researcher((_control(), _hybrid_call("T1")))
     application = ResearcherPlanningApplication(
-        planner=StructuredResearchPlanner(_Agent()),
+        planner=StructuredResearchPlanner(_PlanningAgent()),
         researcher=researcher,
         release=17,
     )
@@ -129,25 +153,22 @@ def test_planning_only_artifact_contains_validated_calls_without_execution(
     assert status == 0
     assert artifact["researcher"]["execution_performed"] is False
     assert proposal["accepted"] is True
-    assert proposal["decision"]["actions"][0]["tool"] == "hybrid_search"
-    assert proposal["decision"]["actions"][0]["lexical_query"] == (
-        "registration security context"
-    )
+    assert proposal["control_call"]["name"] == "update_research_state"
+    assert proposal["retrieval_calls"][0]["tool"] == "hybrid_search"
     assert proposal["validations"] == [{
-        "action_id": "A-T1",
+        "call_id": "call-hybrid",
         "accepted": True,
         "errors": [],
     }]
     assert proposal["receipt"]["prompt_version"] == (
         RESEARCHER_CONTROLLER_PROMPT_VERSION
     )
-    payload = controller_agent.calls[0]["input_payload"]
+    payload = agent.calls[0]["input_payload"]
+    assert "available_tools" not in payload
     assert payload["active_evidence"] == []
-    assert payload["pending_candidates"] == []
-    assert payload["inactive_candidates"] == []
 
 
-def test_complex_planning_only_defers_dependency_tasks() -> None:
+def test_complex_planning_defers_dependency_tasks() -> None:
     plan = ResearchPlan(
         plan_id="model-plan",
         tasks=(
@@ -161,10 +182,19 @@ def test_complex_planning_only_defers_dependency_tasks() -> None:
             ResearchTask(task_id="T3", question="Independent fact?", objective="O3"),
         ),
     )
-    planner_agent = _Agent(plan)
-    researcher, controller_agent = _researcher(
-        _decision("T1"),
-        _decision("T3"),
+    planner_agent = _PlanningAgent(plan)
+    t3_control = _control().model_copy(update={
+        "arguments": {
+            **_control().arguments,
+            "unresolved_gaps": [{
+                "query_id": "T3",
+                "description": "The independent fact is unsupported.",
+            }],
+        }
+    })
+    researcher, agent = _researcher(
+        (_control(), _hybrid_call("T1")),
+        (t3_control, _hybrid_call("T3", call_id="call-t3")),
     )
     application = ResearcherPlanningApplication(
         planner=StructuredResearchPlanner(planner_agent),
@@ -184,166 +214,85 @@ def test_complex_planning_only_defers_dependency_tasks() -> None:
 
     assert tuple(task_id for task_id, _ in response.first_turns) == ("T1", "T3")
     assert response.deferred_task_ids == ("T2",)
-    assert len(controller_agent.calls) == 2
-    assert controller_agent.calls[0]["input_payload"]["research_tasks"][0][
-        "task_id"
-    ] == "T1"
-    assert controller_agent.calls[1]["input_payload"]["research_tasks"][0][
-        "task_id"
-    ] == "T3"
+    assert len(agent.calls) == 2
 
 
-def test_planning_only_rejects_unknown_target_specification() -> None:
-    researcher, _ = _researcher(_decision("T1", specification="99.999"))
-
-    proposal = researcher.propose_first_turn((ResearchTask(
+def test_unknown_and_ungrounded_specifications_are_rejected() -> None:
+    task = (ResearchTask(
         task_id="T1",
         question="One focused rule?",
         objective="Establish the rule.",
-    ),))
+    ),)
+    unknown, _ = _researcher((
+        _control(),
+        _hybrid_call("T1", specification="99.999"),
+    ))
+    ungrounded, _ = _researcher((
+        _control(),
+        _hybrid_call("T1", specification="24.501"),
+    ))
 
-    assert proposal.accepted is False
-    assert proposal.validations[0].accepted is False
-    assert proposal.validations[0].errors == (
-        "unknown specifications: 99.999",
-    )
+    unknown_plan = unknown.propose_first_turn(task)
+    ungrounded_plan = ungrounded.propose_first_turn(task)
 
-
-def test_planning_only_rejects_known_but_ungrounded_specification() -> None:
-    researcher, _ = _researcher(_decision("T1", specification="24.501"))
-
-    proposal = researcher.propose_first_turn((ResearchTask(
-        task_id="T1",
-        question="One focused rule?",
-        objective="Establish the rule.",
-    ),))
-
-    assert proposal.accepted is False
-    assert proposal.validations[0].errors == (
+    assert unknown_plan.validations[0].accepted is False
+    assert "unknown specifications: 99.999" in unknown_plan.validations[0].errors
+    assert ungrounded_plan.validations[0].errors == (
         "specifications are not grounded in the task, shared context, or "
         "observed evidence: 24.501",
     )
 
 
-def test_planning_only_rejects_tool_missing_from_supplied_catalog() -> None:
-    action = _action("T1").model_copy(update={
-        "tool": "keyword_search",
-        "semantic_query": "",
-    })
-    researcher, _ = _researcher(AgentRetrievalDecision(
-        assessment="Use a lexical search.",
-        actions=(action,),
+def test_tool_missing_from_catalog_is_rejected() -> None:
+    service, _ = _researcher((
+        _control(),
+        NativeFunctionCall(
+            call_id="call-missing",
+            name="not_registered",
+            arguments={"query_id": "T1"},
+        ),
     ))
 
-    proposal = researcher.propose_first_turn((ResearchTask(
+    proposal = service.propose_first_turn((ResearchTask(
         task_id="T1",
         question="One focused rule?",
         objective="Establish the rule.",
     ),))
 
-    assert proposal.accepted is False
     assert proposal.validations[0].errors == (
-        "tool is not available: keyword_search",
+        "tool is not available: not_registered",
     )
 
 
-def test_first_turn_may_use_entire_total_action_budget_for_searches() -> None:
-    actions = tuple(
-        _action("T1").model_copy(update={
-            "action_id": f"A{i}",
-            "lexical_query": f"registration anchor {i}",
-            "semantic_query": f"registration condition {i}",
-        })
-        for i in range(1, 7)
-    )
-    researcher, _ = _researcher(AgentRetrievalDecision(
-        assessment="Cover four distinct substantive units.",
-        actions=actions,
-    ))
-
-    proposal = researcher.propose_first_turn((ResearchTask(
-        task_id="T1",
-        question="Establish four related registration requirements.",
-        objective="Establish every requested requirement.",
-    ),))
-
-    assert proposal.accepted is True
-    assert len(proposal.validations) == 6
-    assert proposal.input_payload["budget"] == {
-        "rounds_remaining_including_this": 3,
-        "tool_actions_remaining": 6,
-        "hits_per_search_ceiling": 5,
-        "max_active_evidence_per_question": 12,
-    }
-
-
-def test_first_turn_rejects_only_actions_beyond_total_budget() -> None:
-    actions = tuple(
-        _action("T1").model_copy(update={
-            "action_id": f"A{i}",
-            "lexical_query": f"registration anchor {i}",
-            "semantic_query": f"registration condition {i}",
-        })
-        for i in range(1, 8)
-    )
-    researcher, _ = _researcher(AgentRetrievalDecision(
-        assessment="Propose more actions than the total budget permits.",
-        actions=actions,
-    ))
-
-    proposal = researcher.propose_first_turn((ResearchTask(
+def test_first_turn_budget_accepts_six_and_rejects_seventh_call() -> None:
+    task = (ResearchTask(
         task_id="T1",
         question="Establish several registration requirements.",
         objective="Establish every requested requirement.",
-    ),))
+    ),)
+    calls = tuple(
+        _hybrid_call("T1", call_id=f"call-{index}").model_copy(update={
+            "arguments": {
+                **_hybrid_call("T1").arguments,
+                "lexical_query": f"registration anchor {index}",
+                "semantic_query": f"registration condition {index}",
+            }
+        })
+        for index in range(1, 8)
+    )
+    six, _ = _researcher((_control(), *calls[:6]))
+    seven, _ = _researcher((_control(), *calls))
 
-    assert [item.accepted for item in proposal.validations] == [
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-        False,
+    accepted = six.propose_first_turn(task)
+    over_budget = seven.propose_first_turn(task)
+
+    assert accepted.accepted is True
+    assert [item.accepted for item in over_budget.validations] == [
+        True, True, True, True, True, True, False,
     ]
-    assert proposal.validations[-1].errors == (
+    assert over_budget.validations[-1].errors == (
         "total tool action budget exhausted",
     )
-
-
-def test_planning_only_accepts_well_formed_hyde_action() -> None:
-    action = _action("T1").model_copy(update={
-        "tool": "hyde_search",
-        "lexical_query": "",
-        "semantic_query": "",
-        "hypothetical_document": (
-            "The UE shall retain the security context after registration."
-        ),
-    })
-    controller = _Agent(AgentRetrievalDecision(
-        assessment="Use hypothetical normative wording for semantic retrieval.",
-        actions=(action,),
-    ))
-    researcher = ResearcherPlanningService(
-        controller_agent=StructuredResearcherController(controller),
-        corpus_scope=CorpusScope(release=17),
-        available_specifications=("24.501",),
-        available_tools=(ToolCapability(
-            name="hyde_search",
-            description="Retrieve using a hypothetical normative passage.",
-            required_fields=("hypothetical_document",),
-            optional_fields=("target_specifications", "limit"),
-            execution_kind="model_scored",
-        ),),
-    )
-
-    proposal = researcher.propose_first_turn((ResearchTask(
-        task_id="T1",
-        question="When is the security context retained?",
-        objective="Establish the retention rule.",
-    ),))
-
-    assert proposal.accepted is True
 
 
 def _observed_cross_reference() -> PlannedRetrievalHit:
@@ -375,58 +324,43 @@ def _observed_cross_reference() -> PlannedRetrievalHit:
     )
 
 
-def test_evidence_ledger_keeps_candidates_while_replacing_active_evidence() -> None:
+def test_evidence_ledger_keeps_complete_candidates_and_replaces_active() -> None:
     ledger = EvidenceLedger(("T1",), max_per_question=2)
     hits = tuple(
         _observed_cross_reference().model_copy(update={
             "chunk_id": f"38.331:17.17.0:chunk-{index}",
-            "excerpt": f"Candidate {index}",
+            "excerpt": f"start-{index}-" + ("x" * 2400) + f"-end-{index}",
         })
         for index in range(1, 4)
     )
-
-    _, added = ledger.add("T1", hits, action_id="A-search")
+    _, added = ledger.add("T1", hits, action_id="call-search")
     ledger.select("T1", ("E-T1:1", "E-T1:3"))
 
     assert added == ("E-T1:1", "E-T1:2", "E-T1:3")
     assert len(ledger.candidate_hits("T1")) == 3
-    assert tuple(hit.hit_id for hit in ledger.active_hits("T1")) == (
-        "E-T1:1",
-        "E-T1:3",
-    )
     views = ledger.selection_payload()
-    assert views["pending_candidates"] == []
-    assert [item["evidence_id"] for item in views["inactive_candidates"]] == [
-        "E-T1:2"
+    assert [item["excerpt"] for item in views["active_evidence"]] == [
+        hits[0].excerpt,
+        hits[2].excerpt,
     ]
+    assert views["inactive_candidates"][0]["excerpt"] == hits[1].excerpt
 
 
-def _clause_action(clause: str) -> AgentRetrievalAction:
-    return AgentRetrievalAction(
-        action_id="A-clause",
-        tool="clause_lookup",
-        query_id="T1",
-        lexical_query="",
-        semantic_query="",
-        hypothetical_document="",
-        clause=clause,
-        target_specifications=("38.331",),
-        seed_evidence_ids=(),
-        max_results=5,
-    )
-
-
-def test_clause_lookup_accepts_reference_and_specification_from_evidence() -> None:
+def test_grounded_clause_call_is_accepted_from_observed_evidence() -> None:
     ledger = EvidenceLedger(("T1",), max_per_question=12)
-    ledger.add("T1", (_observed_cross_reference(),), action_id="A-search")
-    controller = _Agent(AgentRetrievalDecision(
-        assessment="Follow the answer-bearing normative cross-reference.",
-        evidence_selections=(AgentEvidenceSelection(
-            query_id="T1",
-            retained_evidence_ids=("E-T1:1",),
-        ),),
-        actions=(_clause_action("5.8.9.1a.3"),),
-    ))
+    ledger.add("T1", (_observed_cross_reference(),), action_id="call-search")
+    control = _control(retained=("E-T1:1",))
+    clause = NativeFunctionCall(
+        call_id="call-clause",
+        name="clause_lookup",
+        arguments={
+            "query_id": "T1",
+            "clause": "5.8.9.1a.3",
+            "target_specifications": ["38.331"],
+            "max_results": 5,
+        },
+    )
+    agent = _NativeAgent((control, clause))
 
     proposal = propose_researcher_turn(
         (ResearchTask(
@@ -434,55 +368,11 @@ def test_clause_lookup_accepts_reference_and_specification_from_evidence() -> No
             question="What must the UE do after sidelink radio link failure?",
             objective="Establish every required UE action.",
         ),),
-        controller_agent=StructuredResearcherController(controller),
+        controller_agent=StructuredResearcherController(agent),
         corpus_scope=CorpusScope(release=17),
         available_specifications=("38.331",),
-        available_tools=(ToolCapability(
-            name="clause_lookup",
-            description="Retrieve a grounded clause.",
-            required_fields=("clause",),
-            optional_fields=("target_specifications", "limit"),
-            execution_kind="deterministic",
-        ),),
+        available_tools=retrieval_tool_definitions(),
         ledger=ledger,
     )
 
     assert proposal.accepted is True
-
-
-def test_clause_lookup_rejects_clause_not_present_in_trusted_inputs() -> None:
-    ledger = EvidenceLedger(("T1",), max_per_question=12)
-    ledger.add("T1", (_observed_cross_reference(),), action_id="A-search")
-    controller = _Agent(AgentRetrievalDecision(
-        assessment="Do not accept an inferred neighboring clause number.",
-        evidence_selections=(AgentEvidenceSelection(
-            query_id="T1",
-            retained_evidence_ids=("E-T1:1",),
-        ),),
-        actions=(_clause_action("5.8.9.1a.4"),),
-    ))
-
-    proposal = propose_researcher_turn(
-        (ResearchTask(
-            task_id="T1",
-            question="What must the UE do after sidelink radio link failure?",
-            objective="Establish every required UE action.",
-        ),),
-        controller_agent=StructuredResearcherController(controller),
-        corpus_scope=CorpusScope(release=17),
-        available_specifications=("38.331",),
-        available_tools=(ToolCapability(
-            name="clause_lookup",
-            description="Retrieve a grounded clause.",
-            required_fields=("clause",),
-            optional_fields=("target_specifications", "limit"),
-            execution_kind="deterministic",
-        ),),
-        ledger=ledger,
-    )
-
-    assert proposal.accepted is False
-    assert proposal.validations[0].errors == (
-        "clause_lookup clause is not grounded in the task, shared context, or "
-        "observed evidence",
-    )

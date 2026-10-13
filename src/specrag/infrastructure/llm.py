@@ -13,12 +13,17 @@ import json
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Generic, Mapping, Protocol, TypeVar
+from typing import Any, Generic, Mapping, Protocol, Sequence, TypeVar
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from specrag.config import AppConfig, load_config
+from specrag.models import (
+    NativeFunctionCall,
+    NativeFunctionCallOutput,
+    NativeFunctionDefinition,
+)
 
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -75,6 +80,15 @@ class StructuredLLMResponse(Generic[OutputT]):
     receipt: LLMCallReceipt
 
 
+@dataclass(frozen=True)
+class NativeToolLLMResponse:
+    """One native function-call response plus ephemeral replay items."""
+
+    calls: tuple[NativeFunctionCall, ...]
+    replay_items: tuple[dict[str, Any], ...]
+    receipt: LLMCallReceipt
+
+
 class StructuredLLMClient(Protocol):
     """Small dependency boundary suitable for fake and sandboxed clients."""
 
@@ -90,8 +104,7 @@ class StructuredLLMClient(Protocol):
 
 
 class StructuredLLMError(RuntimeError):
-    """Sanitized API/schema failure safe to persist as an analyzer gap."""
-
+    pass
 
 def _canonical_json(value: Any) -> str:
     if isinstance(value, BaseModel):
@@ -102,6 +115,21 @@ def _canonical_json(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+def _responses_tool_payload(definition: NativeFunctionDefinition) -> dict[str, Any]:
+    return {
+        "type": "function", "name": definition.name,
+        "description": definition.description,
+        "parameters": definition.parameters,
+        "strict": definition.strict,
+    }
+
+
+def _responses_output_payload(output: NativeFunctionCallOutput) -> dict[str, Any]:
+    return {
+        "type": "function_call_output", "call_id": output.call_id,
+        "output": _canonical_json(output.output),
+    }
 
 
 def _sha256(value: str) -> str:
@@ -117,10 +145,14 @@ def _safe_error(
     """Do not persist provider bodies, headers, request objects, or prompts."""
 
     details = [type(exc).__name__]
-    status_code = getattr(exc, "status_code", None)
     request_id = getattr(exc, "request_id", None)
-    if isinstance(status_code, int):
-        details.append(f"status={status_code}")
+    for label, value in (
+        ("status", getattr(exc, "status_code", None)),
+        ("code", getattr(exc, "code", None)),
+        ("param", getattr(exc, "param", None)),
+    ):
+        if isinstance(value, (str, int)) and str(value):
+            details.append(f"{label}={str(value)[:80]}")
     if isinstance(request_id, str) and request_id:
         details.append(f"request_id_sha256={_sha256(request_id)[:16]}")
     if attempt_count is not None:
@@ -133,8 +165,6 @@ def _safe_error(
 
 
 def _is_retryable_provider_error(exc: Exception) -> bool:
-    """Classify transient failures without retaining provider response bodies."""
-
     status_code = getattr(exc, "status_code", None)
     if isinstance(status_code, int):
         return status_code in {408, 409, 425, 429} or status_code >= 500
@@ -392,3 +422,179 @@ class OpenAIStructuredClient:
             attempted_models=tuple(attempted_models),
         )
         return StructuredLLMResponse(output=output, receipt=receipt)
+
+    def call_tools(
+        self,
+        *,
+        purpose: str,
+        prompt_version: str,
+        instructions: str,
+        input_payload: BaseModel | Mapping[str, Any],
+        tools: Sequence[NativeFunctionDefinition],
+        prior_response_items: Sequence[Mapping[str, Any]] = (),
+        prior_outputs: Sequence[NativeFunctionCallOutput] = (),
+        max_tool_calls: int | None = None,
+    ) -> NativeToolLLMResponse:
+        """Request strict native calls and retain only bounded replay state."""
+
+        if self._api_mode != LLMApiMode.RESPONSES:
+            raise ValueError("native Researcher tools require Responses API mode")
+        for name, value in (
+            ("purpose", purpose),
+            ("prompt_version", prompt_version),
+            ("instructions", instructions),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must be non-blank")
+        if not tools:
+            raise ValueError("at least one native function definition is required")
+        if max_tool_calls is not None and max_tool_calls < 1:
+            raise ValueError("max_tool_calls must be positive when supplied")
+
+        input_json = _canonical_json(input_payload)
+        input_items: list[Mapping[str, Any]] = [
+            dict(item) for item in prior_response_items
+        ]
+        input_items.extend(_responses_output_payload(output) for output in prior_outputs)
+        input_items.append({"role": "user", "content": input_json})
+        tool_payloads = [_responses_tool_payload(tool) for tool in tools]
+        started = time.perf_counter()
+        attempted_models: list[str] = []
+        raw: Any = None
+        calls: tuple[NativeFunctionCall, ...] | None = None
+        selected_model = self._model
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        models = (self._model, *self._fallback_models)
+
+        for model_index, candidate_model in enumerate(models):
+            for retry_index in range(self._max_retries + 1):
+                attempted_models.append(candidate_model)
+                try:
+                    kwargs: dict[str, Any] = {
+                        "model": candidate_model,
+                        "instructions": instructions,
+                        "input": input_items,
+                        "tools": tool_payloads,
+                        "tool_choice": "required",
+                        "parallel_tool_calls": True,
+                        "reasoning": {"effort": self._reasoning_effort},
+                        "max_output_tokens": self._max_output_tokens,
+                        "store": False,
+                    }
+                    if max_tool_calls is not None:
+                        kwargs["max_tool_calls"] = max_tool_calls
+                    raw = self._client.responses.create(**kwargs)
+                    status = getattr(raw, "status", "completed")
+                    if status != "completed":
+                        raise StructuredLLMError(
+                            "native tool response was not completed "
+                            f"(status={status})"
+                        )
+                    parsed_calls: list[NativeFunctionCall] = []
+                    for item in raw.output:
+                        if getattr(item, "type", "") != "function_call":
+                            continue
+                        try:
+                            arguments = json.loads(item.arguments)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise StructuredLLMError(
+                                "native function call contained invalid JSON"
+                            ) from exc
+                        if not isinstance(arguments, dict):
+                            raise StructuredLLMError(
+                                "native function arguments must be an object"
+                            )
+                        parsed_calls.append(NativeFunctionCall(
+                            call_id=item.call_id,
+                            name=item.name,
+                            arguments=arguments,
+                        ))
+                    if not parsed_calls:
+                        raise StructuredLLMError(
+                            "native tool response contained no function calls"
+                        )
+                    calls = tuple(parsed_calls)
+                    usage = getattr(raw, "usage", None)
+                    input_tokens = getattr(usage, "input_tokens", None)
+                    output_tokens = getattr(usage, "output_tokens", None)
+                    selected_model = candidate_model
+                    break
+                except StructuredLLMError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - sanitized below
+                    if not _is_retryable_provider_error(exc):
+                        raise _safe_error(
+                            exc,
+                            attempt_count=len(attempted_models),
+                        ) from None
+                    if retry_index < self._max_retries:
+                        delay = min(
+                            self._retry_initial_delay_seconds * (2 ** retry_index),
+                            self._retry_max_delay_seconds,
+                        )
+                        if delay:
+                            time.sleep(delay)
+                        continue
+                    if model_index + 1 < len(models):
+                        break
+                    raise _safe_error(
+                        exc,
+                        attempt_count=len(attempted_models),
+                        exhausted_models=len(models),
+                    ) from None
+            if calls is not None:
+                break
+        if calls is None or raw is None:  # pragma: no cover - exhaustive loop
+            raise StructuredLLMError("native tool retry loop produced no result")
+
+        request_sha = _sha256(_canonical_json({
+            "model": selected_model,
+            "api_mode": self._api_mode.value,
+            "purpose": purpose,
+            "prompt_version": prompt_version,
+            "instructions": instructions,
+            "input": input_items,
+            "tools": tool_payloads,
+            "max_tool_calls": max_tool_calls,
+        }))
+        response_json = _canonical_json([call.model_dump(mode="json") for call in calls])
+        receipt = LLMCallReceipt(
+            model=selected_model,
+            api_mode=self._api_mode,
+            purpose=purpose,
+            prompt_version=prompt_version,
+            request_sha256=request_sha,
+            response_sha256=_sha256(response_json),
+            response_id_sha256=(
+                _sha256(str(getattr(raw, "id", "")))
+                if getattr(raw, "id", "") else ""
+            ),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=max(0, int((time.perf_counter() - started) * 1_000)),
+            attempt_count=len(attempted_models),
+            attempted_models=tuple(attempted_models),
+        )
+        replay_items = tuple({
+            "type": "function_call",
+            "call_id": call.call_id,
+            "name": call.name,
+            "arguments": _canonical_json(call.arguments),
+        } for call in calls)
+        return NativeToolLLMResponse(
+            calls=calls,
+            replay_items=replay_items,
+            receipt=receipt,
+        )
+
+
+__all__ = [
+    "LLMApiMode",
+    "LLMCallReceipt",
+    "NativeToolLLMResponse",
+    "OpenAIStructuredClient",
+    "StructuredLLMClient",
+    "StructuredLLMError",
+    "StructuredLLMResponse",
+]

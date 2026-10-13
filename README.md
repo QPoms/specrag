@@ -13,7 +13,7 @@ The target flow is:
 
 ```text
 user question or task
--> Researcher first-round action planning
+-> Researcher first-round native function calls
 -> trusted retrieval tool execution
 -> bounded observe-and-adapt loop
 -> candidate evidence
@@ -48,10 +48,10 @@ user question or task
 - `src/specrag/retrieval/reranker.py`: optional cross-encoder reranking.
 - `src/specrag/retrieval/normalization.py`: protocol identifier
   normalization.
-- `src/specrag/agents/`: separate Researcher models, evidence state, action
+- `src/specrag/agents/`: separate Researcher models, evidence state, native-call
   policy, and bounded loop execution through the unified Tool Registry. The
-  first controller round receives Planner tasks directly with the live tool
-  catalog and generates the initial queries and concrete tool calls; later
+  first controller round receives Planner tasks directly with strict native
+  function definitions and generates the initial queries and calls; later
   rounds adapt to observed evidence. Retrieved chunks enter a deduplicated
   candidate pool; the controller maintains a bounded active evidence set and
   may replace weaker early items with later gap-closing evidence without
@@ -61,8 +61,9 @@ user question or task
   retrieval budget is exhausted, but it cannot invoke another tool.
 - `src/specrag/prompts/researcher.py`: versioned Researcher controller prompt
   contract.
-- `src/specrag/tools/`: provider-neutral request/result schemas, capability
-  descriptions, registry, and seven trusted retrieval adapters. HyDE embeds an
+- `src/specrag/tools/`: provider-neutral per-tool argument schemas, function
+  descriptions, registry, and seven trusted retrieval adapters. The Registry
+  is the single source for definition, validation, and execution. HyDE embeds an
   untrusted controller-generated passage for retrieval; only returned source
   chunks can become evidence.
 - `src/specrag/models/`: framework-independent research state contracts.
@@ -74,10 +75,23 @@ user question or task
   Researcher prompt to the structured-agent adapter behind a small decision
   interface.
 - `src/specrag/infrastructure/llm.py`: structured OpenAI-compatible client
-  with redacted receipts and retry policy.
+  with redacted receipts, retry policy, and Responses API native function-call
+  transport. With `store=False`, only function calls and matched
+  `function_call_output` items are replayed explicitly between rounds.
 - `scripts/evaluate_first_turn.py`: executes frozen Researcher first-turn
   artifacts without another model call and reports strict annotated-source
   recall for offline inspection.
+- `scripts/evaluate_complex_researcher.py`: runs one frozen complex Planner
+  artifact or a resumable directory batch. Batch mode atomically saves each
+  question and `summary.json`; rerun it with `--batch --resume` after an
+  interruption to skip valid existing artifacts and continue unfinished work.
+
+  ```powershell
+  python scripts/evaluate_complex_researcher.py `
+    artifacts/runs/planning/<accepted-planner-run> `
+    artifacts/runs/complex-freeze/<batch-run> `
+    --batch --resume
+  ```
 
 The historical attacker-capability validation line, including its versioned
 agents, deterministic gates, Gold/Shadow evaluations, prompts, cases, and

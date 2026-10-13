@@ -53,7 +53,7 @@ from specrag.retrieval.corpus import (
 )
 from specrag.tools import (
     build_retrieval_tool_registry,
-    retrieval_tool_capabilities,
+    retrieval_tool_definitions,
 )
 
 
@@ -75,6 +75,9 @@ class ResearchPlannerHandler:
     service: StructuredResearchPlanner
 
     def __call__(self, state: ResearchState) -> dict[str, object]:
+        if state["research_plan"] is not None:
+            plan = state["research_plan"]
+            return {"research_plan": plan, "research_tasks": plan.tasks}
         decision = state["route_decision"]
         if decision is None:
             raise ValueError("research planning requires a routing decision")
@@ -118,12 +121,16 @@ class ResearchApplication:
         question: str,
         thread_id: str,
         budget: ResearchBudget | None = None,
+        plan: ResearchPlan | None = None,
     ) -> ResearchState:
         state = new_research_state(
             research_id=research_id,
             user_question=question,
             budget=budget,
         )
+        if plan is not None:
+            state["research_plan"] = plan
+            state["research_tasks"] = plan.tasks
         return self.workflow.invoke(state, thread_id=thread_id)
 
 
@@ -333,7 +340,7 @@ def build_researcher_planning_application(
             controller_agent=StructuredResearcherController(planning_agent),
             corpus_scope=corpus_scope,
             available_specifications=available_specifications,
-            available_tools=retrieval_tool_capabilities(),
+            available_tools=retrieval_tool_definitions(),
             max_rounds=3,
             max_total_actions=6,
             hits_per_search=5,

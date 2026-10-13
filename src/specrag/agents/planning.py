@@ -1,4 +1,4 @@
-"""Model proposal and trusted validation for Researcher retrieval turns."""
+"""Native Researcher turn construction and trusted pre-execution checks."""
 
 from __future__ import annotations
 
@@ -6,20 +6,29 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
 from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
-from specrag.models import ResearchTask
+from specrag.models import (
+    NativeFunctionCallOutput,
+    NativeFunctionDefinition,
+    ResearchTask,
+)
 from specrag.retrieval.models import CorpusScope
-from specrag.tools import ToolCapability
+from specrag.tools import parse_retrieval_tool_arguments
 
 from .models import (
-    AgentActionValidation,
+    AgentControlCall,
     AgentEvidenceSelectionValidation,
-    AgentRetrievalDecision,
+    AgentResearchReview,
+    AgentRetrievalCall,
+    AgentToolCallValidation,
     ResearcherActionPlan,
+    researcher_control_definitions,
 )
-from .policy import action_signature, validate_action
+from .policy import call_signature, validate_call
 from .state import EvidenceLedger
 
 
@@ -33,17 +42,19 @@ def _text_values(value: Any) -> tuple[str, ...]:
             for text in _text_values(item)
         )
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        return tuple(text for item in value for text in _text_values(item))
+        return tuple(
+            text for item in value for text in _text_values(item)
+        )
     return ()
 
 
-def _trusted_action_context(
+def _trusted_call_context(
     task: ResearchTask,
     *,
     shared_context: Mapping[str, Any],
     ledger: EvidenceLedger,
     available_specifications: frozenset[str],
-) -> tuple[frozenset[str], tuple[str, ...]]:
+) -> frozenset[str]:
     texts = [
         *_text_values(task.model_dump(mode="json")),
         *_text_values(shared_context),
@@ -59,10 +70,7 @@ def _trusted_action_context(
         for specification in available_specifications
         if any(specification in text for text in texts)
     }
-    return (
-        frozenset(explicit_specifications | observed_specifications),
-        tuple(texts),
-    )
+    return frozenset(explicit_specifications | observed_specifications)
 
 
 def _controller_payload(
@@ -70,12 +78,11 @@ def _controller_payload(
     *,
     corpus_scope: CorpusScope,
     available_specifications: tuple[str, ...],
-    available_tools: tuple[ToolCapability, ...],
     shared_context: Mapping[str, Any],
     round_number: int,
     max_rounds: int,
-    actions_used: int,
-    total_action_limit: int,
+    calls_used: int,
+    total_call_limit: int,
     hits_per_search: int,
     max_evidence_per_question: int,
     history: Sequence[Mapping[str, Any]],
@@ -89,16 +96,12 @@ def _controller_payload(
         "shared_context": dict(shared_context),
         "corpus_scope": corpus_scope.model_dump(mode="json"),
         "available_specifications": list(available_specifications),
-        "available_tools": [
-            capability.model_dump(mode="json")
-            for capability in available_tools
-        ],
         "budget": {
             "rounds_remaining_including_this": max(
                 max_rounds - round_number + 1,
                 0,
             ),
-            "tool_actions_remaining": total_action_limit - actions_used,
+            "tool_actions_remaining": total_call_limit - calls_used,
             "hits_per_search_ceiling": hits_per_search,
             "max_active_evidence_per_question": max_evidence_per_question,
         },
@@ -118,17 +121,70 @@ def _controller_payload(
     }
 
 
+def _parse_native_calls(
+    calls: Sequence[Any],
+    *,
+    finalization_only: bool,
+) -> tuple[
+    AgentControlCall | None,
+    tuple[AgentRetrievalCall, ...],
+    tuple[str, ...],
+]:
+    errors: list[str] = []
+    call_ids = [call.call_id for call in calls]
+    if len(call_ids) != len(set(call_ids)):
+        errors.append("native response contains duplicate call IDs")
+    control_names = {"update_research_state", "submit_for_validation"}
+    controls = [call for call in calls if call.name in control_names]
+    retrieval_calls = tuple(
+        AgentRetrievalCall(
+            call_id=call.call_id,
+            tool=call.name,
+            arguments=call.arguments,
+        )
+        for call in calls
+        if call.name not in control_names
+    )
+    control: AgentControlCall | None = None
+    if len(controls) != 1:
+        errors.append("native turn requires exactly one Researcher control call")
+    else:
+        raw_control = controls[0]
+        try:
+            review = AgentResearchReview.model_validate(raw_control.arguments)
+        except ValidationError as exc:
+            messages = "; ".join(
+                error["msg"] for error in exc.errors(include_url=False)
+            )
+            errors.append("invalid Researcher control arguments: " + messages)
+        else:
+            control = AgentControlCall(
+                call_id=raw_control.call_id,
+                name=raw_control.name,
+                review=review,
+            )
+    if control is not None:
+        if control.name == "update_research_state" and not retrieval_calls:
+            errors.append("state update requires at least one retrieval call")
+        if control.name == "submit_for_validation" and retrieval_calls:
+            errors.append("submission cannot include retrieval calls")
+        if finalization_only and control.name != "submit_for_validation":
+            errors.append("finalization permits only submit_for_validation")
+    return control, retrieval_calls, tuple(errors)
+
+
 def _validate_evidence_selections(
-    decision: AgentRetrievalDecision,
+    review: AgentResearchReview | None,
     *,
     query_ids: frozenset[str],
     ledger: EvidenceLedger,
 ) -> tuple[AgentEvidenceSelectionValidation, ...]:
+    if review is None:
+        return ()
     required_query_ids = frozenset(ledger.query_ids_with_candidates())
     seen_query_ids: set[str] = set()
     validations: list[AgentEvidenceSelectionValidation] = []
-
-    for selection in decision.evidence_selections:
+    for selection in review.evidence_selections:
         errors: list[str] = []
         if selection.query_id not in query_ids:
             errors.append(f"unknown selection query_id: {selection.query_id}")
@@ -159,92 +215,69 @@ def _validate_evidence_selections(
             accepted=not errors,
             errors=tuple(errors),
         ))
-
-    missing = required_query_ids - seen_query_ids
-    for query_id in sorted(missing):
+    for query_id in sorted(required_query_ids - seen_query_ids):
         validations.append(AgentEvidenceSelectionValidation(
             query_id=query_id,
             accepted=False,
-            errors=(
-                "evidence selection is required when candidates are present",
-            ),
+            errors=("evidence selection is required when candidates are present",),
         ))
     return tuple(validations)
 
 
-def _validate_decision(
-    decision: AgentRetrievalDecision,
+def _validate_calls(
+    calls: tuple[AgentRetrievalCall, ...],
     *,
     query_ids: frozenset[str],
     available_specifications: frozenset[str],
     available_tool_names: frozenset[str],
     ledger: EvidenceLedger,
-    trusted_context_by_query: Mapping[
-        str,
-        tuple[frozenset[str], tuple[str, ...]],
-    ],
+    trusted_context_by_query: Mapping[str, frozenset[str]],
     prior_signatures: frozenset[tuple[Any, ...]],
-    actions_used: int,
-    total_action_limit: int,
-    finalization_only: bool,
-) -> tuple[AgentActionValidation, ...]:
-    contains_submission = any(
-        action.tool == "submit_for_validation"
-        for action in decision.actions
-    )
-    seen_action_ids: set[str] = set()
+    calls_used: int,
+    total_call_limit: int,
+) -> tuple[AgentToolCallValidation, ...]:
     signatures = set(prior_signatures)
-    simulated_actions = actions_used
-    validations: list[AgentActionValidation] = []
-
-    for action in decision.actions:
-        grounded_specifications, trusted_reference_texts = (
-            trusted_context_by_query.get(action.query_id, (frozenset(), ()))
-        )
-        errors = list(validate_action(
-            action,
-            query_ids=query_ids,
-            available_specifications=available_specifications,
-            grounded_specifications=grounded_specifications,
-            trusted_reference_texts=trusted_reference_texts,
-            ledger=ledger,
-        ))
-        if (
-            action.tool != "submit_for_validation"
-            and action.tool not in available_tool_names
-        ):
-            errors.append(f"tool is not available: {action.tool}")
-        if action.action_id in seen_action_ids:
-            errors.append("duplicate action_id in the same turn")
-        seen_action_ids.add(action.action_id)
-        if contains_submission and len(decision.actions) != 1:
-            errors.append(
-                "submit_for_validation must be the only action in a turn"
-            )
-
-        signature = action_signature(action)
-        if signature in signatures:
-            errors.append("duplicate prior tool call")
-        if (
-            action.tool != "submit_for_validation"
-            and simulated_actions >= total_action_limit
-        ):
-            errors.append("total tool action budget exhausted")
-        if finalization_only and action.tool != "submit_for_validation":
-            errors.append(
-                "finalization turn permits only submit_for_validation"
-            )
-
+    simulated_calls = calls_used
+    validations: list[AgentToolCallValidation] = []
+    for call in calls:
+        errors: list[str] = []
+        arguments = None
+        if call.tool not in available_tool_names:
+            errors.append(f"tool is not available: {call.tool}")
+        else:
+            try:
+                arguments = parse_retrieval_tool_arguments(
+                    call.tool,
+                    call.arguments,
+                )
+            except (KeyError, ValueError) as exc:
+                errors.append(str(exc))
+        if arguments is not None:
+            errors.extend(validate_call(
+                call,
+                arguments,
+                query_ids=query_ids,
+                available_specifications=available_specifications,
+                grounded_specifications=trusted_context_by_query.get(
+                    arguments.query_id,
+                    frozenset(),
+                ),
+                ledger=ledger,
+            ))
+            signature = call_signature(call, arguments)
+            if signature in signatures:
+                errors.append("duplicate prior tool call")
+            if simulated_calls >= total_call_limit:
+                errors.append("total tool action budget exhausted")
         accepted = not errors
-        validations.append(AgentActionValidation(
-            action_id=action.action_id,
+        validations.append(AgentToolCallValidation(
+            call_id=call.call_id,
             accepted=accepted,
             errors=tuple(errors),
         ))
-        if not accepted or action.tool == "submit_for_validation":
-            continue
-        signatures.add(signature)
-        simulated_actions += 1
+        if accepted and arguments is not None:
+            signatures.add(call_signature(call, arguments))
+            simulated_calls += 1
     return tuple(validations)
 
 
@@ -254,7 +287,7 @@ def propose_researcher_turn(
     controller_agent: StructuredResearcherController,
     corpus_scope: CorpusScope,
     available_specifications: tuple[str, ...],
-    available_tools: tuple[ToolCapability, ...],
+    available_tools: tuple[NativeFunctionDefinition, ...],
     ledger: EvidenceLedger,
     shared_context: Mapping[str, Any] | None = None,
     round_number: int = 1,
@@ -265,10 +298,10 @@ def propose_researcher_turn(
     max_evidence_per_question: int = 28,
     history: Sequence[Mapping[str, Any]] = (),
     prior_signatures: frozenset[tuple[Any, ...]] = frozenset(),
+    prior_response_items: Sequence[Mapping[str, Any]] = (),
+    prior_outputs: Sequence[NativeFunctionCallOutput] = (),
     finalization_only: bool = False,
 ) -> ResearcherActionPlan:
-    """Propose and validate one turn without executing any retrieval tool."""
-
     if not research_tasks:
         raise ValueError("Researcher requires at least one research task")
     task_ids = tuple(task.task_id for task in research_tasks)
@@ -278,26 +311,53 @@ def propose_researcher_turn(
         research_tasks,
         corpus_scope=corpus_scope,
         available_specifications=available_specifications,
-        available_tools=available_tools,
         shared_context=dict(shared_context or {}),
         round_number=round_number,
         max_rounds=max_rounds,
-        actions_used=actions_used,
-        total_action_limit=total_action_limit,
+        calls_used=actions_used,
+        total_call_limit=total_action_limit,
         hits_per_search=hits_per_search,
         max_evidence_per_question=max_evidence_per_question,
         history=history,
         evidence_views=ledger.selection_payload(),
         finalization_only=finalization_only,
     )
+    control_definitions = researcher_control_definitions()
+    exposed_tools = (
+        (control_definitions[1],)
+        if finalization_only
+        else (*control_definitions, *available_tools)
+    )
     response = controller_agent.decide(
         input_payload=payload,
-        output_type=AgentRetrievalDecision,
+        tools=exposed_tools,
+        prior_response_items=prior_response_items,
+        prior_outputs=prior_outputs,
+        max_tool_calls=(
+            1
+            if finalization_only
+            else max(1, total_action_limit - actions_used + 1)
+        ),
     )
+    control, retrieval_calls, protocol_errors = _parse_native_calls(
+        response.calls,
+        finalization_only=finalization_only,
+    )
+    review = control.review if control is not None else None
     query_ids = frozenset(task_ids)
+    unknown_gap_ids = sorted({
+        gap.query_id
+        for gap in (review.unresolved_gaps if review is not None else ())
+        if gap.query_id not in query_ids
+    })
+    if unknown_gap_ids:
+        protocol_errors = (*protocol_errors, (
+            "unresolved gaps contain unknown query IDs: "
+            + ", ".join(unknown_gap_ids)
+        ))
     available_specification_set = frozenset(available_specifications)
     trusted_context_by_query = {
-        task.task_id: _trusted_action_context(
+        task.task_id: _trusted_call_context(
             task,
             shared_context=dict(shared_context or {}),
             ledger=ledger,
@@ -306,45 +366,48 @@ def propose_researcher_turn(
         for task in research_tasks
     }
     selection_validations = _validate_evidence_selections(
-        response.output,
+        review,
         query_ids=query_ids,
         ledger=ledger,
     )
-    validations = _validate_decision(
-        response.output,
+    validations = _validate_calls(
+        retrieval_calls,
         query_ids=query_ids,
         available_specifications=available_specification_set,
-        available_tool_names=frozenset(
-            capability.name for capability in available_tools
-        ),
+        available_tool_names=frozenset(tool.name for tool in available_tools),
         ledger=ledger,
         trusted_context_by_query=trusted_context_by_query,
         prior_signatures=prior_signatures,
-        actions_used=actions_used,
-        total_action_limit=total_action_limit,
-        finalization_only=finalization_only,
+        calls_used=actions_used,
+        total_call_limit=total_action_limit,
+    )
+    accepted = (
+        not protocol_errors
+        and all(item.accepted for item in validations)
+        and all(item.accepted for item in selection_validations)
     )
     return ResearcherActionPlan(
         input_payload=payload,
-        decision=response.output,
+        native_calls=response.calls,
+        control_call=control,
+        retrieval_calls=retrieval_calls,
         receipt=response.receipt,
         selection_validations=selection_validations,
         validations=validations,
-        accepted=(
-            all(item.accepted for item in validations)
-            and all(item.accepted for item in selection_validations)
-        ),
+        protocol_errors=protocol_errors,
+        accepted=accepted,
+        replay_items=response.replay_items,
     )
 
 
 @dataclass(frozen=True)
 class ResearcherPlanningService:
-    """Generate an auditable first turn without building or invoking tools."""
+    """Generate an auditable first native turn without invoking retrieval."""
 
     controller_agent: StructuredResearcherController
     corpus_scope: CorpusScope
     available_specifications: tuple[str, ...]
-    available_tools: tuple[ToolCapability, ...]
+    available_tools: tuple[NativeFunctionDefinition, ...]
     max_rounds: int = 4
     max_total_actions: int = 9
     hits_per_search: int = 8
@@ -375,7 +438,4 @@ class ResearcherPlanningService:
         )
 
 
-__all__ = [
-    "ResearcherPlanningService",
-    "propose_researcher_turn",
-]
+__all__ = ["ResearcherPlanningService", "propose_researcher_turn"]

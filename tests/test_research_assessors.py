@@ -7,6 +7,7 @@ from specrag.infrastructure import (
     StructuredTaskSufficiencyAssessor,
 )
 from specrag.models import CandidateEvidence, ResearchTask
+from specrag.prompts import SUFFICIENCY_INSTRUCTIONS
 
 
 def _task() -> ResearchTask:
@@ -39,7 +40,7 @@ class _Agent:
 
     def parse(self, *, prompt_version, input_payload, output_type, **kwargs):
         self.payloads.append((prompt_version, input_payload))
-        if prompt_version == "evidence-sufficiency/v1.1":
+        if prompt_version == "evidence-sufficiency/v1.7":
             value = {
                 "task_id": "T1",
                 "status": "sufficient",
@@ -75,6 +76,31 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     assert sufficiency.status == "sufficient"
     assert synthesis.claims[0].evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
-        "evidence-sufficiency/v1.1",
+        "evidence-sufficiency/v1.7",
         "evidence-synthesis/v1.0",
     ]
+    sufficiency_payload = agent.payloads[0][1]
+    assert sufficiency_payload["task"] == {
+        "task_id": "T1",
+        "question": "What starts registration?",
+    }
+
+
+def test_sufficiency_prompt_uses_question_as_authoritative_scope() -> None:
+    assert "collectively establish that question" in SUFFICIENCY_INSTRUCTIONS
+    assert "complete and authoritative scope" in SUFFICIENCY_INSTRUCTIONS
+    assert "Do not use planner objectives" in SUFFICIENCY_INSTRUCTIONS
+    assert "may collectively establish a description, mapping" in (
+        SUFFICIENCY_INSTRUCTIONS
+    )
+    assert "explicitly states the overall criterion" in (
+        SUFFICIENCY_INSTRUCTIONS
+    )
+    assert "establishes that branch, not by itself the complete success" in (
+        SUFFICIENCY_INSTRUCTIONS
+    )
+    assert "only when the task question requests it" in (
+        SUFFICIENCY_INSTRUCTIONS
+    )
+    assert "question explicitly requests all" in SUFFICIENCY_INSTRUCTIONS
+    assert "planner objectives" in SUFFICIENCY_INSTRUCTIONS

@@ -13,12 +13,22 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generic, Literal, Mapping, TypeVar
+from typing import Any, Generic, Literal, Mapping, Sequence, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .llm import LLMApiMode, OpenAIStructuredClient
+from .llm import (
+    LLMApiMode,
+    LLMCallReceipt,
+    NativeToolLLMResponse,
+    OpenAIStructuredClient,
+)
 from ..config import AppConfig, load_config
+from ..models import (
+    NativeFunctionCall,
+    NativeFunctionCallOutput,
+    NativeFunctionDefinition,
+)
 
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -50,6 +60,13 @@ class CodexAgentReceipt(BaseModel):
 @dataclass(frozen=True)
 class CodexAgentResponse(Generic[OutputT]):
     output: OutputT
+    receipt: CodexAgentReceipt
+
+
+@dataclass(frozen=True)
+class CodexAgentToolResponse:
+    calls: tuple[NativeFunctionCall, ...]
+    replay_items: tuple[dict[str, Any], ...]
     receipt: CodexAgentReceipt
 
 
@@ -167,8 +184,6 @@ class CodexStructuredAgent:
         self._codex_home = codex_home.resolve() if codex_home is not None else None
 
     def _prepare_work_root(self) -> None:
-        """Fail early with a useful error when Windows ACLs block the agent."""
-
         try:
             self._work_root.mkdir(parents=True, exist_ok=True)
             probe = self._work_root / f".write-probe-{uuid.uuid4().hex}"
@@ -184,8 +199,6 @@ class CodexStructuredAgent:
             ) from exc
 
     def _prepare_codex_home(self, child_env: dict[str, str]) -> None:
-        """Verify that Codex's state directory is writable before launching."""
-
         configured = self._codex_home or (
             Path(child_env["CODEX_HOME"]).resolve()
             if child_env.get("CODEX_HOME")
@@ -247,9 +260,6 @@ class CodexStructuredAgent:
         child_env = os.environ.copy()
         self._prepare_codex_home(child_env)
         self._prepare_work_root()
-        # Use a fresh project-local directory for every call. This avoids old
-        # Windows sandbox ACLs on .agent_tmp or a previous invocation from
-        # poisoning a later run.
         workdir_path = self._work_root / f"specrag-codex-{uuid.uuid4().hex}"
         workdir_path.mkdir()
         with nullcontext(str(workdir_path)) as temporary_directory:
@@ -257,9 +267,6 @@ class CodexStructuredAgent:
             runtime_temp = workdir / "runtime-temp"
             runtime_temp.mkdir()
             schema_path = workdir / "output_schema.json"
-            # Keep the final response beside (not inside) the sandboxed cwd so
-            # the parent can still read diagnostics even if a third-party
-            # sandbox implementation unexpectedly changes the child ACL.
             output_path = self._work_root / f"{workdir.name}-final_response.json"
             (workdir / "AGENTS.md").write_text(
                 instructions.rstrip() + "\n",
@@ -361,10 +368,6 @@ class CodexStructuredAgent:
                     output_path.unlink(missing_ok=True)
                 except OSError:
                     pass
-                # Only remove the unique directory created by this call. A
-                # best-effort cleanup keeps prompts out of the project tree;
-                # failure is harmless and will not poison the next call
-                # because every invocation uses a new UUID path.
                 if (
                     workdir.parent == self._work_root
                     and workdir.name.startswith("specrag-codex-")
@@ -456,6 +459,31 @@ class LLMApiStructuredAgent:
             retry_max_delay_seconds=settings.llm.api_retry_max_delay_seconds,
         )
 
+    def _receipt(
+        self,
+        receipt: LLMCallReceipt,
+        *,
+        started: float,
+    ) -> CodexAgentReceipt:
+        return CodexAgentReceipt(
+            agent_runtime="llm_api",
+            codex_version="api",
+            model=receipt.model,
+            reasoning_effort=self._reasoning_effort,
+            purpose=receipt.purpose,
+            prompt_version=receipt.prompt_version,
+            request_sha256=receipt.request_sha256,
+            response_sha256=receipt.response_sha256,
+            latency_ms=max(
+                receipt.latency_ms,
+                int((time.perf_counter() - started) * 1_000),
+            ),
+            input_tokens=receipt.input_tokens,
+            output_tokens=receipt.output_tokens,
+            sandbox="api",
+            ephemeral=True,
+        )
+
     def parse(
         self,
         *,
@@ -485,27 +513,44 @@ class LLMApiStructuredAgent:
                 f"LLM API structured call failed ({type(exc).__name__}: {exc})"
             ) from None
 
-        api_receipt = response.receipt
         return CodexAgentResponse(
             output=response.output,
-            receipt=CodexAgentReceipt(
-                agent_runtime="llm_api",
-                codex_version="api",
-                model=api_receipt.model,
-                reasoning_effort=self._reasoning_effort,
-                purpose=api_receipt.purpose,
-                prompt_version=api_receipt.prompt_version,
-                request_sha256=api_receipt.request_sha256,
-                response_sha256=api_receipt.response_sha256,
-                latency_ms=max(
-                    api_receipt.latency_ms,
-                    int((time.perf_counter() - started) * 1_000),
-                ),
-                input_tokens=api_receipt.input_tokens,
-                output_tokens=api_receipt.output_tokens,
-                sandbox="api",
-                ephemeral=True,
-            ),
+            receipt=self._receipt(response.receipt, started=started),
+        )
+
+    def call_tools(
+        self,
+        *,
+        purpose: str,
+        prompt_version: str,
+        instructions: str,
+        input_payload: BaseModel | Mapping[str, Any],
+        tools: Sequence[NativeFunctionDefinition],
+        prior_response_items: Sequence[Mapping[str, Any]] = (),
+        prior_outputs: Sequence[NativeFunctionCallOutput] = (),
+        max_tool_calls: int | None = None,
+    ) -> CodexAgentToolResponse:
+        started = time.perf_counter()
+        try:
+            response: NativeToolLLMResponse = self._client.call_tools(
+                purpose=purpose,
+                prompt_version=prompt_version,
+                instructions=instructions,
+                input_payload=input_payload,
+                tools=tools,
+                prior_response_items=prior_response_items,
+                prior_outputs=prior_outputs,
+                max_tool_calls=max_tool_calls,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep provider details bounded
+            raise CodexAgentError(
+                f"LLM API native tool call failed ({type(exc).__name__}: {exc})"
+            ) from None
+
+        return CodexAgentToolResponse(
+            calls=response.calls,
+            replay_items=response.replay_items,
+            receipt=self._receipt(response.receipt, started=started),
         )
 
 
@@ -521,8 +566,6 @@ def build_structured_agent(
     codex_home: Path | None = None,
     sandbox: Literal["read-only", "workspace-write"] = "workspace-write",
 ) -> CodexStructuredAgent | LLMApiStructuredAgent:
-    """Construct the selected backend without changing caller contracts."""
-
     if backend == "api":
         return LLMApiStructuredAgent(
             model=model,
@@ -545,6 +588,7 @@ __all__ = [
     "CodexAgentError",
     "CodexAgentReceipt",
     "CodexAgentResponse",
+    "CodexAgentToolResponse",
     "CodexStructuredAgent",
     "LLMApiStructuredAgent",
     "build_structured_agent",

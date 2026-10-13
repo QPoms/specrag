@@ -3,39 +3,56 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypeVar
-
-from pydantic import BaseModel
+from typing import Any, Mapping, Protocol, Sequence
 
 from specrag.prompts import (
     RESEARCHER_CONTROLLER_INSTRUCTIONS,
     RESEARCHER_CONTROLLER_PROMPT_VERSION,
 )
+from specrag.models import NativeFunctionCallOutput, NativeFunctionDefinition
 
-from .structured_agent import CodexAgentResponse, CodexStructuredAgent
+from .structured_agent import CodexAgentToolResponse
 
 
-OutputT = TypeVar("OutputT", bound=BaseModel)
+class NativeToolAgent(Protocol):
+    def call_tools(
+        self,
+        *,
+        purpose: str,
+        prompt_version: str,
+        instructions: str,
+        input_payload: Mapping[str, Any],
+        tools: Sequence[NativeFunctionDefinition],
+        prior_response_items: Sequence[Mapping[str, Any]],
+        prior_outputs: Sequence[NativeFunctionCallOutput],
+        max_tool_calls: int | None,
+    ) -> CodexAgentToolResponse: ...
 
 
 @dataclass(frozen=True)
 class StructuredResearcherController:
     """Bind the Researcher prompt contract to a structured model adapter."""
 
-    agent: CodexStructuredAgent
+    agent: NativeToolAgent
 
     def decide(
         self,
         *,
         input_payload: dict[str, Any],
-        output_type: type[OutputT],
-    ) -> CodexAgentResponse[OutputT]:
-        return self.agent.parse(
-            purpose="plan and choose the next bounded retrieval tool calls",
+        tools: Sequence[NativeFunctionDefinition],
+        prior_response_items: Sequence[Mapping[str, Any]] = (),
+        prior_outputs: Sequence[NativeFunctionCallOutput] = (),
+        max_tool_calls: int | None = None,
+    ) -> CodexAgentToolResponse:
+        return self.agent.call_tools(
+            purpose="review evidence and choose bounded retrieval tool calls",
             prompt_version=RESEARCHER_CONTROLLER_PROMPT_VERSION,
             instructions=RESEARCHER_CONTROLLER_INSTRUCTIONS,
             input_payload=input_payload,
-            output_type=output_type,
+            tools=tools,
+            prior_response_items=prior_response_items,
+            prior_outputs=prior_outputs,
+            max_tool_calls=max_tool_calls,
         )
 
 

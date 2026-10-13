@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal, Protocol
+from typing import Any, ClassVar, Literal, Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,12 +36,103 @@ class _StrictModel(BaseModel):
 class ToolCapability(_StrictModel):
     name: RetrievalToolName
     description: str = Field(min_length=1)
-    required_fields: tuple[str, ...]
-    optional_fields: tuple[str, ...] = ()
     execution_kind: Literal["deterministic", "model_scored"]
     source_constraint: Literal["active_3gpp_corpus_scope"] = (
         "active_3gpp_corpus_scope"
     )
+
+
+class _ToolArguments(_StrictModel):
+    """Common strict arguments exposed to the model for retrieval calls."""
+
+    query_id: str = Field(min_length=1)
+    max_results: int = Field(ge=1, le=12)
+
+
+class _ScopedToolArguments(_ToolArguments):
+    target_specifications: tuple[str, ...] = Field(max_length=6)
+
+    @model_validator(mode="after")
+    def _valid_specifications(self) -> "_ScopedToolArguments":
+        if len(self.target_specifications) != len(set(self.target_specifications)):
+            raise ValueError("target specifications must be unique")
+        invalid = [
+            value
+            for value in self.target_specifications
+            if re.fullmatch(r"\d{2}\.\d{3}", value) is None
+        ]
+        if invalid:
+            raise ValueError(
+                "invalid target specifications: " + ", ".join(invalid)
+            )
+        return self
+
+
+class KeywordSearchArguments(_ScopedToolArguments):
+    lexical_query: str = Field(min_length=1, max_length=4000)
+
+
+class SemanticSearchArguments(_ScopedToolArguments):
+    semantic_query: str = Field(min_length=1, max_length=4000)
+
+
+class HybridSearchArguments(_ScopedToolArguments):
+    lexical_query: str = Field(min_length=1, max_length=4000)
+    semantic_query: str = Field(min_length=1, max_length=4000)
+
+
+class HyDESearchArguments(_ScopedToolArguments):
+    lexical_query: str = Field(min_length=1, max_length=4000)
+    hypothetical_document: str = Field(min_length=1, max_length=4000)
+
+
+class RerankArguments(_ToolArguments):
+    semantic_query: str = Field(min_length=1, max_length=4000)
+    seed_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+
+class ClauseLookupArguments(_ScopedToolArguments):
+    clause: str = Field(min_length=1, max_length=64)
+
+
+class ExpandSourceContextArguments(_ToolArguments):
+    seed_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+
+RetrievalToolArguments: TypeAlias = (
+    KeywordSearchArguments
+    | SemanticSearchArguments
+    | HybridSearchArguments
+    | HyDESearchArguments
+    | RerankArguments
+    | ClauseLookupArguments
+    | ExpandSourceContextArguments
+)
+
+
+RETRIEVAL_TOOL_ARGUMENT_TYPES: dict[
+    RetrievalToolName,
+    type[RetrievalToolArguments],
+] = {
+    "keyword_search": KeywordSearchArguments,
+    "semantic_search": SemanticSearchArguments,
+    "hybrid_search": HybridSearchArguments,
+    "hyde_search": HyDESearchArguments,
+    "rerank": RerankArguments,
+    "clause_lookup": ClauseLookupArguments,
+    "expand_source_context": ExpandSourceContextArguments,
+}
+
+
+def parse_retrieval_tool_arguments(
+    name: str,
+    arguments: dict[str, Any],
+) -> RetrievalToolArguments:
+    try:
+        argument_type = RETRIEVAL_TOOL_ARGUMENT_TYPES[name]  # type: ignore[index]
+    except KeyError as exc:
+        raise KeyError(f"unknown retrieval tool: {name}") from exc
+    return argument_type.model_validate(arguments)
 
 
 class RetrievalToolRequest(_StrictModel):
@@ -129,16 +220,27 @@ class RetrievalToolResult(_StrictModel):
 class RetrievalTool(Protocol):
     name: RetrievalToolName
     capability: ToolCapability
+    argument_type: ClassVar[type[RetrievalToolArguments]]
 
     def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult: ...
 
 
 __all__ = [
+    "ClauseLookupArguments",
+    "ExpandSourceContextArguments",
+    "HybridSearchArguments",
+    "HyDESearchArguments",
+    "KeywordSearchArguments",
+    "RETRIEVAL_TOOL_ARGUMENT_TYPES",
     "RetrievalTool",
+    "RetrievalToolArguments",
+    "parse_retrieval_tool_arguments",
     "RetrievalToolName",
     "RetrievalToolRequest",
     "RetrievalToolResult",
     "ScoreKind",
+    "SemanticSearchArguments",
+    "RerankArguments",
     "ToolEvidence",
     "ToolCapability",
     "ToolStatus",

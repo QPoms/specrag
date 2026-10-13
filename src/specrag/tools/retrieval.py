@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from specrag.models import NativeFunctionDefinition
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
 from specrag.retrieval.index import searchable_text
 from specrag.retrieval.models import MarkdownChunk, RetrievalHit
@@ -14,10 +15,17 @@ from specrag.retrieval.navigation import (
 from specrag.retrieval.reranker import CrossEncoderReranker
 
 from .models import (
+    ClauseLookupArguments,
+    ExpandSourceContextArguments,
+    HybridSearchArguments,
+    HyDESearchArguments,
+    KeywordSearchArguments,
+    RerankArguments,
     RetrievalToolName,
     RetrievalToolRequest,
     RetrievalToolResult,
     ScoreKind,
+    SemanticSearchArguments,
     ToolEvidence,
     ToolCapability,
     ToolStatus,
@@ -123,15 +131,15 @@ class _RetrieverTool:
 
 class KeywordSearchTool(_RetrieverTool):
     name: RetrievalToolName = "keyword_search"
+    argument_type = KeywordSearchArguments
     capability = ToolCapability(
         name=name,
         description=(
             "BM25 search for short exact protocol identifiers, message names, "
             "information elements, acronyms, or distinctive source wording; "
-            "avoid long concatenations of conceptual terms."
+            "supply a concise lexical_query and avoid long concatenations of "
+            "conceptual terms."
         ),
-        required_fields=("query",),
-        optional_fields=("target_specifications", "limit"),
         execution_kind="deterministic",
     )
 
@@ -166,14 +174,14 @@ class KeywordSearchTool(_RetrieverTool):
 
 class SemanticSearchTool(_RetrieverTool):
     name: RetrievalToolName = "semantic_search"
+    argument_type = SemanticSearchArguments
     capability = ToolCapability(
         name=name,
         description=(
             "Embedding search for behavior, conditions, responsibilities, or "
-            "relationships whose source wording may differ from the question."
+            "relationships whose source wording may differ from the question; "
+            "describe the required behavior in semantic_query."
         ),
-        required_fields=("query",),
-        optional_fields=("target_specifications", "limit"),
         execution_kind="model_scored",
     )
 
@@ -209,14 +217,15 @@ class SemanticSearchTool(_RetrieverTool):
 
 class HybridSearchTool(_RetrieverTool):
     name: RetrievalToolName = "hybrid_search"
+    argument_type = HybridSearchArguments
     capability = ToolCapability(
         name=name,
         description=(
             "BM25 and embedding retrieval fused with reciprocal rank fusion; "
-            "use when exact protocol anchors and conceptual meaning both matter."
+            "use when exact protocol anchors and conceptual meaning both matter. "
+            "Supply concise exact anchors in lexical_query and the required "
+            "behavior or relation in semantic_query."
         ),
-        required_fields=("query",),
-        optional_fields=("semantic_query", "target_specifications", "limit"),
         execution_kind="model_scored",
     )
 
@@ -242,28 +251,35 @@ class HybridSearchTool(_RetrieverTool):
 
 class HyDESearchTool(_RetrieverTool):
     name: RetrievalToolName = "hyde_search"
+    argument_type = HyDESearchArguments
     capability = ToolCapability(
         name=name,
         description=(
-            "Embed an untrusted model-generated hypothetical normative passage "
-            "to retrieve similar real 3GPP source chunks; the passage is never "
-            "evidence."
+            "Fuse BM25 retrieval over concise exact protocol anchors with "
+            "embedding retrieval over an untrusted model-generated hypothetical "
+            "normative passage. Do not invent clause numbers, citations, or "
+            "unsupported protocol names; the passage is never evidence."
         ),
-        required_fields=("hypothetical_document",),
-        optional_fields=("target_specifications", "limit"),
         execution_kind="model_scored",
     )
 
     def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
         hypothetical_document = request.hypothetical_document or ""
+        if not request.query.strip():
+            return self._reject(
+                request,
+                "hyde_search requires a lexical query",
+            )
         if not hypothetical_document.strip():
             return self._reject(
                 request,
                 "hyde_search requires a hypothetical document",
             )
         try:
-            candidates = self.retriever.semantic_candidates(
-                hypothetical_document,
+            hits, errors = self.retriever.hybrid_hits(
+                request.request_id,
+                request.query,
+                semantic_query=hypothetical_document,
                 allowed_specifications=request.target_specifications,
                 limit=request.limit,
             )
@@ -275,28 +291,24 @@ class HyDESearchTool(_RetrieverTool):
         return self._result(
             request,
             (
-                self._chunk_evidence(
-                    self.retriever.chunk_by_id[chunk_id],
-                    request=request,
-                    rank=rank,
-                    score=distance,
-                    score_kind="semantic_distance",
-                )
-                for rank, (chunk_id, distance) in enumerate(candidates, 1)
+                self._hit_evidence(hit, request=request, rank=rank)
+                for rank, hit in enumerate(hits, 1)
             ),
+            errors=errors,
         )
 
 
 class ClauseLookupTool(_RetrieverTool):
     name: RetrievalToolName = "clause_lookup"
+    argument_type = ClauseLookupArguments
     capability = ToolCapability(
         name=name,
         description=(
-            "Lookup by a known clause identifier, exact title, or combined "
-            "heading; do not use a guessed clause number."
+            "Lookup by a clause identifier, exact title, or combined heading. "
+            "A model-proposed value is an untrusted retrieval hypothesis; only "
+            "source content returned by the tool can become evidence. Do not "
+            "manufacture neighboring clauses by incrementing an observed value."
         ),
-        required_fields=("clause",),
-        optional_fields=("target_specifications", "limit"),
         execution_kind="deterministic",
     )
 
@@ -323,15 +335,15 @@ class ClauseLookupTool(_RetrieverTool):
 
 class ExpandSourceContextTool(_RetrieverTool):
     name: RetrievalToolName = "expand_source_context"
+    argument_type = ExpandSourceContextArguments
     capability = ToolCapability(
         name=name,
         description=(
             "Bounded source-order expansion around trusted seed chunks, "
             "including the current subsection and its immediately adjacent "
-            "sibling subsections within the same parent section."
+            "sibling subsections within the same parent section. Supply one to "
+            "four already observed seed_evidence_ids."
         ),
-        required_fields=("seed_chunk_ids",),
-        optional_fields=("limit",),
         execution_kind="deterministic",
     )
 
@@ -355,14 +367,14 @@ class ExpandSourceContextTool(_RetrieverTool):
 
 class RerankTool(_RetrieverTool):
     name: RetrievalToolName = "rerank"
+    argument_type = RerankArguments
     capability = ToolCapability(
         name=name,
         description=(
             "Cross-encoder reranking of already observed trusted candidate "
-            "chunks; this does not discover new source candidates."
+            "chunks using semantic_query and one to four seed_evidence_ids; "
+            "this does not discover new source candidates."
         ),
-        required_fields=("query", "seed_chunk_ids"),
-        optional_fields=("limit",),
         execution_kind="model_scored",
     )
 
@@ -438,6 +450,31 @@ def retrieval_tool_capabilities() -> tuple[ToolCapability, ...]:
     return tuple(sorted(capabilities, key=lambda item: item.name))
 
 
+def retrieval_tool_definitions() -> tuple[NativeFunctionDefinition, ...]:
+    """Describe strict native tools without constructing retrieval indexes."""
+
+    tool_types = (
+        KeywordSearchTool,
+        SemanticSearchTool,
+        HybridSearchTool,
+        HyDESearchTool,
+        RerankTool,
+        ClauseLookupTool,
+        ExpandSourceContextTool,
+    )
+    return tuple(sorted(
+        (
+            NativeFunctionDefinition(
+                name=tool_type.name,
+                description=tool_type.capability.description,
+                parameters=tool_type.argument_type.model_json_schema(),
+            )
+            for tool_type in tool_types
+        ),
+        key=lambda item: item.name,
+    ))
+
+
 def build_retrieval_tool_registry(
     retriever: HybridMarkdownRetriever,
     *,
@@ -467,4 +504,5 @@ __all__ = [
     "SemanticSearchTool",
     "build_retrieval_tool_registry",
     "retrieval_tool_capabilities",
+    "retrieval_tool_definitions",
 ]

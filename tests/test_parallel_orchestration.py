@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from specrag.agents.models import (
-    AgentActionOutcome,
-    AgentRetrievalAction,
+    AgentControlCall,
+    AgentResearchReview,
+    AgentRetrievalCall,
     AgentRetrievalTurn,
+    AgentToolOutcome,
     AgenticRetrievalExecution,
 )
 from specrag.infrastructure.structured_agent import CodexAgentReceipt
@@ -32,20 +34,20 @@ from specrag.retrieval.planner import (
 def _execution(task_id: str) -> AgenticRetrievalExecution:
     query_id = f"Q-{task_id}"
     hit_id = f"E-{task_id}"
-    action = AgentRetrievalAction(
-        action_id=f"A-{task_id}",
+    call = AgentRetrievalCall(
+        call_id=f"call-{task_id}",
         tool="hybrid_search",
-        query_id=query_id,
-        lexical_query="registration",
-        semantic_query="registration procedure",
-        hypothetical_document="",
-        target_specifications=("24.501",),
-        seed_evidence_ids=(),
-        max_results=4,
+        arguments={
+            "query_id": query_id,
+            "lexical_query": "registration",
+            "semantic_query": "registration procedure",
+            "target_specifications": ["24.501"],
+            "max_results": 4,
+        },
     )
-    outcome = AgentActionOutcome(
+    outcome = AgentToolOutcome(
         round_number=1,
-        action=action,
+        call=call,
         status="completed",
         evidence_ids=(hit_id,),
         new_evidence_ids=(hit_id,),
@@ -91,7 +93,15 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
         expansion_actions_used=0,
         turns=(AgentRetrievalTurn(
             round_number=1,
-            assessment="Evidence found.",
+            control_call=AgentControlCall(
+                call_id=f"control-{task_id}",
+                name="update_research_state",
+                review=AgentResearchReview(
+                    assessment="Evidence found.",
+                    evidence_selections=(),
+                    unresolved_gaps=(),
+                ),
+            ),
             receipt=receipt,
             outcomes=(outcome,),
         ),),
@@ -165,7 +175,7 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
         new_parallel_research_state(
             research_id="parallel-test",
             user_question="What are the two independent facts?",
-            budget=ResearchBudget(max_tool_calls=4),
+            budget=ResearchBudget(max_tool_calls=1),
         ),
         thread_id="parallel-test",
     )
@@ -173,6 +183,8 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
     assert sorted(service.calls) == ["T1", "T2"]
     assert result["iteration"] == 1
     assert result["budget"].tool_calls_used == 2
+    assert result["budget"].tool_calls_used_for("T1") == 1
+    assert result["budget"].tool_calls_used_for("T2") == 1
     assert len(result["candidate_evidence"]) == 2
     assert result["final_answer"] == "Grounded parallel answer."
 
@@ -261,7 +273,7 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
         new_parallel_research_state(
             research_id="dependency-test",
             user_question="Resolve a dependent research chain.",
-            budget=ResearchBudget(max_tool_calls=4, max_replans=0),
+            budget=ResearchBudget(max_tool_calls=1, max_replans=0),
         ),
         thread_id="dependency-test",
     )
@@ -269,6 +281,8 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
     assert service.calls == ["T1", "T2"]
     assert result["iteration"] == 2
     assert result["budget"].tool_calls_used == 2
+    assert result["budget"].tool_calls_used_for("T1") == 1
+    assert result["budget"].tool_calls_used_for("T2") == 1
     assert result["budget"].replans_used == 0
     assert len(result["researcher_results"]) == 2
     assert result["researcher_results_processed"] == 2

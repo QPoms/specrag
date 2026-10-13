@@ -16,6 +16,7 @@ from .research import (
     ResearchPlan,
     ResearchRouteDecision,
     ResearcherStopReason,
+    ResearcherEvidenceSelectionRecord,
     ResearchTask,
     ResearchWorkerResult,
     SourceValidationResult,
@@ -24,6 +25,11 @@ from .research import (
     TaskStatus,
     ToolCallRecord,
     ValidatedEvidence,
+)
+from .tool_calling import (
+    NativeFunctionCall,
+    NativeFunctionCallOutput,
+    NativeFunctionDefinition,
 )
 
 __all__ = [
@@ -35,6 +41,7 @@ __all__ = [
     "ResearchPlan",
     "ResearchRouteDecision",
     "ResearcherStopReason",
+    "ResearcherEvidenceSelectionRecord",
     "ResearchTask",
     "ResearchWorkerResult",
     "SourceValidationResult",
@@ -47,4 +54,7 @@ __all__ = [
     "KnowledgeSource",
     "MemorySearchResult",
     "ValidatedKnowledge",
+    "NativeFunctionCall",
+    "NativeFunctionCallOutput",
+    "NativeFunctionDefinition",
 ]

@@ -158,24 +158,28 @@ class EvidenceLedger:
         return tuple(observed), tuple(added)
 
     def selection_payload(self) -> dict[str, list[dict[str, Any]]]:
-        """Return bounded review views without discarding inactive candidates."""
+        """Return complete review views without discarding candidates."""
 
         return {
             "active_evidence": self._payload_for_status(
                 "active",
-                excerpt_characters=1600,
+                excerpt_characters=None,
             ),
             "pending_candidates": self._payload_for_status(
                 "pending",
-                excerpt_characters=1600,
+                excerpt_characters=None,
             ),
             "inactive_candidates": self._payload_for_status(
                 "inactive",
-                excerpt_characters=300,
+                excerpt_characters=None,
             ),
         }
 
-    def payload(self, *, excerpt_characters: int = 1600) -> list[dict[str, Any]]:
+    def payload(
+        self,
+        *,
+        excerpt_characters: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the complete candidate pool for audit-compatible callers."""
 
         values: list[dict[str, Any]] = []
@@ -204,7 +208,7 @@ class EvidenceLedger:
         self,
         status: Literal["active", "pending", "inactive"],
         *,
-        excerpt_characters: int,
+        excerpt_characters: int | None,
     ) -> list[dict[str, Any]]:
         values: list[dict[str, Any]] = []
         for query_id, hits in self._candidates.items():
@@ -225,10 +229,13 @@ class EvidenceLedger:
         hit: PlannedRetrievalHit,
         *,
         status: Literal["active", "pending", "inactive"],
-        excerpt_characters: int,
+        excerpt_characters: int | None,
     ) -> dict[str, Any]:
         excerpt = hit.excerpt
-        if len(excerpt) > excerpt_characters:
+        if (
+            excerpt_characters is not None
+            and len(excerpt) > excerpt_characters
+        ):
             excerpt = excerpt[:excerpt_characters].rstrip() + " ..."
         return {
             "evidence_id": hit.hit_id,
