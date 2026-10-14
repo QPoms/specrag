@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-13
+Updated: 2026-10-14
 
 ## Current state
 
@@ -667,13 +667,53 @@ The live eight-stage progress checklist is maintained in
 `docs/plans/003-optimization-roadmap.md`.
 
 The Sufficiency Judge scope boundary is now isolated from Planner metadata.
-`evidence-sufficiency/v1.7` evaluates only the `ResearchTask.question` and
+`evidence-sufficiency/v1.9` evaluates only the `ResearchTask.question` and
 source-valid evidence; `objective`, dependency metadata, search rationale, and
 task status remain in workflow state for Planner/Researcher behavior and audit
 but are not sent to the Judge. This prevents a Planner objective from adding
 requirements such as exhaustive-set or modification/storage proofs that the
 assigned question did not ask for. Source validation, evidence selection,
 missing-relation generation, and downstream synthesis contracts are unchanged.
+
+The v1.8 Judge contract made its decision procedure explicit without adding
+answer generation: identify the answer units requested by the task question,
+map complete candidate passages to those units, select the smallest
+non-redundant direct-evidence set, and then assign sufficient, partial,
+insufficient, or conflict. Partial assessments retain only evidence that
+directly supports established units and describe only the remaining unsupported
+unit in `missing_relation`. The earlier long special-case wording for overall
+success and continuation criteria is replaced by one general rule: a local step
+or successful instance establishes only that part, while an overall condition
+or relationship requires evidence for the complete requested conclusion.
+
+The v1.9 contract adds three general boundaries without changing the output
+schema or workflow: minimality cannot remove evidence needed for complete task
+coverage; a passage that only delegates an answer-bearing fact to another
+clause does not directly establish that fact; and multiple passages may be
+combined only when their explicit facts directly form the requested conclusion,
+not merely because they concern the same procedure.
+
+The v1.9 live check covered simple questions 003 and 044 and frozen-plan complex
+question 048. Question 003 remained sufficient from the passage that explicitly
+states the task-level sidelink-RLF actions; the presence of delegated subclauses
+did not trigger indiscriminate reference expansion. Question 044 selected the
+two direct successful/unsuccessful TS 36.423 passages from six X2AP candidates,
+showing that minimality removed redundant general, message-table, and range
+definition passages. Its candidate pool did not contain the annotated XnAP
+variant, which remains a retrieval-scope observation rather than a Judge
+selection error. Question 048 completed both tasks: one TS 29.274 passage
+established the two-hop interface path, while seven non-redundant table chunks
+collectively established the requested before/after message-content evolution.
+The cross-passage rule therefore did not regress an explicit mapping case.
+
+A live v1.8 compatibility check completed simple questions 033 and 044. The
+single-clause NAS-security question retained one direct TS 23.401 passage and a
+complete answer. For the mobility-setting question, the Judge reduced the
+previously observed ten-passage X2AP/XnAP mixture to the two direct TS 38.423
+successful- and unsuccessful-operation passages. The resulting synthesis used
+only NG-RAN/XnAP terminology and covered request, acceptance, refusal, cause,
+and optional permitted-range feedback. Both runs completed without a gap or
+re-plan.
 
 Judge-reported gaps now receive a separate bounded corrective retrieval phase.
 `ResearchBudget.max_tool_calls` is the per-task initial allowance and
@@ -688,3 +728,32 @@ that gap into new retrieval calls in the same model turn. No second query-
 rewrite node or model call was added; Planner, retrieval algorithms, Source
 Validator, and Sufficiency Judge responsibilities are unchanged. Runtime state
 is `research-state/v1.5` to record the expanded budget shape.
+
+Final synthesis now has the same explicit scope boundary. The
+`evidence-synthesis/v1.1` prompt lives under `specrag.prompts`; the model receives
+the original question plus each task ID, task question, and only the
+source-valid evidence selected as supported by the Sufficiency Judge. Planner
+objectives, dependencies, task status, gaps, search history, rejected evidence,
+and other runtime metadata are not synthesis inputs. The original question is
+authoritative and task questions are coverage checkpoints.
+
+Evidence-backed claims are the canonical final-answer units. Code requires the
+claim set to cite eligible evidence owned by every sufficient ResearchTask and
+continues to reject unknown or ineligible evidence IDs. The persisted and
+displayed answer is deterministically derived from the ordered claim texts,
+preventing free-form answer content from omitting claim facts or adding facts
+outside the auditable claim set. The prompt also requires minimum sufficient
+scope and preservation of specification-specific actors, interfaces, messages,
+states, and terminology instead of merging analogous procedures across systems.
+
+Live compatibility and quality checks completed for simple questions 003, 033,
+and 044 and frozen-plan complex questions 008, 048, and 050. All six completed
+the workflow with sufficient evidence and passed the synthesis task-coverage
+contract. Question 033 and complex question 050 closely match their reviewed
+answers; questions 008 and 048 retain complete main-task coverage with concise,
+claim-identical answers. Questions 003 and 044 remain useful upstream boundary
+cases: 003 is still declared sufficient from a broader sidelink-RLF action
+passage without the annotated delegated SRB-entity release detail, while 044's
+Judge-supported set contains both X2AP and XnAP variants. The Synthesizer now
+keeps those systems separate, but correctly does not replace the Judge by
+discarding otherwise supported input evidence.

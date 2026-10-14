@@ -312,10 +312,10 @@ class _SynthesisGenerator:
 
     def synthesize(self, question, tasks, evidence):
         return EvidenceSynthesis(
-            answer="The UE initiates the registration procedure.",
+            answer="This transport value must not become the final answer.",
             claims=(EvidenceBackedClaim(
                 claim_id="C1",
-                text="The UE initiates registration.",
+                text="The UE initiates the registration procedure.",
                 evidence_ids=(self.evidence_id,),
             ),),
         )
@@ -365,8 +365,47 @@ def test_synthesis_handler_records_claim_to_evidence_chain(tmp_path: Path) -> No
     )(state)
 
     assert update["stop_reason"] == "completed"
-    assert update["final_answer"].startswith("The UE")
+    assert update["final_answer"] == "The UE initiates the registration procedure."
     assert update["synthesis"].claims[0].evidence_ids == ("E1",)
+
+
+def test_synthesis_rejects_claim_set_that_omits_a_task(tmp_path: Path) -> None:
+    second_task = ResearchTask(
+        task_id="T2",
+        question="What does the network do?",
+        objective="Find the network action.",
+        status="completed",
+    )
+    second_candidate = _candidate(
+        tmp_path,
+        evidence_id="E2",
+        task_id="T2",
+        chunk_id="C2",
+    )
+    second_validated = _validated().model_copy(update={
+        "evidence_id": "E2",
+        "task_id": "T2",
+    })
+    second_assessment = TaskSufficiencyAssessment(
+        task_id="T2",
+        status="sufficient",
+        supporting_evidence_ids=("E2",),
+        rationale="The network action is supported.",
+    )
+
+    service = EvidenceSynthesisService(_SynthesisGenerator())
+    try:
+        service.synthesize(
+            "How do the UE and network act?",
+            (_task(), second_task),
+            (_candidate(tmp_path), second_candidate),
+            (_validated(), second_validated),
+            (_sufficient_assessment(), second_assessment),
+        )
+    except ValueError as exc:
+        assert "do not cover tasks: T2" in str(exc)
+    else:
+        raise AssertionError("synthesis accepted a claim set that omitted T2")
 
 
 def test_sufficiency_judge_conflict_becomes_source_conflict_gap(

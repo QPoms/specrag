@@ -13,6 +13,8 @@ from specrag.models import (
 from specrag.prompts import (
     SUFFICIENCY_INSTRUCTIONS,
     SUFFICIENCY_PROMPT_VERSION,
+    SYNTHESIS_INSTRUCTIONS,
+    SYNTHESIS_PROMPT_VERSION,
 )
 
 from .structured_agent import CodexStructuredAgent
@@ -57,16 +59,22 @@ class StructuredEvidenceSynthesisGenerator:
     ) -> EvidenceSynthesis:
         response = self.agent.parse(
             purpose="synthesize an evidence-grounded technical answer",
-            prompt_version="evidence-synthesis/v1.0",
-            instructions=(
-                "Answer only from the supplied validated source passages. Split "
-                "the answer into explicit claims and attach one or more supplied "
-                "evidence IDs to every claim. Do not invent an evidence ID."
-            ),
+            prompt_version=SYNTHESIS_PROMPT_VERSION,
+            instructions=SYNTHESIS_INSTRUCTIONS,
             input_payload={
                 "question": question,
-                "tasks": [item.model_dump(mode="json") for item in tasks],
-                "evidence": [item.model_dump(mode="json") for item in evidence],
+                "task_evidence": [
+                    {
+                        "task_id": task.task_id,
+                        "task_question": task.question,
+                        "supported_evidence": [
+                            item.model_dump(mode="json")
+                            for item in evidence
+                            if item.task_id == task.task_id
+                        ],
+                    }
+                    for task in tasks
+                ],
             },
             output_type=EvidenceSynthesis,
         )

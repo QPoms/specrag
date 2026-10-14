@@ -63,6 +63,13 @@ user question or task
   retrieval budget is exhausted, but it cannot invoke another tool.
 - `src/specrag/prompts/researcher.py`: versioned Researcher controller prompt
   contract.
+- `src/specrag/prompts/synthesis.py`: versioned final-answer contract. The
+  original question is authoritative, task questions are coverage checkpoints,
+  and only source-valid evidence selected by the Sufficiency Judge is eligible.
+- `src/specrag/evidence/synthesis.py`: validates that every sufficient task is
+  represented in the final cited claim set. Claim text is canonical; the
+  persisted and displayed answer is derived deterministically from the ordered
+  claims so the two representations cannot diverge.
 - `src/specrag/tools/`: provider-neutral per-tool argument schemas, function
   descriptions, registry, and seven trusted retrieval adapters. The Registry
   is the single source for definition, validation, and execution. HyDE embeds an

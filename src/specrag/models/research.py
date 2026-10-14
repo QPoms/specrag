@@ -185,6 +185,17 @@ class EvidenceSynthesis(_StrictModel):
     answer: str = Field(min_length=1)
     claims: tuple[EvidenceBackedClaim, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _derive_answer_from_claims(self) -> "EvidenceSynthesis":
+        """Keep the persisted answer identical to its auditable claim units."""
+
+        object.__setattr__(
+            self,
+            "answer",
+            "\n\n".join(claim.text for claim in self.claims),
+        )
+        return self
+
 
 class ResearchGap(_StrictModel):
     gap_id: str = Field(min_length=1)

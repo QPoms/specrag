@@ -8,6 +8,7 @@ from specrag.infrastructure import (
 )
 from specrag.models import CandidateEvidence, ResearchTask
 from specrag.prompts import SUFFICIENCY_INSTRUCTIONS
+from specrag.prompts import SYNTHESIS_INSTRUCTIONS
 
 
 def _task() -> ResearchTask:
@@ -40,7 +41,7 @@ class _Agent:
 
     def parse(self, *, prompt_version, input_payload, output_type, **kwargs):
         self.payloads.append((prompt_version, input_payload))
-        if prompt_version == "evidence-sufficiency/v1.7":
+        if prompt_version == "evidence-sufficiency/v1.9":
             value = {
                 "task_id": "T1",
                 "status": "sufficient",
@@ -76,31 +77,53 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     assert sufficiency.status == "sufficient"
     assert synthesis.claims[0].evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
-        "evidence-sufficiency/v1.7",
-        "evidence-synthesis/v1.0",
+        "evidence-sufficiency/v1.9",
+        "evidence-synthesis/v1.1",
     ]
     sufficiency_payload = agent.payloads[0][1]
     assert sufficiency_payload["task"] == {
         "task_id": "T1",
         "question": "What starts registration?",
     }
+    synthesis_payload = agent.payloads[1][1]
+    assert synthesis_payload["task_evidence"][0]["task_id"] == "T1"
+    assert synthesis_payload["task_evidence"][0]["task_question"] == (
+        "What starts registration?"
+    )
+    assert "objective" not in synthesis_payload["task_evidence"][0]
+    assert synthesis.answer == synthesis.claims[0].text
+
+
+def test_synthesis_prompt_enforces_final_answer_boundary() -> None:
+    assert "complete and authoritative answer scope" in SYNTHESIS_INSTRUCTIONS
+    assert "Task\nquestions are coverage checkpoints only" in (
+        SYNTHESIS_INSTRUCTIONS
+    )
+    assert "At least one claim must cite supported" in SYNTHESIS_INSTRUCTIONS
+    assert "evidence owned by each task" in SYNTHESIS_INSTRUCTIONS
+    assert "The claim texts are the final answer" in SYNTHESIS_INSTRUCTIONS
+    assert "different specifications or radio" in SYNTHESIS_INSTRUCTIONS
+    assert "systems into one generalized statement" in SYNTHESIS_INSTRUCTIONS
 
 
 def test_sufficiency_prompt_uses_question_as_authoritative_scope() -> None:
-    assert "collectively establish that question" in SUFFICIENCY_INSTRUCTIONS
     assert "complete and authoritative scope" in SUFFICIENCY_INSTRUCTIONS
-    assert "Do not use planner objectives" in SUFFICIENCY_INSTRUCTIONS
-    assert "may collectively establish a description, mapping" in (
+    assert "Identify Answer Units" in SUFFICIENCY_INSTRUCTIONS
+    assert "Map Evidence" in SUFFICIENCY_INSTRUCTIONS
+    assert "smallest non-redundant set" in SUFFICIENCY_INSTRUCTIONS
+    assert "Minimality\n   must never override completeness" in (
         SUFFICIENCY_INSTRUCTIONS
     )
-    assert "explicitly states the overall criterion" in (
+    assert "delegates an answer-bearing fact" in SUFFICIENCY_INSTRUCTIONS
+    assert "every substantive answer unit" in SUFFICIENCY_INSTRUCTIONS
+    assert "Do not introduce an unstated" in SUFFICIENCY_INSTRUCTIONS
+    assert "normative relation" in SUFFICIENCY_INSTRUCTIONS
+    assert "local\n   procedure step" in SUFFICIENCY_INSTRUCTIONS
+    assert "Use partial when at least one requested answer unit" in (
         SUFFICIENCY_INSTRUCTIONS
     )
-    assert "establishes that branch, not by itself the complete success" in (
+    assert "Do not promote background evidence" in SUFFICIENCY_INSTRUCTIONS
+    assert "only the exact unsupported answer unit" in (
         SUFFICIENCY_INSTRUCTIONS
     )
-    assert "only when the task question requests it" in (
-        SUFFICIENCY_INSTRUCTIONS
-    )
-    assert "question explicitly requests all" in SUFFICIENCY_INSTRUCTIONS
-    assert "planner objectives" in SUFFICIENCY_INSTRUCTIONS
+    assert "Do not generate a task answer" in SUFFICIENCY_INSTRUCTIONS
