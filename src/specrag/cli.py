@@ -73,7 +73,6 @@ def _load_questions(
         selected[question.question_id] = question
     return selected
 
-
 def _load_route_labels(
     question_set: Path = QUESTION_SET,
 ) -> dict[str, CuratedRouteLabel]:
@@ -86,7 +85,6 @@ def _load_route_labels(
             difficulty=str(record["difficulty"]),
         )
     return labels
-
 
 def select_baseline_questions(
     *,
@@ -520,6 +518,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_question_selection(baseline)
     baseline.add_argument("--max-iterations", type=int, default=3)
     baseline.add_argument("--max-tool-calls", type=int, default=6)
+    baseline.add_argument("--max-gap-tool-calls", type=int, default=6)
     baseline.add_argument("--max-replans", type=int, default=2)
     baseline.add_argument("--release", type=int, default=17)
     return parser
@@ -571,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
         budget = ResearchBudget(
             max_iterations=args.max_iterations,
             max_tool_calls=args.max_tool_calls,
+            max_gap_tool_calls=args.max_gap_tool_calls,
             max_replans=args.max_replans,
         )
         return run_baseline(

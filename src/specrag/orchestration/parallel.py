@@ -22,6 +22,7 @@ from .workflow import (
     StateUpdate,
     _budget_guard,
     _can_advance_without_replan,
+    _has_judge_gap,
     _in_memory_checkpointer,
     _node,
     _replanner_node,
@@ -62,11 +63,15 @@ class ParallelResearcherHandler:
             for gap in state["gaps"]
             if gap.task_id == task.task_id and not gap.resolved
         )
+        corrective = bool(relevant_gaps)
         execution, query_to_task = self.service.run(
             (running,),
             shared_context={
                 "research_id": state["research_id"],
                 "iteration": state["iteration"],
+                "gap_retrieval_mode": (
+                    "judge_gap" if corrective else "initial"
+                ),
                 "unresolved_gaps": relevant_gaps,
                 "worker_task_id": task.task_id,
                 "dependency_context": build_dependency_context(state, task),
@@ -78,6 +83,7 @@ class ParallelResearcherHandler:
             execution,
             query_to_task=query_to_task,
             task_id=task.task_id,
+            corrective=corrective,
         )
         old_candidates = {
             evidence.evidence_id for evidence in state["candidate_evidence"]
@@ -186,7 +192,10 @@ def _dispatch_workers(state: ParallelResearchState) -> list[Send] | str:
     tasks = tuple(
         task
         for task in _ready_tasks(state)
-        if budget.remaining_tool_calls_for(task.task_id) > 0
+        if budget.remaining_tool_calls_for(
+            task.task_id,
+            corrective=_has_judge_gap(state, task.task_id),
+        ) > 0
     )
     if not tasks:
         return "budget_guard"
@@ -197,7 +206,8 @@ def _dispatch_workers(state: ParallelResearchState) -> list[Send] | str:
                 "state": state,
                 "task": task,
                 "max_tool_calls": budget.remaining_tool_calls_for(
-                    task.task_id
+                    task.task_id,
+                    corrective=_has_judge_gap(state, task.task_id),
                 ),
             },
         )
@@ -249,6 +259,7 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
         budget = budget.record_tool_calls(
             result.task_id,
             result.tool_calls_used,
+            corrective=_has_judge_gap(state, result.task_id),
         )
         errors.extend(result.errors)
         task = task_by_id[result.task_id]

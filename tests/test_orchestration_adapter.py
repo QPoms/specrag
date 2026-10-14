@@ -339,6 +339,50 @@ def test_dependent_task_receives_its_own_tool_budget() -> None:
     assert update["budget"].tool_calls_used_for("T2") == 1
 
 
+def test_judge_gap_receives_independent_corrective_budget() -> None:
+    class FakeService:
+        def __init__(self) -> None:
+            self.max_tool_calls = None
+            self.shared_context = {}
+
+        def run(self, tasks, *, shared_context, max_tool_calls):
+            self.max_tool_calls = max_tool_calls
+            self.shared_context = shared_context
+            return _execution(), {"Q1": tasks[0].task_id}
+
+    gap = ResearchGap(
+        gap_id="G1",
+        task_id="T1",
+        kind="missing_relation",
+        description="The trigger relation remains unsupported.",
+    )
+    budget = ResearchBudget(
+        max_tool_calls=1,
+        max_gap_tool_calls=2,
+    ).record_tool_calls("T1", 1)
+    state = new_research_state(
+        research_id="R-gap-budget",
+        user_question="What starts registration?",
+        budget=budget,
+    )
+    state["research_tasks"] = (ResearchTask(
+        task_id="T1",
+        question="What starts registration?",
+        objective="Find the normative trigger.",
+        status="running",
+    ),)
+    state["gaps"] = (gap,)
+    service = FakeService()
+
+    update = SingleResearcherHandler(service)(state)
+
+    assert service.max_tool_calls == 2
+    assert service.shared_context["gap_retrieval_mode"] == "judge_gap"
+    assert update["budget"].initial_tool_calls_used_for("T1") == 1
+    assert update["budget"].gap_tool_calls_used_for("T1") == 1
+    assert update["budget"].tool_calls_used_for("T1") == 2
+
+
 def test_dependency_context_contains_only_selected_supported_evidence() -> None:
     state = new_research_state(
         research_id="R-dependency",

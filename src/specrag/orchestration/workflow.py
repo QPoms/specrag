@@ -132,6 +132,15 @@ def _can_advance_without_replan(state: ResearchState) -> bool:
     )
 
 
+def _has_judge_gap(state: ResearchState, task_id: str) -> bool:
+    """Return whether a task has an unresolved downstream Judge gap."""
+
+    return any(
+        gap.task_id == task_id and not gap.resolved
+        for gap in state["gaps"]
+    )
+
+
 def _budget_guard(state: ResearchState) -> dict[str, object]:
     if state["evidence_sufficient"] is True or state["stop_reason"] is not None:
         return {}
@@ -150,7 +159,11 @@ def _budget_guard(state: ResearchState) -> dict[str, object]:
         and set(task.dependencies).issubset(completed)
     )
     if not any(
-        budget.remaining_tool_calls_for(task.task_id) > 0 for task in ready
+        budget.remaining_tool_calls_for(
+            task.task_id,
+            corrective=_has_judge_gap(state, task.task_id),
+        ) > 0
+        for task in ready
     ):
         return {"stop_reason": "tool_budget"}
     if (

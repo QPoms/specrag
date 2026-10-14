@@ -34,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--release", type=int, default=17)
     parser.add_argument("--max-iterations", type=int, default=4)
     parser.add_argument("--max-tool-calls", type=int, default=6)
+    parser.add_argument("--max-gap-tool-calls", type=int, default=6)
     parser.add_argument("--max-replans", type=int, default=2)
     return parser
 
@@ -90,6 +91,7 @@ def _run_one(
     application: Any,
     max_iterations: int,
     max_tool_calls: int,
+    max_gap_tool_calls: int,
     max_replans: int,
 ) -> dict[str, Any]:
     planning = json.loads(planning_path.read_text(encoding="utf-8"))
@@ -103,6 +105,7 @@ def _run_one(
         budget=ResearchBudget(
             max_iterations=max_iterations,
             max_tool_calls=max_tool_calls,
+            max_gap_tool_calls=max_gap_tool_calls,
             max_replans=max_replans,
         ),
         plan=plan,
@@ -199,6 +202,7 @@ def _run_batch(args: argparse.Namespace) -> int:
                 application=application,
                 max_iterations=args.max_iterations,
                 max_tool_calls=args.max_tool_calls,
+                max_gap_tool_calls=getattr(args, "max_gap_tool_calls", 6),
                 max_replans=args.max_replans,
             )
         except Exception as exc:  # keep the remaining batch resumable
@@ -240,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         application=application,
         max_iterations=args.max_iterations,
         max_tool_calls=args.max_tool_calls,
+        max_gap_tool_calls=args.max_gap_tool_calls,
         max_replans=args.max_replans,
     )
     print(json.dumps(result, ensure_ascii=False))

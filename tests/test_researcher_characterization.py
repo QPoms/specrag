@@ -215,6 +215,16 @@ def _config() -> AppConfig:
     ))
 
 
+def test_researcher_prompt_rewrites_downstream_judge_gaps_in_order() -> None:
+    assert RESEARCHER_CONTROLLER_PROMPT_VERSION == "researcher-controller/v2.1"
+    assert "Judge-gap corrective rounds" in RESEARCHER_CONTROLLER_INSTRUCTIONS
+    assert "Restate the missing conclusion" in RESEARCHER_CONTROLLER_INSTRUCTIONS
+    assert "Update Active Evidence" in RESEARCHER_CONTROLLER_INSTRUCTIONS
+    assert "This is query rewriting inside the normal Researcher controller" in (
+        RESEARCHER_CONTROLLER_INSTRUCTIONS
+    )
+
+
 def test_submission_records_stop_reason_without_retrieval() -> None:
     agent = _SequenceAgent((_review_call(submit=True),))
 

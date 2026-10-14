@@ -399,7 +399,8 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
             user_question="Retry a predecessor before its dependent task.",
             budget=ResearchBudget(
                 max_iterations=4,
-                max_tool_calls=5,
+                max_tool_calls=1,
+                max_gap_tool_calls=1,
                 max_replans=1,
             ),
         ),
@@ -410,4 +411,7 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
     assert result["iteration"] == 3
     assert result["budget"].replans_used == 1
     assert result["budget"].tool_calls_used == 3
+    assert result["budget"].initial_tool_calls_used_for("T1") == 1
+    assert result["budget"].gap_tool_calls_used_for("T1") == 1
+    assert result["budget"].initial_tool_calls_used_for("T2") == 1
     assert result["final_answer"] == "Answer after predecessor retry."

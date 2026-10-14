@@ -45,11 +45,21 @@ class SingleResearcherHandler:
         if not ready:
             raise ValueError("no dependency-ready research task is available")
         budget = state["budget"]
+
+        def has_judge_gap(task_id: str) -> bool:
+            return any(
+                gap.task_id == task_id and not gap.resolved
+                for gap in state["gaps"]
+            )
+
         selected = next(
             (
                 task
                 for task in ready
-                if budget.remaining_tool_calls_for(task.task_id) > 0
+                if budget.remaining_tool_calls_for(
+                    task.task_id,
+                    corrective=has_judge_gap(task.task_id),
+                ) > 0
             ),
             None,
         )
@@ -60,7 +70,11 @@ class SingleResearcherHandler:
             running if task.task_id == selected.task_id else task
             for task in state["research_tasks"]
         )
-        remaining_calls = budget.remaining_tool_calls_for(selected.task_id)
+        corrective = has_judge_gap(selected.task_id)
+        remaining_calls = budget.remaining_tool_calls_for(
+            selected.task_id,
+            corrective=corrective,
+        )
 
         relevant_gaps = tuple(
             gap.model_dump(mode="json")
@@ -72,6 +86,7 @@ class SingleResearcherHandler:
             shared_context={
                 "research_id": state["research_id"],
                 "iteration": state["iteration"],
+                "gap_retrieval_mode": "judge_gap" if corrective else "initial",
                 "unresolved_gaps": relevant_gaps,
                 "dependency_context": build_dependency_context(
                     state,
@@ -86,6 +101,7 @@ class SingleResearcherHandler:
             execution,
             query_to_task=query_to_task,
             task_id=selected.task_id,
+            corrective=corrective,
         )
         update["research_tasks"] = tasks
         return update
@@ -186,6 +202,7 @@ def researcher_execution_update(
     *,
     query_to_task: Mapping[str, str],
     task_id: str | None = None,
+    corrective: bool = False,
 ) -> dict[str, object]:
     """Translate an audited Researcher execution into a state update.
 
@@ -356,7 +373,11 @@ def researcher_execution_update(
                 "Researcher execution accounting requires one task ID"
             )
         charged_task_id = mapped_task_ids.pop()
-    budget = budget.record_tool_calls(charged_task_id, actions_used)
+    budget = budget.record_tool_calls(
+        charged_task_id,
+        actions_used,
+        corrective=corrective,
+    )
 
     return {
         "candidate_evidence": tuple(candidates),

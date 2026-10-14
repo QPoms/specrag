@@ -674,3 +674,17 @@ but are not sent to the Judge. This prevents a Planner objective from adding
 requirements such as exhaustive-set or modification/storage proofs that the
 assigned question did not ask for. Source validation, evidence selection,
 missing-relation generation, and downstream synthesis contracts are unchanged.
+
+Judge-reported gaps now receive a separate bounded corrective retrieval phase.
+`ResearchBudget.max_tool_calls` is the per-task initial allowance and
+`max_gap_tool_calls` is an independent six-call per-task allowance used only
+while an unresolved Sufficiency Judge gap is present. Initial and corrective usage are
+persisted separately while the aggregate usage remains auditable. Single-task
+dispatch and parallel fan-out/fan-in select and charge the same phase-specific
+allowance. The Researcher controller contract is `researcher-controller/v2.1`:
+on corrective re-entry it reviews complete candidates, maps evidence to answer
+units, updates active evidence, states the precise remaining gap, then rewrites
+that gap into new retrieval calls in the same model turn. No second query-
+rewrite node or model call was added; Planner, retrieval algorithms, Source
+Validator, and Sufficiency Judge responsibilities are unchanged. Runtime state
+is `research-state/v1.5` to record the expanded budget shape.

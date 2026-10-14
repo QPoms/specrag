@@ -55,8 +55,10 @@ user question or task
   rounds adapt to observed evidence. Retrieved chunks enter a deduplicated
   candidate pool; the controller maintains a bounded active evidence set and
   may replace weaker early items with later gap-closing evidence without
-  deleting the audit trail. All retrieval capabilities share one total
-  tool-call budget across rounds; there are no per-tool-category quotas. One
+  deleting the audit trail. Each ResearchTask has an initial retrieval
+  allowance and a separate bounded corrective allowance for unresolved
+  Sufficiency Judge gaps; both are charged only for executed retrieval calls
+  and recorded independently. There are no per-tool-category quotas. One
   finalization-only controller turn may review the last results after the
   retrieval budget is exhausted, but it cannot invoke another tool.
 - `src/specrag/prompts/researcher.py`: versioned Researcher controller prompt
@@ -155,8 +157,11 @@ candidate pool remains attached to the Researcher execution for audit. The
 document hashes, line locators, and exact excerpts without calling a model. The
 single task-level Sufficiency Judge selects which source-valid passages
 support the task, decides completeness or conflict, and emits a concrete `ResearchGap`
-when more research is required. An unresolved gap returns to Researcher within
-the global iteration, re-plan, and tool-call budgets.
+when more research is required. An unresolved gap returns to Researcher with
+a bounded task-local corrective allowance. The controller rewrites the gap
+into new retrieval calls in the same model turn; no separate query-rewrite
+node is added. Initial and corrective usage remain visible in the runtime
+artifact.
 
 ## Local environment
 
