@@ -16,10 +16,17 @@ become final Evidence directly.
 
 `memory/` now means private User Memory only. Its active types are default
 Release, answer language, detail level, followed topic, and saved research
-lead. Updates create stable content-addressed revisions, deletion is auditable,
-and owner/workspace checks apply on every operation. Configuration resolves in
-the order command argument, active User Memory, then `config.yaml`. Run records
-snapshot the SpecFact and User Memory revision IDs used at start.
+lead. Values are type-checked, writes are explicit-user only, and updates
+create stable content-addressed revisions with a predecessor and operation key;
+deletion and expiry remain auditable. Owner/workspace checks apply on every
+operation. Configuration resolves in the order command argument, active User
+Memory, then `config.yaml`. A Run records the exact SpecFact and User Memory
+revision IDs used at start, and resume loads those authorized historical
+revisions so later edits do not alter the Run. Workspace admins can operate a
+member Run but cannot browse or edit that member's Memory; resume may load only
+the Memory IDs already captured by the authorized Run. Injected memory is
+marked as untrusted context and never enters Evidence, Source Validator,
+Sufficiency Judge, or SpecFact proposal logic.
 
 Local `scrypt` accounts, 12-hour sessions, workspaces, and member/reviewer/admin
 roles are active through the single `specrag` CLI. SQLite state lives at
@@ -47,10 +54,10 @@ document corpus in this milestone; private-document upload and UI/API work are
 still outside the active scope.
 
 Focused tests cover password verification, expired/revoked sessions, role
-checks, cross-workspace denial, immutable memory revisions, configuration
-precedence, SpecFact proposal/review/conflict/supersession/invalidation,
+checks, cross-workspace denial, typed and immutable memory revisions, exact
+memory snapshots, configuration precedence, SpecFact proposal/review/conflict/supersession/invalidation,
 idempotent Run events, cancellation, elapsed deadlines, interrupted-process
-resume, and SQLite checkpoint restart. The complete suite passes 122 tests at
+resume, and SQLite checkpoint restart. The complete suite passes 127 tests at
 this point. The historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.

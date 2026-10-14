@@ -70,10 +70,11 @@ class AccessPolicy:
             raise AuthorizationError("access denied")
         if permission not in self._ROLE_PERMISSIONS.get(context.role, frozenset()):
             raise AuthorizationError("access denied")
-        owner_scoped = permission in {
-            "run.read", "run.cancel", "run.resume", "memory.manage"
-        }
-        if owner_scoped and owner_user_id is not None:
+        if permission == "memory.manage" and owner_user_id is not None:
+            if context.user_id != owner_user_id:
+                raise AuthorizationError("access denied")
+        run_owner_scoped = permission in {"run.read", "run.cancel", "run.resume"}
+        if run_owner_scoped and owner_user_id is not None:
             if context.role != "admin" and context.user_id != owner_user_id:
                 raise AuthorizationError("access denied")
 

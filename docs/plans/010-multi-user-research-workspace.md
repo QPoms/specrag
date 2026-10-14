@@ -181,6 +181,11 @@ so later edits or deletion do not change an in-progress Run. Memory context is
 marked `untrusted_context` and is never passed as Evidence to Source Validator,
 Sufficiency Judge, or SpecFact proposal logic.
 
+Workspace admins may inspect, cancel, or resume member Runs, but cannot use the
+normal Memory APIs to list, change, or delete a member's private items. During
+resume, the application may load only the exact owner-scoped Memory IDs already
+captured by that authorized Run; it cannot browse the owner's other memories.
+
 **Gate:** approved same-workspace facts can help a second user find the same
 source, while pending/invalid/other-workspace facts cannot. Two users' personal
 memories remain isolated. The final answer still cites checked source evidence.

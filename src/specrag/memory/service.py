@@ -150,6 +150,36 @@ class UserMemoryService:
             key=lambda item: item.memory_id,
         ))
 
+    def snapshot_for_run(
+        self,
+        context: ActorContext,
+        *,
+        owner_user_id: str,
+        memory_ids: tuple[str, ...],
+    ) -> tuple[UserMemoryItem, ...]:
+        """Load exact historical revisions while executing an authorized Run.
+
+        Workspace admins may operate a member's Run, but this method exposes
+        only the revisions already captured by that Run. Normal Memory APIs
+        remain strictly owner-only.
+        """
+        self.policy.require(
+            context,
+            "run.resume",
+            workspace_id=context.workspace_id,
+            owner_user_id=owner_user_id,
+        )
+        requested = set(memory_ids)
+        records = tuple(
+            item for item in self.store.all()
+            if item.owner_user_id == owner_user_id
+            and item.workspace_id == context.workspace_id
+            and item.memory_id in requested
+        )
+        if {item.memory_id for item in records} != requested:
+            raise AuthorizationError("access denied")
+        return tuple(sorted(records, key=lambda item: item.memory_id))
+
     @staticmethod
     def as_context(items: tuple[UserMemoryItem, ...]) -> tuple[dict[str, object], ...]:
         """Mark memory as untrusted context so downstream code cannot treat it as evidence."""

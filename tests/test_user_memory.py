@@ -28,6 +28,9 @@ def test_user_memory_is_private_and_workspace_scoped() -> None:
     assert service.list(_context(workspace="WB")) == ()
     with pytest.raises(AuthorizationError):
         service.delete(_context("bob"), item.memory_id)
+    assert service.list(_context("admin", role="admin")) == ()
+    with pytest.raises(AuthorizationError):
+        service.delete(_context("admin", role="admin"), item.memory_id)
 
 
 def test_memory_update_creates_immutable_revision() -> None:
@@ -117,3 +120,22 @@ def test_memory_context_is_marked_untrusted() -> None:
     context = service.as_context((item,))[0]
     assert context["trust"] == "untrusted_context"
     assert "evidence" in context["instruction"]
+
+
+def test_admin_can_load_only_memory_ids_captured_by_an_authorized_run() -> None:
+    service = UserMemoryService(InMemoryUserMemoryStore())
+    item = service.set(
+        _context(), kind="research_lead", key="lead", value="study X", now=NOW,
+    )
+    admin = _context("admin", role="admin")
+    assert service.snapshot_for_run(
+        admin, owner_user_id="alice", memory_ids=(item.memory_id,),
+    ) == (item,)
+    with pytest.raises(AuthorizationError):
+        service.snapshot_for_run(
+            _context("bob"), owner_user_id="alice", memory_ids=(item.memory_id,),
+        )
+    with pytest.raises(AuthorizationError):
+        service.snapshot_for_run(
+            admin, owner_user_id="alice", memory_ids=("UM-" + "F" * 32,),
+        )

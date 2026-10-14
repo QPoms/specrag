@@ -84,10 +84,12 @@ class WorkspaceServices:
                 item.fact_id: item for item in specfacts.store.all_facts()
                 if item.workspace_id == run.workspace_id
             }
-            memories = memory.snapshot(
-                context, run.memory_ids, include_historical=True,
+            memories = memory.snapshot_for_run(
+                context,
+                owner_user_id=run.owner_user_id,
+                memory_ids=run.memory_ids,
             )
-            memory_by_id = {item.memory_id: item for item in memories}
+            memory_context = memory.as_context(memories)
             fact_context = tuple({
                 "kind": "approved_specfact_hint",
                 "fact_id": item.fact_id,
@@ -95,9 +97,6 @@ class WorkspaceServices:
                 "source_paths": [source.source_path for source in item.sources],
                 "instruction": "Use only as a retrieval hint; re-open and validate source text.",
             } for fact_id in run.specfact_ids if (item := facts_by_id.get(fact_id)))
-            memory_context = memory.as_context(tuple(
-                memory_by_id[memory_id] for memory_id in run.memory_ids
-            ))
             return (*fact_context, *memory_context)
 
         def factory(release, stop_requested, event_sink, research_context):
