@@ -143,6 +143,44 @@ tests and local development only.
    and usage audit. A run reads an authorized snapshot of each; a later write
    does not silently change the meaning of an in-progress run.
 
+### User Memory contract (implemented design)
+
+User Memory is deliberately smaller than a general-purpose semantic memory
+system. It stores user-owned context that can change how a request is presented
+or where a researcher starts looking, but it never asserts what the
+specification says:
+
+| Layer | Owner | Trust | Used by | Cannot do |
+| --- | --- | --- | --- | --- |
+| RunState/checkpoint | one Run | runtime state | graph resume and inspection | become durable user knowledge |
+| UserMemory | one user in one workspace | untrusted context | configuration and research hints | satisfy Source Validator/Judge or create SpecFact |
+| SpecFact | workspace | reviewed, source-linked hint | shared retrieval planning | replace a fresh source check |
+| Evidence | source document and Run | source-backed | Judge and synthesis | be created from model text alone |
+
+The first implementation accepts only explicit user writes. Each item has a
+typed kind, origin, immutable revision number, predecessor ID, expiry/status,
+and stable operation key. Supported kinds are `default_release`,
+`answer_language`, `detail_level`, `followed_topic`, and `research_lead`.
+Automatic LLM extraction is intentionally not enabled; adding a trusted import
+origin later must go through a separate reviewable policy.
+
+```mermaid
+flowchart TD
+    U[Explicit user command] --> V[Validate kind and value]
+    V -->|authorized| S[(Private User Memory)]
+    V -->|invalid or denied| X[Reject write]
+    S --> Q[Authorized run snapshot]
+    Q --> C[Untrusted context hint]
+    C --> R[Researcher query or presentation]
+    R --> E[Fresh source retrieval and validation]
+    E --> A[Evidence-backed answer]
+```
+
+The snapshot records exact Memory IDs; resume loads those authorized revisions,
+so later edits or deletion do not change an in-progress Run. Memory context is
+marked `untrusted_context` and is never passed as Evidence to Source Validator,
+Sufficiency Judge, or SpecFact proposal logic.
+
 **Gate:** approved same-workspace facts can help a second user find the same
 source, while pending/invalid/other-workspace facts cannot. Two users' personal
 memories remain isolated. The final answer still cites checked source evidence.

@@ -9,7 +9,7 @@ from .specfacts import (
     SpecFactSearchResult,
     SpecFactSource,
 )
-from .user_memory import UserMemoryItem
+from .user_memory import MemoryOrigin, MemoryStatus, UserMemoryItem, UserMemoryKind
 
 from .research import (
     CandidateEvidence,
@@ -68,6 +68,9 @@ __all__ = [
     "SpecFactSource",
     "User",
     "UserMemoryItem",
+    "UserMemoryKind",
+    "MemoryOrigin",
+    "MemoryStatus",
     "Workspace",
     "NativeFunctionCall",
     "NativeFunctionCallOutput",

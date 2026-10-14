@@ -123,7 +123,9 @@ not a sufficiency verdict.
 Framework-independent workflow contracts live in `models/research.py`, and the
 tool protocol remains under `tools/`. `specfacts/service.py` owns the migrated
 validated-claim behavior plus pending review. `memory/service.py` owns only
-explicit private User Memory. SQLite adapters live under `infrastructure/`.
+explicit private User Memory. It validates the small typed kind set, records
+explicit-user revisions and operation keys, and serves authorized run
+snapshots/context views. SQLite adapters live under `infrastructure/`.
 Researcher receives authorized, read-only snapshots containing hint IDs; it
 does not receive SpecFact or User Memory write services. Pending facts and User
 Memory cannot enter Source Validator or the Sufficiency Judge as Evidence.

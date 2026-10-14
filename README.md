@@ -85,7 +85,9 @@ user question or task
   specification facts.
 - `src/specrag/memory/`: explicit private User Memory for preferences,
   followed topics, and saved research leads. User Memory never becomes
-  Evidence or a SpecFact.
+  Evidence or a SpecFact. Values are typed, explicit-user writes are
+  revisioned and idempotent, and each Run consumes an authorized immutable
+  snapshot marked as untrusted context.
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
   dependency-context handoff, bounded re-planning, SQLite checkpointing,
   authorized Run lifecycle, events, cancellation, deadlines, and recovery.
