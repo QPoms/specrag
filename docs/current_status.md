@@ -50,7 +50,7 @@ Focused tests cover password verification, expired/revoked sessions, role
 checks, cross-workspace denial, immutable memory revisions, configuration
 precedence, SpecFact proposal/review/conflict/supersession/invalidation,
 idempotent Run events, cancellation, elapsed deadlines, interrupted-process
-resume, and SQLite checkpoint restart. The complete suite passes 121 tests at
+resume, and SQLite checkpoint restart. The complete suite passes 122 tests at
 this point. The historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.
