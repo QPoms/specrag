@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,11 +123,15 @@ class ResearchApplication:
         thread_id: str,
         budget: ResearchBudget | None = None,
         plan: ResearchPlan | None = None,
+        specfact_ids: tuple[str, ...] = (),
+        memory_ids: tuple[str, ...] = (),
     ) -> ResearchState:
         state = new_research_state(
             research_id=research_id,
             user_question=question,
             budget=budget,
+            specfact_ids=specfact_ids,
+            memory_ids=memory_ids,
         )
         if plan is not None:
             state["research_plan"] = plan
@@ -355,6 +360,10 @@ def build_research_application(
     *,
     release: int = 17,
     repository_root: Path = REPO_ROOT,
+    checkpointer: object | None = None,
+    stop_requested: Callable[[str], str | None] | None = None,
+    event_sink: object | None = None,
+    research_context: tuple[dict[str, object], ...] = (),
 ) -> ResearchApplication:
     """Wire existing retrieval, agent, evidence, and graph components."""
 
@@ -390,6 +399,8 @@ def build_research_application(
         max_total_actions=6,
         hits_per_search=5,
         max_evidence_per_question=12,
+        stop_requested=stop_requested,
+        research_context=research_context,
     )
 
     validation = SourceValidationService(
@@ -399,7 +410,17 @@ def build_research_application(
         StructuredTaskSufficiencyAssessor(summary_agent)
     )
     synthesis = EvidenceSynthesisService(
-        StructuredEvidenceSynthesisGenerator(summary_agent)
+        StructuredEvidenceSynthesisGenerator(
+            summary_agent,
+            answer_language=next((
+                str(item.get("answer_language", "English"))
+                for item in research_context if item.get("kind") == "run_configuration"
+            ), "English"),
+            detail_level=next((
+                str(item.get("detail_level", "standard"))
+                for item in research_context if item.get("kind") == "run_configuration"
+            ), "standard"),
+        )
     )
     handlers = ResearchNodeHandlers(
         router=QuestionRouterHandler(router),
@@ -411,9 +432,28 @@ def build_research_application(
         synthesizer=EvidenceSynthesisHandler(synthesis),
     )
     return ResearchApplication(
-        workflow=build_single_research_workflow(handlers),
+        workflow=build_single_research_workflow(
+            handlers,
+            checkpointer=checkpointer,
+            runtime_guard=(
+                (lambda state: _raise_if_stopped(stop_requested(state["research_id"])))
+                if stop_requested is not None else None
+            ),
+            event_sink=event_sink,
+        ),
         release=release,
     )
+
+
+class RuntimeStopped(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _raise_if_stopped(reason: str | None) -> None:
+    if reason is not None:
+        raise RuntimeStopped(reason)
 
 
 __all__ = [

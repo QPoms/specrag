@@ -4,6 +4,57 @@ Updated: 2026-10-14
 
 ## Current state
 
+The multi-user local workspace milestone is implemented. The former
+`ValidatedKnowledge` and `ValidatedMemoryService` implementation has been
+mechanically migrated to `SpecFact` under `models/specfacts.py` and
+`specfacts/service.py`; the replaced modules and names were deleted. A
+SpecFact begins as an idempotent pending proposal created only from sufficient,
+source-valid synthesis claims. Workspace reviewers approve or reject it.
+Approved facts retain Release, exact version, source path, document hash,
+heading, and line locator and can only guide a fresh source lookup. They never
+become final Evidence directly.
+
+`memory/` now means private User Memory only. Its active types are default
+Release, answer language, detail level, followed topic, and saved research
+lead. Updates create stable content-addressed revisions, deletion is auditable,
+and owner/workspace checks apply on every operation. Configuration resolves in
+the order command argument, active User Memory, then `config.yaml`. Run records
+snapshot the SpecFact and User Memory revision IDs used at start.
+
+Local `scrypt` accounts, 12-hour sessions, workspaces, and member/reviewer/admin
+roles are active through the single `specrag` CLI. SQLite state lives at
+`.local/state/specrag.sqlite3`, uses foreign keys and WAL, and applies monotonic
+`schema_migrations`. The database stores only token SHA-256 digests; the local
+CLI bearer token is kept in ignored `.local/state/session-token`. Authorization is
+default-deny and occurs before a Run's checkpoint thread is resolved. Members
+manage their own Runs and memories, reviewers review their workspace's facts,
+and admins manage members and all workspace Runs.
+
+The durable `RunHarness` provides `start`, `resume`, `inspect`, and `cancel`.
+It uses `langgraph-checkpoint-sqlite` with the existing strict serializer
+allowlist, opaque Run/thread IDs, elapsed-time and cancellation checks at graph
+nodes and Researcher rounds/tool calls, stable operation keys, redacted model
+receipts, and per-stage latency/token inspection. Events cover transitions,
+task dispatch, tool calls, evidence selection, source validation, Judge, Gap,
+replan, synthesis, resume, cancellation, and stop. The runtime state wire
+contract is now `research-state/v1.6`.
+
+The top-level `cli.py` is a small stable entry. Product command handling lives
+under `interfaces/`, with `auth`, `workspace`, `research`, `specfact`, and
+`memory` command groups. Existing route/plan/research-plan/baseline diagnostics
+remain on the same CLI. The public 3GPP corpus remains the only supported
+document corpus in this milestone; private-document upload and UI/API work are
+still outside the active scope.
+
+Focused tests cover password verification, expired/revoked sessions, role
+checks, cross-workspace denial, immutable memory revisions, configuration
+precedence, SpecFact proposal/review/conflict/supersession/invalidation,
+idempotent Run events, cancellation, elapsed deadlines, interrupted-process
+resume, and SQLite checkpoint restart. The complete suite passes 121 tests at
+this point. The historical 2026-10-13 quality batch remains 47/50; focused
+reruns, including 003, 044, and 050, are regression observations and are not
+combined into a 48/50 claim.
+
 The historical generated runs, benchmark tensors, retrieval indexes, staging
 models, analysis outputs, and temporary caches have been removed. The workspace
 has been reduced from approximately 23.9 GB to 5.5 GB.
@@ -48,9 +99,9 @@ the name `specrag`. The retrieval configuration key is `retrieval`, generated
 indexes use `.local/indexes/specifications/`, and the old `capability_*`
 package and configuration names are no longer active.
 
-The data tree has three explicit responsibilities: `data/3gpp/` retains every
-local historical specification version, `data/memory/` stores only validated
-long-term knowledge and remains ignored by Git, and `data/QA/` contains the
+The data tree has explicit responsibilities: `data/3gpp/` retains every
+local historical specification version, `.local/state/` stores ignored mutable
+workspace state, and `data/QA/` contains the
 flat curated development-question file plus ignored upstream snapshots.
 Redundant `source_corpus/v0_1/specifications` wrappers and obsolete research
 catalogs were removed.
@@ -727,15 +778,20 @@ units, updates active evidence, states the precise remaining gap, then rewrites
 that gap into new retrieval calls in the same model turn. No second query-
 rewrite node or model call was added; Planner, retrieval algorithms, Source
 Validator, and Sufficiency Judge responsibilities are unchanged. Runtime state
-is `research-state/v1.5` to record the expanded budget shape.
+was `research-state/v1.5` for the expanded budget shape; the active multi-user
+runtime contract is `research-state/v1.6`.
 
 Final synthesis now has the same explicit scope boundary. The
-`evidence-synthesis/v1.1` prompt lives under `specrag.prompts`; the model receives
+`evidence-synthesis/v1.2` prompt lives under `specrag.prompts`; the model receives
 the original question plus each task ID, task question, and only the
 source-valid evidence selected as supported by the Sufficiency Judge. Planner
 objectives, dependencies, task status, gaps, search history, rejected evidence,
 and other runtime metadata are not synthesis inputs. The original question is
 authoritative and task questions are coverage checkpoints.
+
+V1.2 also accepts the Run's resolved answer language and detail level as
+presentation controls. They can change wording only; the original question,
+eligible evidence, and claim coverage remain authoritative.
 
 Evidence-backed claims are the canonical final-answer units. Code requires the
 claim set to cite eligible evidence owned by every sufficient ResearchTask and

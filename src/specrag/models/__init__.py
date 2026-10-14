@@ -1,11 +1,15 @@
 """Shared framework-independent domain and transport models."""
 
-from .knowledge import (
-    KnowledgeProposal,
-    KnowledgeSource,
-    MemorySearchResult,
-    ValidatedKnowledge,
+from .access import ActorContext, Membership, User, Workspace
+from .runtime import ResearchRequest, ResearchRun, RunEvent, RunStatus, RunStopReason
+from .specfacts import (
+    SpecFact,
+    SpecFactDraft,
+    SpecFactProposal,
+    SpecFactSearchResult,
+    SpecFactSource,
 )
+from .user_memory import UserMemoryItem
 
 from .research import (
     CandidateEvidence,
@@ -50,10 +54,21 @@ __all__ = [
     "TaskStatus",
     "ToolCallRecord",
     "ValidatedEvidence",
-    "KnowledgeProposal",
-    "KnowledgeSource",
-    "MemorySearchResult",
-    "ValidatedKnowledge",
+    "ActorContext",
+    "Membership",
+    "ResearchRun",
+    "ResearchRequest",
+    "RunEvent",
+    "RunStatus",
+    "RunStopReason",
+    "SpecFact",
+    "SpecFactDraft",
+    "SpecFactProposal",
+    "SpecFactSearchResult",
+    "SpecFactSource",
+    "User",
+    "UserMemoryItem",
+    "Workspace",
     "NativeFunctionCall",
     "NativeFunctionCallOutput",
     "NativeFunctionDefinition",

@@ -5,7 +5,6 @@ from .dependencies import build_dependency_context
 from .adapters import (
     EvidenceSufficiencyHandler,
     EvidenceSynthesisHandler,
-    MemoryWriteHandler,
     SourceValidationHandler,
     SingleResearcherHandler,
     researcher_execution_update,
@@ -22,6 +21,8 @@ from .parallel import (
     build_parallel_research_workflow,
     new_parallel_research_state,
 )
+from .checkpointing import SQLiteCheckpointManager
+from .harness import RunHarness, RunInspection, RunStore
 
 __all__ = [
     "ResearchNodeHandlers",
@@ -29,7 +30,6 @@ __all__ = [
     "SourceValidationHandler",
     "EvidenceSufficiencyHandler",
     "EvidenceSynthesisHandler",
-    "MemoryWriteHandler",
     "SingleResearchWorkflow",
     "SingleResearcherHandler",
     "build_single_research_workflow",
@@ -41,4 +41,8 @@ __all__ = [
     "ParallelResearchWorkflow",
     "build_parallel_research_workflow",
     "new_parallel_research_state",
+    "RunHarness",
+    "RunInspection",
+    "RunStore",
+    "SQLiteCheckpointManager",
 ]

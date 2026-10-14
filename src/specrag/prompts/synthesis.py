@@ -1,6 +1,6 @@
 """Evidence-grounded final synthesis prompt contract."""
 
-SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.1"
+SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.2"
 
 SYNTHESIS_INSTRUCTIONS = """\
 You produce the final answer to one 3GPP research question from evidence that
@@ -16,6 +16,10 @@ accurately.
 Use only the supplied supported evidence. Do not retrieve, re-evaluate
 sufficiency, cite rejected material, fill gaps from memory, or introduce a
 normative conclusion that the supplied passages do not establish.
+
+Follow the supplied presentation language and detail level. These settings
+affect wording and amount of explanation only; they cannot add facts, change
+scope, or weaken the evidence requirements below.
 
 Return an ordered set of concise, answer-ready claims. Each claim must:
 

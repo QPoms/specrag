@@ -32,6 +32,8 @@ from .state import ResearchState
 
 StateUpdate = Mapping[str, object]
 NodeHandler = Callable[[ResearchState], StateUpdate]
+RuntimeGuard = Callable[[ResearchState], None]
+EventSink = Callable[[str, ResearchState, StateUpdate, float], None]
 
 
 _CHECKPOINT_MODEL_ALLOWLIST = (
@@ -71,19 +73,39 @@ class ResearchNodeHandlers:
     synthesizer: NodeHandler
 
 
-def _node(handler: NodeHandler) -> Callable[[ResearchState], dict[str, object]]:
+def _node(
+    name: str,
+    handler: NodeHandler,
+    guard: RuntimeGuard | None = None,
+    event_sink: EventSink | None = None,
+) -> Callable[[ResearchState], dict[str, object]]:
     def invoke(state: ResearchState) -> dict[str, object]:
-        return dict(handler(state))
+        from time import perf_counter
+        if guard is not None:
+            guard(state)
+        started = perf_counter()
+        update = dict(handler(state))
+        if event_sink is not None:
+            event_sink(name, state, update, (perf_counter() - started) * 1000)
+        return update
 
     return invoke
 
 
 def _researcher_node(
     handler: NodeHandler,
+    guard: RuntimeGuard | None = None,
+    event_sink: EventSink | None = None,
 ) -> Callable[[ResearchState], dict[str, object]]:
     def invoke(state: ResearchState) -> dict[str, object]:
+        from time import perf_counter
+        if guard is not None:
+            guard(state)
+        started = perf_counter()
         update = dict(handler(state))
         update.setdefault("iteration", state["iteration"] + 1)
+        if event_sink is not None:
+            event_sink("researcher", state, update, (perf_counter() - started) * 1000)
         return update
 
     return invoke
@@ -91,8 +113,14 @@ def _researcher_node(
 
 def _replanner_node(
     handler: NodeHandler,
+    guard: RuntimeGuard | None = None,
+    event_sink: EventSink | None = None,
 ) -> Callable[[ResearchState], dict[str, object]]:
     def invoke(state: ResearchState) -> dict[str, object]:
+        from time import perf_counter
+        if guard is not None:
+            guard(state)
+        started = perf_counter()
         update = dict(handler(state))
         budget = cast(ResearchBudget, update.get("budget", state["budget"]))
         if "budget" not in update:
@@ -100,6 +128,8 @@ def _replanner_node(
                 "replans_used": budget.replans_used + 1,
             })
         update.setdefault("evidence_sufficient", None)
+        if event_sink is not None:
+            event_sink("replanner", state, update, (perf_counter() - started) * 1000)
         return update
 
     return invoke
@@ -223,26 +253,31 @@ class SingleResearchWorkflow:
     def checkpoint(self, *, thread_id: str) -> Any:
         return self.graph.get_state(self._config(thread_id))
 
+    def update(self, *, thread_id: str, update: StateUpdate) -> None:
+        self.graph.update_state(self._config(thread_id), dict(update))
+
 
 def build_single_research_workflow(
     handlers: ResearchNodeHandlers,
     *,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    runtime_guard: RuntimeGuard | None = None,
+    event_sink: EventSink | None = None,
 ) -> SingleResearchWorkflow:
     """Compile the explicit Single Researcher graph with checkpointing."""
 
     builder = StateGraph(ResearchState)
-    builder.add_node("router", _node(handlers.router))
-    builder.add_node("planner", _node(handlers.planner))
-    builder.add_node("researcher", _researcher_node(handlers.researcher))
+    builder.add_node("router", _node("router", handlers.router, runtime_guard, event_sink))
+    builder.add_node("planner", _node("planner", handlers.planner, runtime_guard, event_sink))
+    builder.add_node("researcher", _researcher_node(handlers.researcher, runtime_guard, event_sink))
     builder.add_node(
         "source_validator",
-        _node(handlers.source_validator),
+        _node("source_validator", handlers.source_validator, runtime_guard, event_sink),
     )
-    builder.add_node("sufficiency_judge", _node(handlers.sufficiency_judge))
+    builder.add_node("sufficiency_judge", _node("sufficiency_judge", handlers.sufficiency_judge, runtime_guard, event_sink))
     builder.add_node("budget_guard", _budget_guard)
-    builder.add_node("replanner", _replanner_node(handlers.replanner))
-    builder.add_node("synthesizer", _node(handlers.synthesizer))
+    builder.add_node("replanner", _replanner_node(handlers.replanner, runtime_guard, event_sink))
+    builder.add_node("synthesizer", _node("synthesizer", handlers.synthesizer, runtime_guard, event_sink))
 
     builder.add_edge(START, "router")
     builder.add_conditional_edges("router", _route_after_router)

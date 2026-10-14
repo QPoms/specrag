@@ -1,6 +1,6 @@
 # Package boundaries
 
-Updated: 2026-10-09
+Updated: 2026-10-14
 
 ## Design rule
 
@@ -10,6 +10,26 @@ the source tree contains only the active implementation.
 
 ## Target package map
 
+The active package responsibilities are:
+
+- `models`: dependency-free identity, Run/event, research, Evidence, SpecFact,
+  User Memory, and transport contracts.
+- `access`: default-deny policy and local identity/session application service.
+- `retrieval`: public corpus discovery, indexing, search, fusion, reranking,
+  and retrieval planning.
+- `tools`: small agent-callable capabilities and registry.
+- `agents`: bounded model-controlled research loops.
+- `evidence`: provenance validation, sufficiency, gaps, and synthesis.
+- `specfacts`: workspace-scoped proposal, review, lifecycle, and hint lookup.
+- `memory`: private user preferences, followed topics, and research leads.
+- `orchestration`: LangGraph state, graph scheduling, durable checkpoints,
+  runtime controls, Run Harness, and event emission.
+- `infrastructure`: provider, vector-store, SQLite, identity, Run/event,
+  SpecFact, and User Memory adapters.
+- `interfaces`: the single CLI's parsers, handlers, and application composition.
+- `evaluation`: offline evaluation only.
+- `prompts`: versioned prompt text only.
+
 ```text
 src/specrag/
 ├── models/            shared domain and transport models
@@ -18,7 +38,9 @@ src/specrag/
 ├── agents/            bounded researcher loops
 ├── orchestration/     LangGraph runtime, graph nodes, routing, checkpoints
 ├── evidence/          validation, sufficiency, gaps, and synthesis
-├── memory/            validated long-term knowledge
+├── memory/            private User Memory preferences and research leads
+├── specfacts/         reviewed workspace-scoped specification facts
+├── access/            local identity and default-deny authorization
 ├── infrastructure/    external service and persistence adapters
 ├── evaluation/        offline evaluation only
 ├── prompts/           versioned model instructions without runtime logic
@@ -59,7 +81,8 @@ memory   → models, infrastructure
   application services; they do not contain retrieval, evidence, memory, or
   domain judgment logic.
 - Checkpoint state is runtime state owned by `orchestration`. It is distinct
-  from validated domain knowledge owned by `memory`.
+  from reviewed specification facts owned by `specfacts` and preferences or
+  research context owned by `memory`.
 
 ## Current module boundaries
 
@@ -68,6 +91,13 @@ exceptions. Every Python module follows the normal 600-line ceiling enforced
 by `scripts/check_structure.py`. Public compatibility imports remain in
 `retrieval/planner.py` and `retrieval/hypothesis.py`; implementation history
 lives in Git rather than parallel source files.
+
+`access` depends only on `models`; `specfacts` and `memory` depend on the
+trusted policy and pure models. `infrastructure` implements their persistence
+protocols without importing those business packages. `interfaces` is the
+outer composition layer and may depend on all application packages. The
+structure checker enforces these directions and continues to permit LangGraph
+imports only in `orchestration`.
 
 `retrieval/hybrid.py` has been split into corpus, immutable model, index,
 lexical, semantic, fusion, and orchestration modules. The Researcher now has
@@ -91,11 +121,19 @@ exact locators, while the judge alone selects supporting evidence and decides
 task completeness. A Researcher submission is only a handoff to these nodes,
 not a sufficiency verdict.
 Framework-independent workflow contracts live in `models/research.py`, and the
-tool protocol remains under `tools/`. `memory/service.py` owns validated-only
-distillation, search, supersession, conflict, and invalidation rules; its JSONL
-adapter lives in `infrastructure/memory_store.py`. Researcher services may use
-the memory search interface read-only, but no Researcher path receives a
-memory-write capability.
+tool protocol remains under `tools/`. `specfacts/service.py` owns the migrated
+validated-claim behavior plus pending review. `memory/service.py` owns only
+explicit private User Memory. SQLite adapters live under `infrastructure/`.
+Researcher receives authorized, read-only snapshots containing hint IDs; it
+does not receive SpecFact or User Memory write services. Pending facts and User
+Memory cannot enter Source Validator or the Sufficiency Judge as Evidence.
+
+`orchestration/checkpointing.py` is the only durable LangGraph checkpointer
+adapter. It uses the same local SQLite file as domain stores while preserving
+strict deserialization allowlisting. `orchestration/harness.py` authorizes a
+Run before resolving its thread, records events and model receipts, applies
+deadlines/cancellation, and makes resume side effects idempotent by operation
+key. Tests may continue to inject the in-memory checkpointer.
 
 ## Change protocol
 

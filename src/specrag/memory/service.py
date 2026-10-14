@@ -1,221 +1,112 @@
-"""Validated-only long-term memory service."""
+"""Explicit, private User Memory operations."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from datetime import datetime, timezone
 import hashlib
-import re
 from typing import Protocol
 
-from specrag.models import (
-    CandidateEvidence,
-    EvidenceSynthesis,
-    KnowledgeProposal,
-    KnowledgeSource,
-    MemorySearchResult,
-    ResearchTask,
-    TaskSufficiencyAssessment,
-    ValidatedEvidence,
-    ValidatedKnowledge,
-)
+from specrag.access import AccessPolicy
+from specrag.models import ActorContext, UserMemoryItem
 
 
-class KnowledgeStore(Protocol):
-    def all(self) -> tuple[ValidatedKnowledge, ...]: ...
+class UserMemoryStore(Protocol):
+    def all(self) -> tuple[UserMemoryItem, ...]: ...
+    def put(self, item: UserMemoryItem) -> None: ...
 
-    def put(self, knowledge: ValidatedKnowledge) -> None: ...
 
-
-class MemoryDistiller(Protocol):
-    def propose(
+class UserMemoryService:
+    def __init__(
         self,
-        synthesis: EvidenceSynthesis,
-        evidence: tuple[CandidateEvidence, ...],
-    ) -> tuple[KnowledgeProposal, ...]: ...
-
-
-def _key(*parts: str) -> str:
-    normalized = "|".join(
-        re.sub(r"\s+", " ", part).strip().casefold() for part in parts
-    )
-    return "K-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24].upper()
-
-
-class ValidatedMemoryService:
-    """Read/search memory freely, but write only from validated evidence."""
-
-    def __init__(self, store: KnowledgeStore) -> None:
+        store: UserMemoryStore,
+        policy: AccessPolicy | None = None,
+    ) -> None:
         self.store = store
+        self.policy = policy or AccessPolicy()
 
-    def search(self, query: str, *, limit: int = 8) -> tuple[MemorySearchResult, ...]:
-        if not query.strip():
-            raise ValueError("memory search query must not be blank")
-        if limit < 1:
-            raise ValueError("memory search limit must be positive")
-        terms = tuple(
-            term for term in re.findall(r"[\w.-]+", query.casefold()) if term
-        )
-        results: list[MemorySearchResult] = []
-        now = datetime.now(timezone.utc)
-        for item in self.store.all():
-            if item.memory_status != "active":
-                continue
-            if item.expires_at is not None and item.expires_at <= now:
-                continue
-            haystack = " ".join((
-                item.subject,
-                item.predicate,
-                item.object,
-                *item.conditions,
-            )).casefold()
-            matches = sum(term in haystack for term in terms)
-            if matches:
-                results.append(MemorySearchResult(
-                    knowledge=item,
-                    score=min(1.0, matches / max(1, len(terms))),
-                ))
-        return tuple(sorted(
-            results,
-            key=lambda result: (-result.score, result.knowledge.knowledge_id),
-        )[:limit])
+    @staticmethod
+    def _id(
+        user_id: str, workspace_id: str, kind: str, key: str, value: str,
+    ) -> str:
+        value = "|".join((user_id, workspace_id, kind, key.casefold(), value))
+        return "UM-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32].upper()
 
-    def distill_and_store(
+    def set(
         self,
+        context: ActorContext,
         *,
-        synthesis: EvidenceSynthesis,
-        tasks: tuple[ResearchTask, ...],
-        candidates: tuple[CandidateEvidence, ...],
-        validated: tuple[ValidatedEvidence, ...],
-        sufficiency: tuple[TaskSufficiencyAssessment, ...],
-        distiller: MemoryDistiller,
+        kind: str,
+        key: str,
+        value: str,
+        expires_at: datetime | None = None,
         now: datetime | None = None,
-    ) -> tuple[ValidatedKnowledge, ...]:
-        if not tasks or not sufficiency or any(
-            item.status != "sufficient" for item in sufficiency
-        ):
-            raise ValueError("memory requires sufficient evidence for every task")
-        eligible = {
-            item.evidence_id
-            for item in validated
-            if item.source_valid and item.validation_status == "supported"
-        }
-        claim_ids = {claim.claim_id for claim in synthesis.claims}
-        proposals = distiller.propose(synthesis, candidates)
-        candidate_by_id = {item.evidence_id: item for item in candidates}
+    ) -> UserMemoryItem:
+        self.policy.require(
+            context,
+            "memory.manage",
+            workspace_id=context.workspace_id,
+            owner_user_id=context.user_id,
+        )
         timestamp = now or datetime.now(timezone.utc)
-        records: list[ValidatedKnowledge] = []
-        for proposal in proposals:
-            if proposal.claim_id not in claim_ids:
-                raise ValueError("memory proposal references unknown synthesis claim")
-            claim = next(
-                claim for claim in synthesis.claims if claim.claim_id == proposal.claim_id
-            )
-            if not set(claim.evidence_ids).issubset(eligible):
-                raise ValueError("synthesis claim is not fully validated")
-            sources: list[KnowledgeSource] = []
-            for evidence_id in claim.evidence_ids:
-                try:
-                    item = candidate_by_id[evidence_id]
-                except KeyError as exc:
-                    raise ValueError(
-                        f"missing candidate for evidence {evidence_id}"
-                    ) from exc
-                sources.append(KnowledgeSource(
-                    evidence_id=item.evidence_id,
-                    specification=item.specification,
-                    release=item.release,
-                    version=item.version,
-                    source_path=item.source_path,
-                    document_sha256=item.document_sha256,
-                    heading_path=item.heading_path,
-                    line_start=item.line_start,
-                    line_end=item.line_end,
-                ))
-            records.append(ValidatedKnowledge(
-                knowledge_id=_key(
-                    proposal.subject,
-                    proposal.predicate,
-                    proposal.object,
-                    *proposal.conditions,
-                    *(source.version for source in sources),
-                ),
-                claim_id=proposal.claim_id,
-                subject=proposal.subject,
-                predicate=proposal.predicate,
-                object=proposal.object,
-                conditions=proposal.conditions,
-                sources=tuple(sources),
-                validated_at=timestamp,
-                expires_at=proposal.expires_at,
-            ))
+        memory_id = self._id(context.user_id, context.workspace_id, kind, key, value)
+        old = next((
+            item for item in self.store.all()
+            if item.owner_user_id == context.user_id
+            and item.workspace_id == context.workspace_id
+            and item.kind == kind and item.key.casefold() == key.casefold()
+            and item.status == "active"
+        ), None)
+        if old is not None and old.memory_id == memory_id:
+            return old
+        if old is not None:
+            self.store.put(old.model_copy(update={
+                "status": "deleted", "updated_at": timestamp,
+            }))
+        item = UserMemoryItem(
+            memory_id=memory_id,
+            owner_user_id=context.user_id,
+            workspace_id=context.workspace_id,
+            kind=kind,
+            key=key.strip(),
+            value=value.strip(),
+            created_at=timestamp,
+            updated_at=timestamp,
+            expires_at=expires_at,
+        )
+        self.store.put(item)
+        return item
 
-        existing = self.store.all()
-        for record in records:
-            same_semantics = [
-                item for item in existing
-                if item.subject == record.subject
-                and item.predicate == record.predicate
-                and item.object == record.object
-                and item.conditions == record.conditions
-                and item.memory_status == "active"
-            ]
-            same_claim = [
-                item for item in existing
-                if item.subject == record.subject
-                and item.predicate == record.predicate
-                and item.object != record.object
-                and item.memory_status == "active"
-            ]
-            if same_claim:
-                record = record.model_copy(update={"memory_status": "conflicted"})
-                for item in same_claim:
-                    self.store.put(item.model_copy(update={
-                        "memory_status": "conflicted",
-                    }))
-            elif same_semantics:
-                for item in same_semantics:
-                    old_versions = {source.version for source in item.sources}
-                    new_versions = {source.version for source in record.sources}
-                    if old_versions != new_versions:
-                        self.store.put(item.model_copy(update={
-                            "memory_status": "superseded",
-                            "superseded_by": record.knowledge_id,
-                        }))
-            self.store.put(record)
-        return tuple(records)
+    def list(self, context: ActorContext) -> tuple[UserMemoryItem, ...]:
+        self.policy.require(
+            context,
+            "memory.manage",
+            workspace_id=context.workspace_id,
+            owner_user_id=context.user_id,
+        )
+        now = datetime.now(timezone.utc)
+        return tuple(
+            item for item in self.store.all()
+            if item.owner_user_id == context.user_id
+            and item.workspace_id == context.workspace_id
+            and item.status == "active"
+            and (item.expires_at is None or item.expires_at > now)
+        )
 
-    def invalidate(self, knowledge_id: str, reason: str) -> ValidatedKnowledge:
-        if not reason.strip():
-            raise ValueError("invalidation reason must not be blank")
-        for item in self.store.all():
-            if item.knowledge_id == knowledge_id:
-                invalidated = item.model_copy(update={
-                    "memory_status": "invalidated",
-                    "invalidation_reason": reason,
-                })
-                self.store.put(invalidated)
-                return invalidated
-        raise KeyError(f"unknown knowledge ID: {knowledge_id}")
-
-    def expire(self, *, now: datetime | None = None) -> tuple[ValidatedKnowledge, ...]:
-        """Mark active records past `expires_at` as invalidated."""
-
-        current = now or datetime.now(timezone.utc)
-        expired: list[ValidatedKnowledge] = []
-        for item in self.store.all():
-            if (
-                item.memory_status == "active"
-                and item.expires_at is not None
-                and item.expires_at <= current
-            ):
-                updated = item.model_copy(update={
-                    "memory_status": "invalidated",
-                    "invalidation_reason": "knowledge validity period expired",
-                })
-                self.store.put(updated)
-                expired.append(updated)
-        return tuple(expired)
+    def delete(self, context: ActorContext, memory_id: str) -> UserMemoryItem:
+        item = next((entry for entry in self.store.all() if entry.memory_id == memory_id), None)
+        if item is None:
+            raise KeyError(f"unknown User Memory: {memory_id}")
+        self.policy.require(
+            context,
+            "memory.manage",
+            workspace_id=item.workspace_id,
+            owner_user_id=item.owner_user_id,
+        )
+        deleted = item.model_copy(update={
+            "status": "deleted", "updated_at": datetime.now(timezone.utc),
+        })
+        self.store.put(deleted)
+        return deleted
 
 
-__all__ = ["KnowledgeStore", "MemoryDistiller", "ValidatedMemoryService"]
+__all__ = ["UserMemoryService", "UserMemoryStore"]

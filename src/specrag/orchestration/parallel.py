@@ -297,19 +297,21 @@ def build_parallel_research_workflow(
     """Compile Router → Planner → Send workers → fan-in → evidence nodes."""
 
     builder = StateGraph(ParallelResearchState)
-    builder.add_node("router", _node(handlers.router))
-    builder.add_node("planner", _node(handlers.planner))
+    builder.add_node("router", _node("router", handlers.router))
+    builder.add_node("planner", _node("planner", handlers.planner))
     builder.add_node("dispatch", lambda state: {})
     builder.add_node("researcher_worker", _worker_node(researcher))
     builder.add_node("fan_in", _fan_in)
     builder.add_node(
         "source_validator",
-        _node(handlers.source_validator),
+        _node("source_validator", handlers.source_validator),
     )
-    builder.add_node("sufficiency_judge", _node(handlers.sufficiency_judge))
+    builder.add_node(
+        "sufficiency_judge", _node("sufficiency_judge", handlers.sufficiency_judge)
+    )
     builder.add_node("budget_guard", _budget_guard)
     builder.add_node("replanner", _replanner_node(handlers.replanner))
-    builder.add_node("synthesizer", _node(handlers.synthesizer))
+    builder.add_node("synthesizer", _node("synthesizer", handlers.synthesizer))
 
     builder.add_edge(START, "router")
     builder.add_conditional_edges("router", _route_after_router)

@@ -13,6 +13,8 @@ ResearcherStopReason = Literal[
     "round_budget",
     "action_budget",
     "agent_error",
+    "cancelled",
+    "elapsed_time_budget",
 ]
 StopReason = Literal[
     "completed",
@@ -21,6 +23,8 @@ StopReason = Literal[
     "replan_budget",
     "insufficient_evidence",
     "unrecoverable_error",
+    "cancelled",
+    "elapsed_time_budget",
 ]
 
 

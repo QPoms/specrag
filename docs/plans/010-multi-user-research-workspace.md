@@ -1,6 +1,11 @@
 # Multi-user research workspace: domain, access, runtime, and reuse
 
-Status: planned; no product implementation in this plan change.
+Status: implemented on `feat/complex-researcher-freeze`.
+
+Implementation note: the ignored `data/memory/` directory contained no active
+persisted records, so the active schema was migrated directly and no empty data
+migration utility was added. The implementation uses one numbered SQLite
+schema, one CLI, one research workflow, and one SpecFact store.
 
 ## Goal and starting point
 

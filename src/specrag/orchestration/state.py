@@ -25,7 +25,7 @@ from specrag.models import (
 
 
 class ResearchState(TypedDict):
-    schema_version: Literal["research-state/v1.5"]
+    schema_version: Literal["research-state/v1.6"]
     research_id: str
     user_question: str
     route: Literal["plan", "finish"]
@@ -46,7 +46,10 @@ class ResearchState(TypedDict):
     evidence_sufficient: bool | None
     final_answer: str | None
     synthesis: EvidenceSynthesis | None
-    memory_knowledge_ids: tuple[str, ...]
+    specfact_proposal_ids: tuple[str, ...]
+    specfact_ids: tuple[str, ...]
+    memory_ids: tuple[str, ...]
+    model_receipts: tuple[dict[str, object], ...]
     stop_reason: StopReason | None
     last_researcher_stop_reason: ResearcherStopReason | None
     errors: tuple[str, ...]
@@ -61,13 +64,15 @@ def new_research_state(
     research_id: str,
     user_question: str,
     budget: ResearchBudget | None = None,
+    specfact_ids: tuple[str, ...] = (),
+    memory_ids: tuple[str, ...] = (),
 ) -> ResearchState:
     if not research_id.strip():
         raise ValueError("research_id must not be blank")
     if not user_question.strip():
         raise ValueError("user_question must not be blank")
     return ResearchState(
-        schema_version="research-state/v1.5",
+        schema_version="research-state/v1.6",
         research_id=research_id,
         user_question=user_question,
         route="plan",
@@ -86,7 +91,10 @@ def new_research_state(
         evidence_sufficient=None,
         final_answer=None,
         synthesis=None,
-        memory_knowledge_ids=(),
+        specfact_proposal_ids=(),
+        specfact_ids=specfact_ids,
+        memory_ids=memory_ids,
+        model_receipts=(),
         stop_reason=None,
         last_researcher_stop_reason=None,
         errors=(),

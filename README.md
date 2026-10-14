@@ -76,8 +76,21 @@ user question or task
   untrusted controller-generated passage for retrieval; only returned source
   chunks can become evidence.
 - `src/specrag/models/`: framework-independent research state contracts.
+- `src/specrag/access/`: default-deny workspace authorization plus local
+  password and session services. Passwords use `scrypt`; the database stores
+  only session-token digests. The local CLI keeps its bearer token in the
+  ignored `.local/state/session-token` credential cache.
+- `src/specrag/specfacts/`: pending proposal, reviewer approval, conflict,
+  supersession, invalidation, and authorized hint lookup for reusable
+  specification facts.
+- `src/specrag/memory/`: explicit private User Memory for preferences,
+  followed topics, and saved research leads. User Memory never becomes
+  Evidence or a SpecFact.
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
-  dependency-context handoff, bounded re-planning, checkpointing, and recovery.
+  dependency-context handoff, bounded re-planning, SQLite checkpointing,
+  authorized Run lifecycle, events, cancellation, deadlines, and recovery.
+- `src/specrag/interfaces/`: product CLI command parsing and application
+  composition. The top-level `cli.py` remains a small stable entry point.
 - `src/specrag/infrastructure/structured_agent.py`: structured-agent runtime
   adapter.
 - `src/specrag/infrastructure/researcher_controller.py`: binds the versioned
@@ -112,8 +125,10 @@ Markdown corpus; the deleted threat model is no longer an input source.
 - `data/3gpp/`: all retained 3GPP specification versions and source formats.
 - `data/3gpp/manifest.json`: compact corpus manifest.
 - `data/3gpp/catalog.jsonl`: one catalog record per specification version.
-- `data/memory/`: validated long-term knowledge only; raw model output cannot
-  enter this store.
+- `.local/state/specrag.sqlite3`: ignored local accounts, workspaces,
+  memberships, sessions, Runs, events, checkpoints, SpecFacts, and User
+  Memory. SQLite runs with foreign keys and WAL and applies numbered schema
+  migrations.
 - `data/QA/questions.jsonl`: curated Release 17 development questions with
   exact local evidence bindings; complete upstream snapshots stay in ignored
   sibling directories under `data/QA/`.
@@ -132,8 +147,28 @@ Cross-version research compares isolated Release-scoped runs. Explicit latest,
 exact-version, and mixed-version scopes are also supported and retain each
 source document's exact identity.
 
-The supported product CLI now has staged `route`, `plan`, `research-plan`, and
-`baseline` commands. `specrag route` selects `single_task/simple` or
+The product CLI includes local multi-user commands:
+
+```text
+specrag auth bootstrap --username alice
+specrag auth login --username alice
+specrag workspace create --name standards
+specrag workspace member add --workspace standards --username reviewer --role reviewer
+specrag research run --workspace standards --question "..." [--release 17]
+specrag research inspect|resume|cancel --workspace standards RUN-...
+specrag specfact review --workspace standards SFP-... --approve
+specrag memory set|list|delete --workspace standards ...
+```
+
+Every product research command requires `--workspace`. A trusted session and
+membership produce `ActorContext` before corpus or checkpoint access. Members
+manage their own Runs and User Memory; reviewers approve workspace SpecFacts;
+admins manage members and every Run in their workspace. Missing context or
+membership is denied. Run IDs and checkpoint thread IDs are separate; a thread
+ID never grants access.
+
+The existing diagnostic CLI retains `route`, `plan`, `research-plan`, and
+`baseline`. `specrag route` selects `single_task/simple` or
 `decompose/complex` and records one concise rationale; `specrag plan` uses the
 reviewed development labels to isolate and inspect bounded task decomposition
 without rerunning Router; `specrag research-plan` generates and validates each
@@ -142,8 +177,19 @@ retrieval; `specrag baseline` continues through retrieval and evidence. Release
 is a Researcher/baseline retrieval parameter, not a Router/Planner input. All
 commands select individual questions with `--id` or the complete 50-question
 development set with `--all`. LangGraph is restricted to
-`specrag/orchestration/`; domain, retrieval, evidence, memory, and evaluation
+`specrag/orchestration/`; domain, retrieval, evidence, SpecFact, memory, and evaluation
 logic remain independent from the orchestration runtime.
+
+Research runs use opaque IDs, durable SQLite checkpoints, explicit elapsed
+time and cancellation stops, idempotent events and SpecFact proposal writes,
+and per-stage latency/token summaries. A completed sufficient synthesis creates
+pending SpecFact proposals. Only a reviewer can approve them. An approved fact
+is supplied to Researcher as a source-finding hint; the workflow still retrieves,
+validates, and cites the original specification text.
+
+User configuration precedence is command arguments, then active private User
+Memory, then `config.yaml`. A Run stores the exact SpecFact and User Memory IDs
+used at start, so later revisions do not change its research context.
 
 Each planning artifact records whether its plan was generated deterministically
 or by the model, the active Planner contract and prompt version, and the

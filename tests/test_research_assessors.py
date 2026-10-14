@@ -68,7 +68,9 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
         task,
         (first,),
     )
-    synthesis = StructuredEvidenceSynthesisGenerator(agent).synthesize(
+    synthesis = StructuredEvidenceSynthesisGenerator(
+        agent, answer_language="Chinese", detail_level="detailed"
+    ).synthesize(
         task.question,
         (task,),
         (first,),
@@ -78,7 +80,7 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     assert synthesis.claims[0].evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
         "evidence-sufficiency/v1.9",
-        "evidence-synthesis/v1.1",
+        "evidence-synthesis/v1.2",
     ]
     sufficiency_payload = agent.payloads[0][1]
     assert sufficiency_payload["task"] == {
@@ -90,6 +92,10 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     assert synthesis_payload["task_evidence"][0]["task_question"] == (
         "What starts registration?"
     )
+    assert synthesis_payload["presentation"] == {
+        "answer_language": "Chinese",
+        "detail_level": "detailed",
+    }
     assert "objective" not in synthesis_payload["task_evidence"][0]
     assert synthesis.answer == synthesis.claims[0].text
 

@@ -21,7 +21,10 @@ These rules apply to every human- or AI-authored change in this repository.
   algorithms and provider SDK calls do not.
 - `orchestration`: routing and supervision across multiple agents.
 - `evidence`: provenance, validation, sufficiency, gap analysis, and synthesis.
-- `memory`: validated knowledge persistence and lookup.
+- `memory`: private User Memory persistence and lookup.
+- `access`: authentication-independent authorization policy and local identity services.
+- `specfacts`: reviewed, workspace-scoped specification fact lifecycle and lookup hints.
+- `interfaces`: CLI parsing and application command composition.
 - `infrastructure`: LLM, embedding, vector-store, and persistence adapters.
 - `evaluation`: offline metrics and benchmark runners only.
 - `prompts`: versioned prompt text only; provider calls and workflow logic stay

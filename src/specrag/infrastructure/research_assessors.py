@@ -50,6 +50,8 @@ class StructuredTaskSufficiencyAssessor:
 @dataclass(frozen=True)
 class StructuredEvidenceSynthesisGenerator:
     agent: CodexStructuredAgent
+    answer_language: str = "English"
+    detail_level: str = "standard"
 
     def synthesize(
         self,
@@ -63,6 +65,10 @@ class StructuredEvidenceSynthesisGenerator:
             instructions=SYNTHESIS_INSTRUCTIONS,
             input_payload={
                 "question": question,
+                "presentation": {
+                    "answer_language": self.answer_language,
+                    "detail_level": self.detail_level,
+                },
                 "task_evidence": [
                     {
                         "task_id": task.task_id,

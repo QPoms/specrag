@@ -1,5 +1,9 @@
-"""Validated long-term knowledge services."""
+"""Private user preference and research-context memory."""
 
-from .service import KnowledgeStore, MemoryDistiller, ValidatedMemoryService
+from .service import UserMemoryService, UserMemoryStore
+from .configuration import ResolvedUserConfiguration, resolve_user_configuration
 
-__all__ = ["KnowledgeStore", "MemoryDistiller", "ValidatedMemoryService"]
+__all__ = [
+    "ResolvedUserConfiguration", "UserMemoryService", "UserMemoryStore",
+    "resolve_user_configuration",
+]

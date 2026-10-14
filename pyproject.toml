@@ -10,6 +10,7 @@ dependencies = [
     "sentence-transformers>=3.0.0",
     "tokenizers>=0.22.1,<0.23",
     "langgraph>=1.2.14,<2",
+    "langgraph-checkpoint-sqlite>=3.1,<4",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pyyaml>=6.0",

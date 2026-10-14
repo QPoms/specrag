@@ -13,17 +13,20 @@ SOURCE_ROOT = ROOT / "src" / "specrag"
 
 ALLOWED_SOURCE_ENTRIES = {
     "__init__.py",
+    "access",
     "agents",
     "cli.py",
     "config.py",
     "evaluation",
     "evidence",
     "infrastructure",
+    "interfaces",
     "memory",
     "models",
     "orchestration",
     "prompts",
     "retrieval",
+    "specfacts",
     "settings.py",
     "tools",
 }
@@ -58,22 +61,29 @@ LINE_RATCHETS: dict[str, int] = {}
 
 ALLOWED_IMPORTS = {
     "models": {"models"},
+    "access": {"models", "access"},
     "infrastructure": {"config", "models", "prompts", "infrastructure"},
     "retrieval": {"config", "models", "infrastructure", "retrieval"},
-    "tools": {"config", "models", "infrastructure", "retrieval", "memory", "tools"},
+    "tools": {"config", "models", "infrastructure", "retrieval", "memory", "specfacts", "tools"},
     "evidence": {"config", "models", "infrastructure", "retrieval", "evidence"},
-    "memory": {"config", "models", "infrastructure", "memory"},
+    "memory": {"config", "models", "access", "infrastructure", "memory"},
+    "specfacts": {"models", "access", "specfacts"},
     "agents": {
         "config", "models", "infrastructure", "retrieval", "tools",
-        "evidence", "memory", "agents",
+        "evidence", "memory", "specfacts", "access", "agents",
     },
     "orchestration": {
         "config", "models", "infrastructure", "retrieval", "tools",
-        "evidence", "memory", "agents", "orchestration",
+        "evidence", "memory", "specfacts", "access", "agents", "orchestration",
     },
     "evaluation": {
         "config", "models", "infrastructure", "retrieval", "tools",
-        "evidence", "memory", "agents", "orchestration", "evaluation",
+        "evidence", "memory", "specfacts", "access", "agents", "orchestration", "evaluation",
+    },
+    "interfaces": {
+        "config", "models", "access", "infrastructure", "retrieval", "tools",
+        "evidence", "memory", "specfacts", "agents", "orchestration",
+        "evaluation", "interfaces", "prompts",
     },
     "prompts": {"prompts"},
 }

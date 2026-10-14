@@ -13,7 +13,6 @@ from specrag.evidence import (
     EvidenceSynthesisService,
     SourceValidationService,
 )
-from specrag.memory import MemoryDistiller, ValidatedMemoryService
 from specrag.models import (
     CandidateEvidence,
     ResearcherEvidenceSelectionRecord,
@@ -164,31 +163,6 @@ class EvidenceSynthesisHandler:
             "synthesis": synthesis,
             "final_answer": synthesis.answer,
             "stop_reason": "completed",
-        }
-
-
-@dataclass(frozen=True)
-class MemoryWriteHandler:
-    """Persist only knowledge distilled from a completed validated workflow."""
-
-    service: ValidatedMemoryService
-    distiller: MemoryDistiller
-
-    def __call__(self, state: ResearchState) -> dict[str, object]:
-        if state["synthesis"] is None:
-            raise ValueError("memory write requires an evidence synthesis")
-        records = self.service.distill_and_store(
-            synthesis=state["synthesis"],
-            tasks=state["research_tasks"],
-            candidates=state["candidate_evidence"],
-            validated=state["validated_evidence"],
-            sufficiency=state["sufficiency_assessments"],
-            distiller=self.distiller,
-        )
-        return {
-            "memory_knowledge_ids": tuple(
-                record.knowledge_id for record in records
-            ),
         }
 
 
@@ -379,21 +353,27 @@ def researcher_execution_update(
         corrective=corrective,
     )
 
-    return {
+    receipts = tuple((*state["model_receipts"], *(
+        turn.receipt.model_dump(mode="json") for turn in execution.turns
+    )))
+    update = {
         "candidate_evidence": tuple(candidates),
         "tool_calls": tuple(calls),
         "researcher_evidence_selections": tuple(selections),
         "budget": budget,
         "last_researcher_stop_reason": execution.stop_reason,
         "errors": tuple((*state["errors"], *execution.errors)),
+        "model_receipts": receipts,
     }
+    if execution.stop_reason in {"cancelled", "elapsed_time_budget"}:
+        update["stop_reason"] = execution.stop_reason
+    return update
 
 
 __all__ = [
     "SourceValidationHandler",
     "EvidenceSufficiencyHandler",
     "EvidenceSynthesisHandler",
-    "MemoryWriteHandler",
     "SingleResearcherHandler",
     "researcher_execution_update",
 ]

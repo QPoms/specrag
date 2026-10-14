@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -11,14 +11,8 @@ from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
 from specrag.models import NativeFunctionCallOutput, ResearchTask
-from specrag.retrieval.hybrid import (
-    HybridMarkdownRetriever,
-    effective_corpus_scope,
-)
-from specrag.retrieval.planner import (
-    PlannedRetrievalExecution,
-    PlannedRetrievalTaskResult,
-)
+from specrag.retrieval.hybrid import HybridMarkdownRetriever, effective_corpus_scope
+from specrag.retrieval.planner import PlannedRetrievalExecution, PlannedRetrievalTaskResult
 from specrag.tools import (
     ClauseLookupArguments,
     ExpandSourceContextArguments,
@@ -33,12 +27,7 @@ from specrag.tools import (
     parse_retrieval_tool_arguments,
 )
 
-from .models import (
-    AgentRetrievalCall,
-    AgentRetrievalTurn,
-    AgentToolOutcome,
-    AgenticRetrievalExecution,
-)
+from .models import AgentRetrievalCall, AgentRetrievalTurn, AgentToolOutcome, AgenticRetrievalExecution
 from .planning import propose_researcher_turn
 from .policy import call_signature
 from .state import EvidenceLedger
@@ -53,12 +42,15 @@ class RegistryResearcherService:
     retriever: HybridMarkdownRetriever
     app_config: AppConfig
     tool_registry: ToolRegistry | None = None
-    memory_reader: Any | None = None
+    research_context: tuple[dict[str, object], ...] = ()
     max_rounds: int = 4
     max_total_actions: int = 9
     hits_per_search: int = 8
     max_evidence_per_question: int = 28
     max_finalization_turns: int = 1
+    stop_requested: Callable[
+        [str], Literal["cancelled", "elapsed_time_budget"] | None
+    ] | None = None
 
     def run(
         self,
@@ -69,13 +61,6 @@ class RegistryResearcherService:
     ) -> tuple[AgenticRetrievalExecution, dict[str, str]]:
         if not tasks:
             raise ValueError("Researcher requires at least one research task")
-        memory_context: list[dict[str, object]] = []
-        if self.memory_reader is not None:
-            for task in tasks:
-                memory_context.extend(
-                    item.knowledge.model_dump(mode="json")
-                    for item in self.memory_reader.search(task.question, limit=4)
-                )
         execution = run_agentic_retrieval_loop(
             tasks,
             controller_agent=self.controller_agent,
@@ -84,7 +69,7 @@ class RegistryResearcherService:
             tool_registry=self.tool_registry,
             shared_context={
                 **dict(shared_context or {}),
-                "validated_memory": memory_context,
+                "authorized_research_context": list(self.research_context),
             },
             max_rounds=self.max_rounds,
             max_total_actions=(
@@ -95,6 +80,9 @@ class RegistryResearcherService:
             hits_per_search=self.hits_per_search,
             max_evidence_per_question=self.max_evidence_per_question,
             max_finalization_turns=self.max_finalization_turns,
+            stop_requested=(lambda: self.stop_requested(str(
+                (shared_context or {}).get("research_id", "")
+            ))) if self.stop_requested is not None else None,
         )
         return execution, {task.task_id: task.task_id for task in tasks}
 
@@ -287,6 +275,9 @@ def run_agentic_retrieval_loop(
     hits_per_search: int = 8,
     max_evidence_per_question: int = 28,
     max_finalization_turns: int = 1,
+    stop_requested: Callable[
+        [], Literal["cancelled", "elapsed_time_budget"] | None
+    ] | None = None,
 ) -> AgenticRetrievalExecution:
     """Let a model issue native calls to bounded local retrieval tools."""
 
@@ -330,9 +321,14 @@ def run_agentic_retrieval_loop(
         "round_budget",
         "action_budget",
         "agent_error",
+        "cancelled",
+        "elapsed_time_budget",
     ] = "round_budget"
 
     for round_number in range(1, max_rounds + 1):
+        if stop_requested is not None and (requested := stop_requested()) is not None:
+            stop_reason = requested
+            break
         try:
             proposal = propose_researcher_turn(
                 research_tasks,
@@ -416,6 +412,9 @@ def run_agentic_retrieval_loop(
             proposal.validations,
             strict=True,
         ):
+            if stop_requested is not None and (requested := stop_requested()) is not None:
+                stop_reason = requested
+                break
             if not validation.accepted:
                 outcome = AgentToolOutcome(
                     round_number=round_number,
@@ -484,6 +483,8 @@ def run_agentic_retrieval_loop(
         ))
         prior_response_items = proposal.replay_items
         prior_outputs = _tool_outputs(proposal, outcome_tuple)
+        if stop_reason in {"cancelled", "elapsed_time_budget"}:
+            break
         if search_used + expansion_used >= max_total_actions:
             stop_reason = "action_budget"
             break
