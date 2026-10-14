@@ -79,6 +79,7 @@ class RunHarness:
             release=request.release,
             answer_language=request.answer_language,
             detail_level=request.detail_level,
+            memory_ids=request.configuration_memory_ids,
             development_question_id=request.development_question_id,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.elapsed_time_seconds),
@@ -87,7 +88,10 @@ class RunHarness:
             facts, memories, _ = self.context_snapshot(
                 context, request.question, request.release
             )
-            run = run.model_copy(update={"specfact_ids": facts, "memory_ids": memories})
+            run = run.model_copy(update={
+                "specfact_ids": facts,
+                "memory_ids": tuple(sorted(set((*run.memory_ids, *memories)))),
+            })
         self.store.put(run)
         self._event(run, "run_started", "run:start", payload={"release": run.release})
         return self._execute(context, run, request=request, resume=False)

@@ -113,9 +113,14 @@ def test_run_events_and_snapshot_ids_are_stable() -> None:
         return ("SF-" + "1" * 24,), ("UM-" + "1" * 32,), ({"hint": question},)
 
     harness = RunHarness(store, _factory, context_snapshot=snapshot)
-    result = harness.start(_context(), ResearchRequest(question="question"))
+    result = harness.start(_context(), ResearchRequest(
+        question="question", configuration_memory_ids=("UM-" + "2" * 32,),
+    ))
     assert result.run.specfact_ids == ("SF-" + "1" * 24,)
-    assert result.run.memory_ids == ("UM-" + "1" * 32,)
+    assert result.run.memory_ids == (
+        "UM-" + "1" * 32,
+        "UM-" + "2" * 32,
+    )
     assert [event.event_type for event in result.events] == ["run_started", "run_stopped"]
     assert len({event.operation_key for event in result.events}) == 2
 

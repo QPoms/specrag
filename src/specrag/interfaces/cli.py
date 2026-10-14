@@ -201,6 +201,7 @@ def _dispatch_research(args: argparse.Namespace, services: WorkspaceServices) ->
             release=resolved.release,
             answer_language=resolved.answer_language,
             detail_level=resolved.detail_level,
+            configuration_memory_ids=resolved.memory_ids,
             elapsed_time_seconds=args.elapsed_seconds,
             budget=ResearchBudget(
                 max_iterations=args.max_iterations,

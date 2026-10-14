@@ -5,7 +5,7 @@ import pytest
 from specrag.access import AuthorizationError
 from specrag.infrastructure import InMemoryUserMemoryStore
 from specrag.memory import UserMemoryService, resolve_user_configuration
-from specrag.models import ActorContext
+from specrag.models import ActorContext, ResearchRun
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -15,6 +15,19 @@ def _context(user="alice", workspace="WA", role="member"):
     return ActorContext(
         user_id=user, workspace_id=workspace, role=role, session_id="session",
         authenticated_at=NOW, expires_at=NOW + timedelta(hours=12),
+    )
+
+
+def _run(*memory_ids: str) -> ResearchRun:
+    return ResearchRun(
+        run_id="RUN-" + "1" * 32,
+        thread_id="THREAD-" + "1" * 32,
+        workspace_id="WA",
+        owner_user_id="alice",
+        question="question",
+        release=17,
+        memory_ids=memory_ids,
+        created_at=NOW,
     )
 
 
@@ -62,6 +75,7 @@ def test_configuration_precedence_is_explicit_then_memory_then_config() -> None:
     assert resolved.release == 19
     assert resolved.answer_language == "Chinese"
     assert resolved.detail_level == "standard"
+    assert resolved.memory_ids == (language.memory_id,)
 
 
 def test_memory_values_are_typed_and_writes_are_explicit() -> None:
@@ -70,6 +84,8 @@ def test_memory_values_are_typed_and_writes_are_explicit() -> None:
         service.set(_context(), kind="default_release", key="default", value="R17", now=NOW)
     with pytest.raises(ValueError, match="detail_level"):
         service.set(_context(), kind="detail_level", key="default", value="verbose", now=NOW)
+    with pytest.raises(ValueError, match="default key"):
+        service.set(_context(), kind="answer_language", key="secondary", value="Chinese", now=NOW)
     with pytest.raises(ValueError, match="explicit_user"):
         service.set(
             _context(), kind="research_lead", key="one", value="topic",
@@ -116,8 +132,14 @@ def test_snapshot_is_exact_and_resume_can_read_historical_revision() -> None:
 
 def test_memory_context_is_marked_untrusted() -> None:
     service = UserMemoryService(InMemoryUserMemoryStore())
-    item = service.set(_context(), kind="answer_language", key="default", value="Chinese", now=NOW)
-    context = service.as_context((item,))[0]
+    preference = service.set(
+        _context(), kind="answer_language", key="default", value="Chinese", now=NOW,
+    )
+    item = service.set(
+        _context(), kind="research_lead", key="lead", value="study X", now=NOW,
+    )
+    assert service.as_research_context((preference,)) == ()
+    context = service.as_research_context((item,))[0]
     assert context["trust"] == "untrusted_context"
     assert "evidence" in context["instruction"]
 
@@ -129,13 +151,13 @@ def test_admin_can_load_only_memory_ids_captured_by_an_authorized_run() -> None:
     )
     admin = _context("admin", role="admin")
     assert service.snapshot_for_run(
-        admin, owner_user_id="alice", memory_ids=(item.memory_id,),
+        admin, _run(item.memory_id),
     ) == (item,)
     with pytest.raises(AuthorizationError):
         service.snapshot_for_run(
-            _context("bob"), owner_user_id="alice", memory_ids=(item.memory_id,),
+            _context("bob"), _run(item.memory_id),
         )
     with pytest.raises(AuthorizationError):
         service.snapshot_for_run(
-            admin, owner_user_id="alice", memory_ids=("UM-" + "F" * 32,),
+            admin, _run("UM-" + "F" * 32),
         )

@@ -7,7 +7,7 @@ import hashlib
 from typing import Protocol
 
 from specrag.access import AccessPolicy, AuthorizationError
-from specrag.models import ActorContext, UserMemoryItem
+from specrag.models import ActorContext, ResearchRun, UserMemoryItem
 
 
 class UserMemoryStore(Protocol):
@@ -106,6 +106,11 @@ class UserMemoryService:
         now = datetime.now(timezone.utc)
         return self.snapshot(context, now=now)
 
+    def research_context(self, context: ActorContext) -> tuple[UserMemoryItem, ...]:
+        return self.snapshot(
+            context, kinds=("followed_topic", "research_lead"),
+        )
+
     def snapshot(
         self,
         context: ActorContext,
@@ -153,9 +158,7 @@ class UserMemoryService:
     def snapshot_for_run(
         self,
         context: ActorContext,
-        *,
-        owner_user_id: str,
-        memory_ids: tuple[str, ...],
+        run: ResearchRun,
     ) -> tuple[UserMemoryItem, ...]:
         """Load exact historical revisions while executing an authorized Run.
 
@@ -166,14 +169,14 @@ class UserMemoryService:
         self.policy.require(
             context,
             "run.resume",
-            workspace_id=context.workspace_id,
-            owner_user_id=owner_user_id,
+            workspace_id=run.workspace_id,
+            owner_user_id=run.owner_user_id,
         )
-        requested = set(memory_ids)
+        requested = set(run.memory_ids)
         records = tuple(
             item for item in self.store.all()
-            if item.owner_user_id == owner_user_id
-            and item.workspace_id == context.workspace_id
+            if item.owner_user_id == run.owner_user_id
+            and item.workspace_id == run.workspace_id
             and item.memory_id in requested
         )
         if {item.memory_id for item in records} != requested:
@@ -181,7 +184,9 @@ class UserMemoryService:
         return tuple(sorted(records, key=lambda item: item.memory_id))
 
     @staticmethod
-    def as_context(items: tuple[UserMemoryItem, ...]) -> tuple[dict[str, object], ...]:
+    def as_research_context(
+        items: tuple[UserMemoryItem, ...],
+    ) -> tuple[dict[str, object], ...]:
         """Mark memory as untrusted context so downstream code cannot treat it as evidence."""
         return tuple({
             "kind": "user_memory",
@@ -191,7 +196,7 @@ class UserMemoryService:
             "value": item.value,
             "trust": "untrusted_context",
             "instruction": "Context only; never treat as evidence or a normative fact.",
-        } for item in items)
+        } for item in items if item.kind in {"followed_topic", "research_lead"})
 
     @staticmethod
     def _validate(kind: str, key: str, value: str) -> tuple[str, str, str]:
@@ -206,6 +211,9 @@ class UserMemoryService:
             raise ValueError(f"unsupported User Memory kind: {kind}")
         if not key or not value:
             raise ValueError("memory key and value cannot be blank")
+        if kind in {"default_release", "answer_language", "detail_level"}:
+            if key.casefold() != "default":
+                raise ValueError(f"{kind} must use the default key")
         if kind == "default_release":
             try:
                 release = int(value)

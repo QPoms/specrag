@@ -164,6 +164,12 @@ and stable operation key. Supported kinds are `default_release`,
 Automatic LLM extraction is intentionally not enabled; adding a trusted import
 origin later must go through a separate reviewable policy.
 
+The kinds have two explicit read paths. `default_release`, `answer_language`,
+and `detail_level` participate only in configuration resolution, and only the
+selected revision IDs are recorded on the Run. `followed_topic` and
+`research_lead` form the untrusted Researcher context. Configuration memories
+are never copied into the model context as general instructions.
+
 ```mermaid
 flowchart TD
     U[Explicit user command] --> V[Validate kind and value]

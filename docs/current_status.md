@@ -24,9 +24,12 @@ Memory, then `config.yaml`. A Run records the exact SpecFact and User Memory
 revision IDs used at start, and resume loads those authorized historical
 revisions so later edits do not alter the Run. Workspace admins can operate a
 member Run but cannot browse or edit that member's Memory; resume may load only
-the Memory IDs already captured by the authorized Run. Injected memory is
-marked as untrusted context and never enters Evidence, Source Validator,
-Sufficiency Judge, or SpecFact proposal logic.
+the Memory IDs already captured by the authorized Run. Configuration memories
+resolve Release/language/detail only; followed topics and research leads are
+the only kinds admitted to Researcher context. The Run records only the
+configuration revisions actually selected plus the context revisions actually
+supplied. Injected memory is marked as untrusted context and never enters
+Evidence, Source Validator, Sufficiency Judge, or SpecFact proposal logic.
 
 Local `scrypt` accounts, 12-hour sessions, workspaces, and member/reviewer/admin
 roles are active through the single `specrag` CLI. SQLite state lives at

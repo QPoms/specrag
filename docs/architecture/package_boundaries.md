@@ -125,7 +125,9 @@ tool protocol remains under `tools/`. `specfacts/service.py` owns the migrated
 validated-claim behavior plus pending review. `memory/service.py` owns only
 explicit private User Memory. It validates the small typed kind set, records
 explicit-user revisions and operation keys, and serves authorized run
-snapshots/context views. SQLite adapters live under `infrastructure/`.
+snapshots/context views. Configuration kinds stay out of model context;
+followed topics and research leads are injected only as untrusted hints. SQLite
+adapters live under `infrastructure/`.
 Researcher receives authorized, read-only snapshots containing hint IDs; it
 does not receive SpecFact or User Memory write services. Pending facts and User
 Memory cannot enter Source Validator or the Sufficiency Judge as Evidence.

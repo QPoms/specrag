@@ -60,7 +60,7 @@ class WorkspaceServices:
             facts = specfacts.search(
                 context, question, release=release, source_is_valid=source_is_valid
             )
-            memories = memory.list(context)
+            memories = memory.research_context(context)
             fact_context = tuple({
                 "kind": "approved_specfact_hint",
                 "fact_id": item.fact.fact_id,
@@ -68,7 +68,7 @@ class WorkspaceServices:
                 "source_paths": [source.source_path for source in item.fact.sources],
                 "instruction": "Use only as a retrieval hint; re-open and validate source text.",
             } for item in facts)
-            memory_context = memory.as_context(memories)
+            memory_context = memory.as_research_context(memories)
             return (
                 tuple(item.fact.fact_id for item in facts),
                 tuple(item.memory_id for item in memories),
@@ -84,12 +84,8 @@ class WorkspaceServices:
                 item.fact_id: item for item in specfacts.store.all_facts()
                 if item.workspace_id == run.workspace_id
             }
-            memories = memory.snapshot_for_run(
-                context,
-                owner_user_id=run.owner_user_id,
-                memory_ids=run.memory_ids,
-            )
-            memory_context = memory.as_context(memories)
+            memories = memory.snapshot_for_run(context, run)
+            memory_context = memory.as_research_context(memories)
             fact_context = tuple({
                 "kind": "approved_specfact_hint",
                 "fact_id": item.fact_id,

@@ -12,6 +12,7 @@ class ResolvedUserConfiguration:
     release: int
     answer_language: str
     detail_level: str
+    memory_ids: tuple[str, ...] = ()
 
 
 def resolve_user_configuration(
@@ -22,15 +23,31 @@ def resolve_user_configuration(
     explicit_language: str | None = None,
     explicit_detail: str | None = None,
 ) -> ResolvedUserConfiguration:
-    values = {item.kind: item.value for item in memories if item.status == "active"}
-    release_text = values.get("default_release")
-    memory_release = int(release_text) if release_text else None
+    values = {
+        item.kind: item
+        for item in memories
+        if item.status == "active" and item.key.casefold() == "default"
+    }
+    release_item = values.get("default_release")
+    language_item = values.get("answer_language")
+    detail_item = values.get("detail_level")
+    memory_release = int(release_item.value) if release_item else None
+    used = tuple(sorted(
+        item.memory_id for item, explicit in (
+            (release_item, explicit_release),
+            (language_item, explicit_language),
+            (detail_item, explicit_detail),
+        ) if item is not None and explicit is None
+    ))
     return ResolvedUserConfiguration(
         release=explicit_release or memory_release or config_release,
         answer_language=(
-            explicit_language or values.get("answer_language") or "English"
+            explicit_language or (language_item.value if language_item else None) or "English"
         ),
-        detail_level=explicit_detail or values.get("detail_level") or "standard",
+        detail_level=(
+            explicit_detail or (detail_item.value if detail_item else None) or "standard"
+        ),
+        memory_ids=used,
     )
 
 

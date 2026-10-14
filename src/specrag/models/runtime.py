@@ -71,6 +71,7 @@ class ResearchRequest(_StrictModel):
     release: int = Field(default=17, ge=1)
     answer_language: str = Field(default="English", min_length=1)
     detail_level: str = Field(default="standard", min_length=1)
+    configuration_memory_ids: tuple[str, ...] = ()
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
     elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
     development_question_id: str | None = None

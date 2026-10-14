@@ -87,7 +87,8 @@ user question or task
   followed topics, and saved research leads. User Memory never becomes
   Evidence or a SpecFact. Values are typed, explicit-user writes are
   revisioned and idempotent, and each Run consumes an authorized immutable
-  snapshot marked as untrusted context.
+  snapshot. Configuration preferences resolve settings; only followed topics
+  and research leads enter the Researcher as untrusted context.
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
   dependency-context handoff, bounded re-planning, SQLite checkpointing,
   authorized Run lifecycle, events, cancellation, deadlines, and recovery.
