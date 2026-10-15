@@ -13,10 +13,11 @@ the source tree contains only the active implementation.
 The active package responsibilities are:
 
 - `models`: dependency-free identity, Run/event, research, Evidence, SpecFact,
-  Core/Topic Memory, proposal, maintenance, and transport contracts.
+  Core/Topic Memory, corpus-version lifecycle, proposal, maintenance, and
+  transport contracts.
 - `access`: default-deny policy and local identity/session application service.
-- `retrieval`: public corpus discovery, indexing, search, fusion, reranking,
-  and retrieval planning.
+- `retrieval`: public corpus/version discovery, non-destructive synchronization
+  mechanics, indexing, search, fusion, reranking, and retrieval planning.
 - `tools`: small agent-callable capabilities and registry.
 - `agents`: bounded model-controlled research loops.
 - `evidence`: provenance validation, sufficiency, gaps, and synthesis.
@@ -26,7 +27,7 @@ The active package responsibilities are:
 - `orchestration`: LangGraph state, graph scheduling, durable checkpoints,
   runtime controls, Run Harness, and event emission.
 - `infrastructure`: provider, vector-store, SQLite, identity, Run/event,
-  SpecFact, Memory, and structured Memory-agent adapters.
+  SpecFact, Memory, corpus-registry, and structured Memory-agent adapters.
 - `interfaces`: the single CLI's parsers, handlers, and application composition.
 - `evaluation`: offline evaluation only.
 - `prompts`: versioned prompt text only.
@@ -112,6 +113,13 @@ Version selection is a retrieval concern expressed by one immutable
 `CorpusScope` per run. The active scope must propagate into index and execution
 artifacts. Uniform Release scope is the default; explicit exact and mixed scopes
 must preserve each source document's exact version and Release identity.
+The corpus version registry persists discovered/building/ready/active/draining/
+failed state and one active pointer per Release/specification. Synchronization
+is explicit and non-destructive: historical source documents are retained,
+build failure cannot replace an active pointer, and no package performs
+automatic physical retirement. Provider discovery and source materialization
+are injected at the retrieval boundary; provider SDK/network code belongs in
+`infrastructure`. Durable Runs persist exact version bindings before execution.
 
 The first orchestration implementation is `orchestration/workflow.py`. It owns
 the `StateGraph`, conditional edges, budget guard, checkpointer, and recovery

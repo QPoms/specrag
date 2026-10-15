@@ -1,6 +1,16 @@
 """Shared framework-independent domain and transport models."""
 
 from .access import ActorContext, Membership, User, Workspace
+from .corpus import (
+    ActiveCorpusVersion,
+    CorpusBuildResult,
+    CorpusSourceDocument,
+    CorpusSyncItem,
+    CorpusVersionRecord,
+    CorpusVersionRef,
+    CorpusVersionStatus,
+    SpecificationSourceCandidate,
+)
 from .runtime import ResearchRequest, ResearchRun, RunEvent, RunStatus, RunStopReason
 from .specfacts import (
     SpecFact,
@@ -76,6 +86,14 @@ __all__ = [
     "ToolCallRecord",
     "ValidatedEvidence",
     "ActorContext",
+    "ActiveCorpusVersion",
+    "CorpusBuildResult",
+    "CorpusSourceDocument",
+    "CorpusSyncItem",
+    "CorpusVersionRecord",
+    "CorpusVersionRef",
+    "CorpusVersionStatus",
+    "SpecificationSourceCandidate",
     "Membership",
     "ResearchRun",
     "ResearchRequest",

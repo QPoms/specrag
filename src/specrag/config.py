@@ -151,8 +151,24 @@ class LlmCfg(BaseModel):
         return self
 
 
+class CorpusSyncCfg(BaseModel):
+    """Dormant-by-default controls for explicit corpus maintenance."""
+
+    automatic_sync_enabled: bool = False
+    supported_releases: tuple[int, ...] = (17, 18, 19)
+
+    @model_validator(mode="after")
+    def _valid_releases(self):
+        normalized = tuple(sorted(set(self.supported_releases)))
+        if not normalized or any(release < 1 for release in normalized):
+            raise ValueError("corpus_sync.supported_releases must be positive")
+        self.supported_releases = normalized
+        return self
+
+
 class AppConfig(BaseModel):
     retrieval: RetrievalCfg = RetrievalCfg()
+    corpus_sync: CorpusSyncCfg = CorpusSyncCfg()
     llm: LlmCfg = LlmCfg()
     secrets: Secrets = Secrets()
 

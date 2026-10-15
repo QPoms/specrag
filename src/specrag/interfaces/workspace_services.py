@@ -9,6 +9,7 @@ from pathlib import Path
 from specrag.access import LocalIdentityService
 from specrag.config import REPO_ROOT
 from specrag.infrastructure import (
+    SQLiteCorpusStore,
     SQLiteDatabase,
     SQLiteIdentityStore,
     SQLiteRunStore,
@@ -22,10 +23,20 @@ from specrag.memory import (
     MemoryRecallService,
     MemoryService,
 )
-from specrag.models import ActorContext, ResearchRun
+from specrag.models import (
+    ActorContext,
+    CorpusBuildResult,
+    CorpusVersionRef,
+    ResearchRun,
+)
 from specrag.orchestration import RunHarness, SQLiteCheckpointManager
 from specrag.orchestration.application import build_research_application
 from specrag.specfacts import ClaimSpecFactDistiller, SpecFactService
+from specrag.retrieval.corpus import discover_source_documents
+from specrag.retrieval.corpus_sync import CorpusSyncService, active_snapshot
+from specrag.retrieval.hybrid import HybridMarkdownRetriever
+from specrag.retrieval.models import CorpusScope, SpecificationVersion
+from specrag.config import load_config
 
 
 @dataclass
@@ -39,6 +50,8 @@ class WorkspaceServices:
     memory_extraction: MemoryExtractionService
     memory_maintenance: MemoryMaintenanceService
     specfacts: SpecFactService
+    corpus_store: SQLiteCorpusStore
+    corpus_sync: CorpusSyncService
     runs: SQLiteRunStore
     harness: RunHarness
 
@@ -53,7 +66,37 @@ class WorkspaceServices:
         memory_extraction = MemoryExtractionService(memory, memory_proposals)
         memory_maintenance = MemoryMaintenanceService(memory, memory_proposals)
         specfacts = SpecFactService(SQLiteSpecFactStore(database))
+        corpus_store = SQLiteCorpusStore(database)
         runs = SQLiteRunStore(database)
+
+        def build_document(document) -> CorpusBuildResult:
+            assert document.specification is not None and document.version is not None
+            cfg = load_config().retrieval
+            scope = CorpusScope(
+                version_policy="exact_version",
+                versions=(SpecificationVersion(
+                    specification=document.specification,
+                    version=document.version,
+                ),),
+            )
+            retriever = HybridMarkdownRetriever(cfg, corpus_scope=scope)
+            if retriever.collection is None:
+                raise RuntimeError(
+                    retriever.vector_error or "vector index is unavailable"
+                )
+            stored = retriever.collection.get(
+                ids=[item.chunk_id for item in retriever.chunks],
+                include=[],
+            )
+            vector_count = len(stored.get("ids", ()))
+            return CorpusBuildResult(
+                index_fingerprint=retriever.fingerprint,
+                chunk_count=len(retriever.chunks),
+                lexical_record_count=len(retriever.bm25.chunks),
+                vector_record_count=vector_count,
+            )
+
+        corpus_sync = CorpusSyncService(corpus_store, build_document)
         def snapshot(
             context: ActorContext, question: str, release: int,
         ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[dict[str, object], ...]]:
@@ -109,13 +152,67 @@ class WorkspaceServices:
             } for fact_id in run.specfact_ids if (item := facts_by_id.get(fact_id)))
             return (*fact_context, *memory_context)
 
+        def corpus_snapshot(release: int) -> tuple[CorpusVersionRef, ...]:
+            active = active_snapshot(corpus_store, release)
+            cfg = load_config().retrieval.model_copy(update={
+                "version_policy": "highest_version_within_release",
+                "target_release": release,
+            })
+            selected = tuple(
+                CorpusVersionRef(
+                    specification=document.specification,
+                    version=document.version,
+                    release=document.release,
+                )
+                for document in discover_source_documents(cfg)
+                if document.specification is not None and document.version is not None
+            )
+            if (
+                active
+                and {item.specification for item in active}
+                == {item.specification for item in selected}
+            ):
+                return active
+            return selected
+
+        def bind_corpus(run: ResearchRun) -> None:
+            version_ids = tuple(
+                record.version_id
+                for item in run.corpus_versions
+                if (
+                    record := corpus_store.find(
+                        int(item.release), item.specification, item.version
+                    )
+                ) is not None
+            )
+            if version_ids:
+                corpus_store.bind_run(run.run_id, version_ids)
+
         def factory(release, stop_requested, event_sink, research_context):
+            run_configuration = next((
+                item for item in research_context
+                if item.get("kind") == "run_configuration"
+            ), {})
+            raw_versions = run_configuration.get("corpus_versions", [])
+            corpus_scope = None
+            if isinstance(raw_versions, list) and raw_versions:
+                versions = tuple(
+                    SpecificationVersion.model_validate(item)
+                    for item in raw_versions
+                )
+                corpus_scope = CorpusScope(
+                    version_policy=(
+                        "exact_version" if len(versions) == 1 else "mixed_versions"
+                    ),
+                    versions=versions,
+                )
             return build_research_application(
                 release=release,
                 checkpointer=checkpoint.saver,
                 stop_requested=stop_requested,
                 event_sink=event_sink,
                 research_context=research_context,
+                corpus_scope=corpus_scope,
             )
 
         def propose(context: ActorContext, run: ResearchRun, state) -> tuple[str, ...]:
@@ -140,6 +237,8 @@ class WorkspaceServices:
             context_snapshot=snapshot,
             context_loader=load_snapshot,
             proposal_writer=propose,
+            corpus_snapshot=corpus_snapshot,
+            corpus_binding_writer=bind_corpus,
         )
         return cls(
             database,
@@ -151,6 +250,8 @@ class WorkspaceServices:
             memory_extraction,
             memory_maintenance,
             specfacts,
+            corpus_store,
+            corpus_sync,
             runs,
             harness,
         )

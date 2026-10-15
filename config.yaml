@@ -13,6 +13,12 @@ retrieval:
   final_hits_per_collection: 6
   rrf_k: 60
 
+# Version synchronization is intentionally dormant. `specrag corpus sync`
+# performs a dry run unless --apply is supplied; no background scheduler runs.
+corpus_sync:
+  automatic_sync_enabled: false
+  supported_releases: [17, 18, 19]
+
 llm:
   temperature: 0.4
   max_retries: 3

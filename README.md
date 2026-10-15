@@ -26,6 +26,12 @@ user question or task
 
 - `src/specrag/retrieval/corpus.py`: 3GPP version discovery and source-faithful
   Markdown chunking.
+- `src/specrag/retrieval/corpus_sync.py`: non-destructive version discovery,
+  document-level build-before-activate state transitions, and provider/
+  materializer boundaries.
+- `src/specrag/infrastructure/threegpp.py`: explicit official 3GPP archive
+  discovery, ZIP materialization, safe extraction, and DOC/DOCX-to-Markdown
+  conversion.
 - `src/specrag/retrieval/lexical.py`, `semantic.py`, and `fusion.py`: BM25,
   dense candidate search, and deterministic reciprocal-rank fusion.
 - `src/specrag/retrieval/hybrid.py`: small hybrid retrieval orchestrator with
@@ -133,8 +139,9 @@ Markdown corpus; the deleted threat model is no longer an input source.
 - `data/3gpp/catalog.jsonl`: one catalog record per specification version.
 - `.local/state/specrag.sqlite3`: ignored local accounts, workspaces,
   memberships, sessions, Runs, events, checkpoints, SpecFacts, Core/Topic
-  Memory, proposals, and maintenance cursors. SQLite runs with foreign keys and WAL and applies numbered schema
-  migrations.
+  Memory, proposals, corpus-version records, active pointers, Run corpus
+  bindings, and maintenance cursors. SQLite runs with foreign keys and WAL and
+  applies numbered schema migrations.
 - `data/QA/questions.jsonl`: curated Release 17 development questions with
   exact local evidence bindings; complete upstream snapshots stay in ignored
   sibling directories under `data/QA/`.
@@ -147,11 +154,28 @@ ignored by Git. They are reproducible caches rather than project data.
 Copy `.env.example` to `.env`, set the OpenAI-compatible endpoint and model
 IDs, then adjust retrieval mechanics in `config.yaml`.
 
-The default corpus scope is Release 17. A retrieval run selects the highest
-available version of every specification within that single Release.
+The default corpus scope is Release 17. Before the version registry is
+initialized, a retrieval run selects the highest locally available version of
+every specification within that Release. Once a complete active registry is
+available, new Runs freeze its exact per-specification versions; resume reuses
+that binding even if active pointers later change.
 Cross-version research compares isolated Release-scoped runs. Explicit latest,
 exact-version, and mixed-version scopes are also supported and retain each
 source document's exact identity.
+
+Specification synchronization is intentionally dormant by default. The local
+CLI scans already materialized Markdown under `data/3gpp`; the explicit
+`--official` flag uses the official 3GPP FTP archive adapter to discover
+current revisions. `corpus sync` is a read-only preview unless `--apply` is
+supplied. Apply downloads and materializes only candidates that need an active
+version, then builds only the newest candidate document for each
+Release/specification, validates chunk/BM25/vector completeness, and switches
+the active pointer. Failed builds leave the old active version in place.
+Successful switches mark the old version `draining`; neither source files nor
+indexes are automatically deleted. Dense vectors live in an
+append-only cache keyed by embedding/chunk configuration; ingestion embeds only
+missing chunk IDs, while every query filters that shared cache by the exact
+document hashes in its Run snapshot.
 
 The product CLI includes local multi-user commands:
 
@@ -169,6 +193,8 @@ specrag memory recall --workspace standards --query "reranker experiment"
 specrag memory extract --workspace standards --source-ref TURN-... --user-text "..."
 specrag memory proposal list|review --workspace standards ...
 specrag memory maintenance status|consolidate|prune|restore --workspace standards ...
+specrag corpus status [--release 17]
+specrag corpus sync [--release 17] [--apply] [--official]
 ```
 
 Every product research command requires `--workspace`. A trusted session and

@@ -4,6 +4,39 @@ Updated: 2026-10-15
 
 ## Current state
 
+The first specification-version synchronization slice is implemented as an
+explicit, dormant-by-default maintenance capability. SQLite now records every
+discovered immutable specification document, its build lifecycle, the active
+pointer for each Release/specification, and exact Run bindings. Local history
+is append-only: activating a new version marks the old one `draining` and does
+not delete its source or index. A failed document build leaves the prior active
+version unchanged.
+
+`specrag corpus sync` previews local version changes by default; `--apply` is
+required to perform the per-document chunk/BM25/vector build, completeness
+validation, and activation. There is no background scheduler and no automatic
+retirement or garbage collection. Provider discovery and source materialization
+have injected contracts. The official adapter under
+`infrastructure/threegpp.py` reads the 3GPP FTP archive, downloads and safely
+extracts one ZIP, converts DOC/DOCX to Markdown, and reuses the existing
+build-before-activate flow. It is only reachable through the explicit
+`specrag corpus sync --official` command; the default command still scans local
+Markdown. Supported provider Releases are configured as 17, 18, and 19.
+
+Semantic vectors use one append-only cache per embedding/chunk configuration.
+Each ingestion adds only missing chunk IDs; historical vectors remain available
+for pinned Runs. Dense queries always filter this shared cache by the exact
+document hashes in the Run scope, so retaining old versions cannot leak them
+into a newer snapshot and changing one active version does not re-embed every
+unchanged document.
+
+New Research Runs freeze the exact per-specification versions selected at
+start. Once the active registry completely covers a Release, it is the source
+of that snapshot; until then the existing highest-local-version behavior is
+used. Resume reconstructs retrieval from the stored exact binding, so an active
+pointer change cannot mix versions inside a Run. The Run wire contract is now
+`research-run/v1.1`, while persisted `research-run/v1` payloads remain readable.
+
 The multi-user local workspace milestone is implemented. The former
 `ValidatedKnowledge` and `ValidatedMemoryService` implementation has been
 mechanically migrated to `SpecFact` under `models/specfacts.py` and
@@ -71,7 +104,8 @@ checks, cross-workspace denial, typed and immutable memory revisions, exact
 memory snapshots, configuration precedence, SpecFact
 proposal/review/conflict/supersession/invalidation,
 idempotent Run events, cancellation, elapsed deadlines, interrupted-process
-resume, and SQLite checkpoint restart. The complete suite passes 127 tests at
+resume, SQLite checkpoint restart, specification synchronization, and exact
+Run corpus pinning. The complete suite passes 138 tests at
 this point. The historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.

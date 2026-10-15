@@ -52,6 +52,7 @@ from specrag.retrieval.corpus import (
     corpus_scope_from_config,
     discover_source_documents,
 )
+from specrag.retrieval.models import CorpusScope
 from specrag.tools import (
     build_retrieval_tool_registry,
     retrieval_tool_definitions,
@@ -364,6 +365,7 @@ def build_research_application(
     stop_requested: Callable[[str], str | None] | None = None,
     event_sink: object | None = None,
     research_context: tuple[dict[str, object], ...] = (),
+    corpus_scope: CorpusScope | None = None,
 ) -> ResearchApplication:
     """Wire existing retrieval, agent, evidence, and graph components."""
 
@@ -376,7 +378,10 @@ def build_research_application(
     })
     app_config = app_config.model_copy(update={"retrieval": retrieval_config})
 
-    retriever = HybridMarkdownRetriever(app_config.retrieval)
+    retriever = HybridMarkdownRetriever(
+        app_config.retrieval,
+        corpus_scope=corpus_scope,
+    )
     tool_registry = build_retrieval_tool_registry(retriever)
     planning_agent = LLMApiStructuredAgent(
         role="planning",

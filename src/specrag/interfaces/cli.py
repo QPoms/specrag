@@ -11,14 +11,17 @@ import sys
 from typing import Any
 
 from specrag.access import AuthorizationError
-from specrag.config import load_config
+from specrag.config import REPO_ROOT, load_config
 from specrag.infrastructure import (
     StructuredMemoryConsolidator,
     StructuredMemoryExtractor,
+    ThreeGppArchiveProvider,
+    ThreeGppSourceMaterializer,
 )
 from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
 from specrag.memory import resolve_user_configuration
 from specrag.models import MemoryExtractionSource, ResearchBudget, ResearchRequest
+from specrag.retrieval.corpus import discover_all_source_documents
 
 from . import diagnostics
 from .workspace_services import WorkspaceServices
@@ -199,6 +202,25 @@ def _parser() -> argparse.ArgumentParser:
     maintenance_restore = maintenance_commands.add_parser("restore")
     _workspace(maintenance_restore)
     maintenance_restore.add_argument("memory_ids", nargs="+")
+
+    corpus = commands.add_parser(
+        "corpus", help="inspect or explicitly synchronize specification versions"
+    )
+    corpus_commands = corpus.add_subparsers(dest="corpus_command", required=True)
+    corpus_status = corpus_commands.add_parser("status")
+    corpus_status.add_argument("--release", type=int)
+    corpus_sync = corpus_commands.add_parser("sync")
+    corpus_sync.add_argument("--release", type=int)
+    corpus_sync.add_argument(
+        "--apply",
+        action="store_true",
+        help="build and activate candidates; without this flag the command is a dry run",
+    )
+    corpus_sync.add_argument(
+        "--official",
+        action="store_true",
+        help="discover current versions from the official 3GPP archive",
+    )
     return parser
 
 
@@ -431,6 +453,68 @@ def _dispatch(args: argparse.Namespace, services: WorkspaceServices) -> int:
         return _dispatch_research(args, services)
     if args.command == "memory":
         return _dispatch_memory(args, services)
+    if args.command == "corpus":
+        if args.corpus_command == "status":
+            _json({
+                "versions": [
+                    item.model_dump(mode="json")
+                    for item in services.corpus_store.list_versions(args.release)
+                ],
+                "active": [
+                    item.model_dump(mode="json")
+                    for release in (
+                        (args.release,) if args.release is not None else
+                        tuple(sorted({
+                            item.release
+                            for item in services.corpus_store.list_versions()
+                        }))
+                    )
+                    for item in services.corpus_store.active_versions(release)
+                ],
+                "automatic_scheduler": "disabled",
+                "physical_retirement": "disabled",
+            })
+            return 0
+        app_config = load_config()
+        cfg = app_config.retrieval
+        supported = (
+            {args.release}
+            if args.release is not None
+            else set(app_config.corpus_sync.supported_releases)
+        )
+        if args.official:
+            provider = ThreeGppArchiveProvider(
+                source_root_relative=cfg.specification_root,
+            )
+            materializer = ThreeGppSourceMaterializer(repository_root=REPO_ROOT)
+            results = services.corpus_sync.synchronize_from_provider(
+                provider,
+                materializer,
+                releases=tuple(sorted(supported)),
+                apply=args.apply,
+            )
+        else:
+            documents = tuple(
+                document
+                for document in discover_all_source_documents(cfg)
+                if document.release in supported
+            )
+            if not documents:
+                raise ValueError(
+                    "no local specification documents match the requested Releases"
+                )
+            results = services.corpus_sync.synchronize(
+                documents,
+                apply=args.apply,
+            )
+        _json({
+            "mode": "apply" if args.apply else "dry_run",
+            "source": "official_3gpp_archive" if args.official else "local_markdown",
+            "automatic_scheduler": "disabled",
+            "old_versions_deleted": False,
+            "items": [item.model_dump(mode="json") for item in results],
+        })
+        return 0
     context = _context(services, args.workspace)
     if args.command == "specfact":
         _json(services.specfacts.review(

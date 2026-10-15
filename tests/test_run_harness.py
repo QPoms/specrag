@@ -7,7 +7,7 @@ import pytest
 
 from specrag.access import AuthorizationError
 from specrag.infrastructure import InMemoryRunStore
-from specrag.models import ActorContext, ResearchRequest
+from specrag.models import ActorContext, CorpusVersionRef, ResearchRequest
 from specrag.orchestration import RunHarness
 
 
@@ -123,6 +123,27 @@ def test_run_events_and_snapshot_ids_are_stable() -> None:
     )
     assert [event.event_type for event in result.events] == ["run_started", "run_stopped"]
     assert len({event.operation_key for event in result.events}) == 2
+
+
+def test_run_freezes_exact_corpus_versions_at_start() -> None:
+    store = InMemoryRunStore()
+    snapshots = [(
+        CorpusVersionRef(specification="24.501", version="17.17.0"),
+        CorpusVersionRef(specification="33.501", version="17.12.0"),
+    )]
+    harness = RunHarness(store, _factory, corpus_snapshot=lambda _release: snapshots[0])
+
+    result = harness.start(_context(), ResearchRequest(question="question"))
+    snapshots[0] = (
+        CorpusVersionRef(specification="24.501", version="17.18.0"),
+        CorpusVersionRef(specification="33.501", version="17.12.0"),
+    )
+
+    persisted = harness.inspect(_context(), result.run.run_id).run
+    assert persisted.corpus_version_policy == "mixed_versions"
+    assert [item.version for item in persisted.corpus_versions] == [
+        "17.17.0", "17.12.0"
+    ]
 
 
 def test_elapsed_deadline_stops_resume() -> None:

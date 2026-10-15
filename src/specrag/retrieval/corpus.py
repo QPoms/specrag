@@ -155,6 +155,57 @@ def discover_source_documents(
     return tuple(documents)
 
 
+def discover_all_source_documents(
+    cfg: RetrievalCfg,
+    *,
+    release: int | None = None,
+) -> tuple[SourceDocument, ...]:
+    """Discover every locally retained version without selecting an active one.
+
+    This is intentionally separate from :func:`discover_source_documents`:
+    retrieval scopes select one immutable snapshot, while synchronization must
+    see historical and newly added versions together.
+    """
+
+    documents: list[SourceDocument] = []
+    spec_root = repository_path(cfg.specification_root, "specification root")
+    if not spec_root.is_dir():
+        raise FileNotFoundError(f"3GPP Markdown corpus not found: {spec_root}")
+    for spec_dir in sorted(path for path in spec_root.iterdir() if path.is_dir()):
+        if _SPECIFICATION.fullmatch(spec_dir.name) is None:
+            continue
+        version_dirs = sorted(
+            (
+                path for path in spec_dir.iterdir()
+                if path.is_dir() and _VERSION.fullmatch(path.name) is not None
+            ),
+            key=_version_key,
+        )
+        for version_dir in version_dirs:
+            if release is not None and _version_key(version_dir)[0] != release:
+                continue
+            markdown = sorted(version_dir.glob("*.md"))
+            if len(markdown) > 1:
+                raise ValueError(
+                    f"expected at most one Markdown file in {version_dir}, "
+                    f"found {len(markdown)}"
+                )
+            if not markdown:
+                continue
+            source = markdown[0]
+            documents.append(SourceDocument(
+                source_collection="3gpp_markdown",
+                specification=spec_dir.name,
+                version=version_dir.name[1:],
+                source_path=relative_repository_path(source),
+                document_sha256=hashlib.sha256(source.read_bytes()).hexdigest().upper(),
+            ))
+    if not documents:
+        detail = f" for Release {release}" if release is not None else ""
+        raise ValueError("the 3GPP Markdown source snapshot is empty" + detail)
+    return tuple(documents)
+
+
 def _sections(lines: tuple[str, ...], *, skip_preamble: bool) -> tuple[_Section, ...]:
     starts = [index for index, line in enumerate(lines) if _HEADING.match(line)]
     if not starts:
@@ -304,6 +355,7 @@ def evidence_body_text(text: str) -> str:
 __all__ = [
     "chunk_source_documents",
     "corpus_scope_from_config",
+    "discover_all_source_documents",
     "discover_source_documents",
     "evidence_body_text",
     "relative_repository_path",

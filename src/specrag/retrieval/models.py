@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from specrag.models import CorpusSourceDocument
+
 
 CorpusVersionPolicy = Literal[
     "latest_per_spec",
@@ -77,23 +79,7 @@ class CorpusScope(_StrictModel):
         return self
 
 
-class SourceDocument(_StrictModel):
-    source_collection: Literal["3gpp_markdown"]
-    specification: str | None = Field(default=None, pattern=r"^\d{2}\.\d{3}$")
-    version: str | None = Field(default=None, pattern=r"^\d+\.\d+\.\d+$")
-    release: int | None = Field(default=None, ge=1)
-    source_path: str
-    document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
-
-    @model_validator(mode="after")
-    def _coherent_source_identity(self):
-        if self.specification is None or self.version is None:
-            raise ValueError("3GPP source requires specification and version")
-        expected = release_from_version(self.version)
-        if self.release is not None and self.release != expected:
-            raise ValueError("source Release does not match its exact version")
-        object.__setattr__(self, "release", expected)
-        return self
+SourceDocument = CorpusSourceDocument
 
 
 class MarkdownChunk(_StrictModel):

@@ -7,6 +7,8 @@ from .research_assessors import (
 from .memory_agents import StructuredMemoryConsolidator, StructuredMemoryExtractor
 from .domain_stores import InMemoryMemoryStore, InMemoryRunStore, InMemorySpecFactStore
 from .database import DEFAULT_DATABASE_PATH, SQLiteDatabase
+from .corpus_store import SQLiteCorpusStore
+from .threegpp import ThreeGppArchiveProvider, ThreeGppSourceMaterializer
 from .identity_store import SQLiteIdentityStore
 from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
 from .research_planning import (
@@ -27,6 +29,9 @@ __all__ = [
     "InMemoryMemoryStore",
     "DEFAULT_DATABASE_PATH",
     "SQLiteDatabase",
+    "SQLiteCorpusStore",
+    "ThreeGppArchiveProvider",
+    "ThreeGppSourceMaterializer",
     "SQLiteIdentityStore",
     "SQLiteRunStore",
     "SQLiteSpecFactStore",

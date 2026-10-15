@@ -26,6 +26,7 @@ def open_chroma_collection(
     *,
     embedding_model: str,
     document_text: Callable[[Any], str],
+    retain_extra: bool = False,
 ):
     """Open a local collection and add missing immutable source chunks."""
 
@@ -46,7 +47,7 @@ def open_chroma_collection(
     )
     expected_ids = {item.chunk_id for item in chunks}
     existing_ids = set(collection.get(include=[]).get("ids", []))
-    if not existing_ids.issubset(expected_ids):
+    if not retain_extra and not existing_ids.issubset(expected_ids):
         client.delete_collection(name)
         collection = client.create_collection(
             name,

@@ -13,18 +13,31 @@ def dense_search(
     text: str,
     source_collection: str,
     allowed_specifications: tuple[str, ...] = (),
+    allowed_document_hashes: tuple[str, ...] = (),
 ) -> list[tuple[str, float]]:
     where_clauses: tuple[dict[str, Any], ...]
+    document_filter = (
+        [{"document_sha256": {"$in": list(allowed_document_hashes)}}]
+        if allowed_document_hashes else []
+    )
     if source_collection == "3gpp_markdown" and allowed_specifications:
         where_clauses = tuple(
             {
                 "$and": [
                     {"source_collection": source_collection},
                     {"specification": specification},
+                    *document_filter,
                 ]
             }
             for specification in allowed_specifications
         )
+    elif document_filter:
+        where_clauses = ({
+            "$and": [
+                {"source_collection": source_collection},
+                *document_filter,
+            ]
+        },)
     else:
         where_clauses = ({"source_collection": source_collection},)
 

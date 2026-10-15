@@ -20,7 +20,13 @@ from .corpus import (
     repository_path,
 )
 from .fusion import reciprocal_rank_fusion
-from .index import index_fingerprint, load_chunks, searchable_text, write_snapshot
+from .index import (
+    index_fingerprint,
+    load_chunks,
+    searchable_text,
+    vector_cache_fingerprint,
+    write_snapshot,
+)
 from .lexical import BM25Index
 from .models import (
     CorpusVersionPolicy,
@@ -89,14 +95,18 @@ class HybridMarkdownRetriever:
             write_snapshot(snapshot, self.chunks, manifest)
         self.chunk_by_id = {item.chunk_id: item for item in self.chunks}
         self.bm25 = BM25Index(self.chunks)
+        self.active_document_hashes = tuple(sorted({
+            document.document_sha256 for document in self.documents
+        }))
         self.collection = None
         self.vector_error: str | None = None
         try:
             self.collection = open_chroma_collection(
-                snapshot,
+                index_root / "vector-cache" / vector_cache_fingerprint(cfg),
                 self.chunks,
                 embedding_model=cfg.embedding_model,
                 document_text=searchable_text,
+                retain_extra=True,
             )
         except Exception as exc:
             self.vector_error = f"{type(exc).__name__}: {exc}"
@@ -115,6 +125,7 @@ class HybridMarkdownRetriever:
             text,
             source_collection,
             allowed_specifications,
+            getattr(self, "active_document_hashes", ()),
         )
 
     def _collection_hits(

@@ -34,6 +34,19 @@ def index_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest().upper()
 
 
+def vector_cache_fingerprint(cfg: RetrievalCfg) -> str:
+    """Identify a reusable append-only vector cache across corpus snapshots."""
+
+    payload = {
+        "schema": "specification-vector-cache/v1",
+        "embedding_model": cfg.embedding_model,
+        "chunk_characters": cfg.chunk_characters,
+        "chunk_overlap_characters": cfg.chunk_overlap_characters,
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest().upper()
+
+
 def write_snapshot(
     directory: Path,
     chunks: tuple[MarkdownChunk, ...],
@@ -72,4 +85,5 @@ __all__ = [
     "load_chunks",
     "searchable_text",
     "write_snapshot",
+    "vector_cache_fingerprint",
 ]

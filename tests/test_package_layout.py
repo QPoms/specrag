@@ -13,6 +13,8 @@ def test_retrieval_configuration_is_domain_neutral() -> None:
 
     assert config.retrieval.index_dir == ".local/indexes/specifications"
     assert config.retrieval.specification_root == "data/3gpp"
+    assert config.corpus_sync.supported_releases == (17, 18, 19)
+    assert config.corpus_sync.automatic_sync_enabled is False
     assert not hasattr(config.retrieval, "threat_model_path")
     assert not hasattr(config, "capability_retrieval")
 

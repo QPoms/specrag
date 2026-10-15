@@ -11,6 +11,7 @@ from uuid import uuid4
 from specrag.access import AccessPolicy
 from specrag.models import (
     ActorContext,
+    CorpusVersionRef,
     ResearchRequest,
     ResearchRun,
     RunEvent,
@@ -37,6 +38,8 @@ ContextSnapshot = Callable[
 ]
 ContextLoader = Callable[[ActorContext, ResearchRun], tuple[dict[str, object], ...]]
 ProposalWriter = Callable[[ActorContext, ResearchRun, ResearchState], tuple[str, ...]]
+CorpusSnapshot = Callable[[int], tuple[CorpusVersionRef, ...]]
+CorpusBindingWriter = Callable[[ResearchRun], None]
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,8 @@ class RunHarness:
         context_snapshot: ContextSnapshot | None = None,
         context_loader: ContextLoader | None = None,
         proposal_writer: ProposalWriter | None = None,
+        corpus_snapshot: CorpusSnapshot | None = None,
+        corpus_binding_writer: CorpusBindingWriter | None = None,
     ) -> None:
         self.store = store
         self.application_factory = application_factory
@@ -66,6 +71,8 @@ class RunHarness:
         self.context_snapshot = context_snapshot
         self.context_loader = context_loader
         self.proposal_writer = proposal_writer
+        self.corpus_snapshot = corpus_snapshot
+        self.corpus_binding_writer = corpus_binding_writer
 
     def start(self, context: ActorContext, request: ResearchRequest) -> RunInspection:
         self.policy.require(context, "research.create", workspace_id=context.workspace_id)
@@ -84,6 +91,19 @@ class RunHarness:
             created_at=now,
             deadline_at=now + timedelta(seconds=request.elapsed_time_seconds),
         )
+        if self.corpus_snapshot is not None:
+            versions = self.corpus_snapshot(request.release)
+            if not versions:
+                raise ValueError(
+                    f"no active specification versions for Release {request.release}"
+                )
+            run = run.model_copy(update={
+                "corpus_version_policy": (
+                    "exact_version" if len(versions) == 1 else "mixed_versions"
+                ),
+                "corpus_release": None,
+                "corpus_versions": versions,
+            })
         if self.context_snapshot is not None:
             facts, memories, _ = self.context_snapshot(
                 context, request.question, request.release
@@ -93,7 +113,15 @@ class RunHarness:
                 "memory_ids": tuple(sorted(set((*run.memory_ids, *memories)))),
             })
         self.store.put(run)
-        self._event(run, "run_started", "run:start", payload={"release": run.release})
+        if self.corpus_binding_writer is not None:
+            self.corpus_binding_writer(run)
+        self._event(run, "run_started", "run:start", payload={
+            "release": run.release,
+            "corpus_version_policy": run.corpus_version_policy,
+            "corpus_versions": [
+                item.model_dump(mode="json") for item in run.corpus_versions
+            ],
+        })
         return self._execute(context, run, request=request, resume=False)
 
     def resume(self, context: ActorContext, run_id: str) -> RunInspection:
@@ -221,6 +249,10 @@ class RunHarness:
             "release": run.release,
             "answer_language": run.answer_language,
             "detail_level": run.detail_level,
+            "corpus_version_policy": run.corpus_version_policy,
+            "corpus_versions": [
+                item.model_dump(mode="json") for item in run.corpus_versions
+            ],
         })
         return self.application_factory(
             run.release, self._stop_requested, self._node_event(run), research_context

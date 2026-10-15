@@ -138,6 +138,32 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
             payload_json TEXT NOT NULL
         );
     """),
+    (4, """
+        CREATE TABLE corpus_versions (
+            version_id TEXT PRIMARY KEY,
+            release INTEGER NOT NULL,
+            specification TEXT NOT NULL,
+            version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            UNIQUE(release, specification, version)
+        );
+        CREATE INDEX corpus_versions_release_status
+            ON corpus_versions(release, status, specification);
+        CREATE TABLE active_corpus_versions (
+            release INTEGER NOT NULL,
+            specification TEXT NOT NULL,
+            version_id TEXT NOT NULL REFERENCES corpus_versions(version_id),
+            PRIMARY KEY(release, specification)
+        );
+        CREATE TABLE run_corpus_bindings (
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            version_id TEXT NOT NULL REFERENCES corpus_versions(version_id),
+            PRIMARY KEY(run_id, version_id)
+        );
+        CREATE INDEX run_corpus_versions
+            ON run_corpus_bindings(version_id, run_id);
+    """),
 )
 
 
