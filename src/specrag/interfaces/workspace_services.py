@@ -13,9 +13,15 @@ from specrag.infrastructure import (
     SQLiteIdentityStore,
     SQLiteRunStore,
     SQLiteSpecFactStore,
-    SQLiteUserMemoryStore,
+    SQLiteMemoryStore,
 )
-from specrag.memory import UserMemoryService
+from specrag.memory import (
+    MemoryExtractionService,
+    MemoryMaintenanceService,
+    MemoryProposalService,
+    MemoryRecallService,
+    MemoryService,
+)
 from specrag.models import ActorContext, ResearchRun
 from specrag.orchestration import RunHarness, SQLiteCheckpointManager
 from specrag.orchestration.application import build_research_application
@@ -27,7 +33,11 @@ class WorkspaceServices:
     database: SQLiteDatabase
     checkpoint: SQLiteCheckpointManager
     identity: LocalIdentityService
-    memory: UserMemoryService
+    memory: MemoryService
+    memory_proposals: MemoryProposalService
+    memory_recall: MemoryRecallService
+    memory_extraction: MemoryExtractionService
+    memory_maintenance: MemoryMaintenanceService
     specfacts: SpecFactService
     runs: SQLiteRunStore
     harness: RunHarness
@@ -37,7 +47,11 @@ class WorkspaceServices:
         database = SQLiteDatabase()
         checkpoint = SQLiteCheckpointManager(database.path)
         identity = LocalIdentityService(SQLiteIdentityStore(database))
-        memory = UserMemoryService(SQLiteUserMemoryStore(database))
+        memory = MemoryService(SQLiteMemoryStore(database))
+        memory_proposals = MemoryProposalService(memory)
+        memory_recall = MemoryRecallService(memory)
+        memory_extraction = MemoryExtractionService(memory, memory_proposals)
+        memory_maintenance = MemoryMaintenanceService(memory, memory_proposals)
         specfacts = SpecFactService(SQLiteSpecFactStore(database))
         runs = SQLiteRunStore(database)
         def snapshot(
@@ -60,7 +74,7 @@ class WorkspaceServices:
             facts = specfacts.search(
                 context, question, release=release, source_is_valid=source_is_valid
             )
-            memories = memory.research_context(context)
+            recalled = memory_recall.recall(context, question)
             fact_context = tuple({
                 "kind": "approved_specfact_hint",
                 "fact_id": item.fact.fact_id,
@@ -68,10 +82,10 @@ class WorkspaceServices:
                 "source_paths": [source.source_path for source in item.fact.sources],
                 "instruction": "Use only as a retrieval hint; re-open and validate source text.",
             } for item in facts)
-            memory_context = memory.as_research_context(memories)
+            memory_context = memory.as_research_context(recalled.entries)
             return (
                 tuple(item.fact.fact_id for item in facts),
-                tuple(item.memory_id for item in memories),
+                tuple(item.memory_id for item in recalled.entries),
                 (*fact_context, *memory_context),
             )
 
@@ -127,7 +141,19 @@ class WorkspaceServices:
             context_loader=load_snapshot,
             proposal_writer=propose,
         )
-        return cls(database, checkpoint, identity, memory, specfacts, runs, harness)
+        return cls(
+            database,
+            checkpoint,
+            identity,
+            memory,
+            memory_proposals,
+            memory_recall,
+            memory_extraction,
+            memory_maintenance,
+            specfacts,
+            runs,
+            harness,
+        )
 
     def close(self) -> None:
         self.checkpoint.close()

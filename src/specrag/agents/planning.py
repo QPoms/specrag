@@ -55,9 +55,22 @@ def _trusted_call_context(
     ledger: EvidenceLedger,
     available_specifications: frozenset[str],
 ) -> frozenset[str]:
+    unresolved_gaps = shared_context.get("unresolved_gaps", ())
+    grounded_gap_anchors = tuple(
+        anchor
+        for gap in (
+            unresolved_gaps
+            if isinstance(unresolved_gaps, Sequence)
+            else ()
+        )
+        if isinstance(gap, Mapping)
+        for anchor in gap.get("trusted_anchors", ())
+        if isinstance(anchor, str)
+    )
     texts = [
         *_text_values(task.model_dump(mode="json")),
-        *_text_values(shared_context),
+        *_text_values(shared_context.get("dependency_context", ())),
+        *grounded_gap_anchors,
     ]
     observed_specifications: set[str] = set()
     for hit in ledger.hits(task.task_id):
@@ -331,6 +344,12 @@ def propose_researcher_turn(
     response = controller_agent.decide(
         input_payload=payload,
         tools=exposed_tools,
+        prompt_variant=(
+            "evidence_gap"
+            if dict(shared_context or {}).get("gap_retrieval_mode")
+            == "evidence_gap"
+            else "initial"
+        ),
         prior_response_items=prior_response_items,
         prior_outputs=prior_outputs,
         max_tool_calls=(

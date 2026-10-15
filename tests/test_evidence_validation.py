@@ -160,7 +160,7 @@ class _SufficiencyAssessor:
     def __init__(self, assessment: TaskSufficiencyAssessment) -> None:
         self.assessment = assessment
 
-    def assess(self, task, evidence):
+    def assess(self, task, evidence, original_question=None):
         return self.assessment
 
 
@@ -186,6 +186,12 @@ def test_supported_item_can_still_leave_task_level_missing_relation() -> None:
         status="partial",
         supporting_evidence_ids=("E1",),
         missing_relation="The trigger-to-procedure relation is not explicit.",
+        required_proposition=(
+            "The source directly links the trigger to registration."
+        ),
+        missing_dimensions=("condition", "action"),
+        evidence_need="relationship",
+        trusted_anchors=("registration", "99.999"),
         rationale="One fact is supported but the requested relation is absent.",
     )
     service = EvidenceSufficiencyService(_SufficiencyAssessor(assessment))
@@ -200,6 +206,11 @@ def test_supported_item_can_still_leave_task_level_missing_relation() -> None:
     assert batch.tasks[0].status == "running"
     assert batch.gaps[0].kind == "missing_relation"
     assert batch.gaps[0].description == assessment.missing_relation
+    assert batch.gaps[0].required_proposition == assessment.required_proposition
+    assert batch.gaps[0].missing_dimensions == ("condition", "action")
+    assert batch.gaps[0].evidence_need == "relationship"
+    assert batch.gaps[0].trusted_anchors == ("registration",)
+    assert batch.gaps[0].supporting_evidence_ids == ("E1",)
     assert batch.validated_evidence[0].validation_status == "partial"
 
 
@@ -235,7 +246,7 @@ def test_source_invalid_candidate_never_reaches_sufficiency_assessor() -> None:
     class RecordingAssessor:
         evidence = None
 
-        def assess(self, task, evidence):
+        def assess(self, task, evidence, original_question=None):
             self.evidence = evidence
             return assessment
 

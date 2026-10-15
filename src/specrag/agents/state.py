@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Literal
 
+from specrag.models import CandidateEvidence
 from specrag.retrieval.planner import PlannedRetrievalHit
 
 
@@ -44,6 +45,91 @@ class EvidenceLedger:
             for query_id, hits in self._candidates.items()
             if hits
         )
+
+    def seed(
+        self,
+        query_id: str,
+        hits: tuple[PlannedRetrievalHit, ...],
+        *,
+        active_evidence_ids: Sequence[str] = (),
+    ) -> None:
+        """Restore source-valid candidates for a corrective Researcher run."""
+
+        if self._candidates[query_id]:
+            raise ValueError("evidence ledger can only be seeded once")
+        identifiers = tuple(hit.hit_id for hit in hits)
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("seed evidence IDs must be unique")
+        chunk_ids = tuple(hit.chunk_id for hit in hits)
+        if len(chunk_ids) != len(set(chunk_ids)):
+            raise ValueError("seed evidence chunk IDs must be unique")
+        active = tuple(active_evidence_ids)
+        if len(active) > self._max_per_question:
+            raise ValueError("seed active evidence exceeds its limit")
+        if len(active) != len(set(active)):
+            raise ValueError("seed active evidence contains duplicate IDs")
+        unknown = sorted(set(active) - set(identifiers))
+        if unknown:
+            raise ValueError(
+                "seed active evidence contains unknown IDs: "
+                + ", ".join(unknown)
+            )
+        self._candidates[query_id] = list(hits)
+        self._indexes[query_id] = {
+            hit.chunk_id: index for index, hit in enumerate(hits)
+        }
+        self._active_ids[query_id] = list(active)
+        self._pending_ids[query_id] = []
+        while f"E-{query_id}:{self._next[query_id]}" in identifiers:
+            self._next[query_id] += 1
+
+    def seed_candidates(
+        self,
+        candidates: Sequence[CandidateEvidence],
+        *,
+        active_evidence_ids: Sequence[str] = (),
+    ) -> None:
+        """Seed all task ledgers from persisted source-valid candidates."""
+
+        unknown_tasks = sorted(
+            {candidate.task_id for candidate in candidates}
+            - set(self._candidates)
+        )
+        if unknown_tasks:
+            raise ValueError(
+                "seed evidence references unknown tasks: "
+                + ", ".join(unknown_tasks)
+            )
+        active = set(active_evidence_ids)
+        known = {candidate.evidence_id for candidate in candidates}
+        unknown = sorted(active - known)
+        if unknown:
+            raise ValueError(
+                "seed active evidence contains unknown IDs: "
+                + ", ".join(unknown)
+            )
+        for query_id in self._candidates:
+            task_candidates = tuple(
+                candidate
+                for candidate in candidates
+                if candidate.task_id == query_id
+            )
+            if task_candidates:
+                self.seed(
+                    query_id,
+                    tuple(
+                        planned_hit_from_candidate(candidate, index=index)
+                        for index, candidate in enumerate(
+                            task_candidates,
+                            start=1,
+                        )
+                    ),
+                    active_evidence_ids=tuple(
+                        candidate.evidence_id
+                        for candidate in task_candidates
+                        if candidate.evidence_id in active
+                    ),
+                )
 
     def candidate_hits(
         self,
@@ -251,4 +337,37 @@ class EvidenceLedger:
         }
 
 
-__all__ = ["EvidenceLedger"]
+def planned_hit_from_candidate(
+    candidate: CandidateEvidence,
+    *,
+    index: int,
+) -> PlannedRetrievalHit:
+    """Restore a persisted candidate as a navigable Researcher hit."""
+
+    return PlannedRetrievalHit(
+        hit_id=candidate.evidence_id,
+        chunk_id=candidate.chunk_id,
+        collection_rank=index,
+        specification=candidate.specification,
+        version=candidate.version,
+        release=candidate.release,
+        source_path=candidate.source_path,
+        document_sha256=candidate.document_sha256,
+        heading_path=candidate.heading_path,
+        line_start=candidate.line_start,
+        line_end=candidate.line_end,
+        excerpt=candidate.excerpt,
+        evidence_roles=("corrective_candidate",),
+        probe_ids=("judge_gap",),
+        retrieval_sources=("corrective_context",),
+        rrf_score=0.0,
+        route_score=0.0,
+        anchor_score=0.0,
+        heading_score=0.0,
+        agreement_score=0.0,
+        noise_penalty=0.0,
+        final_score=0.0,
+    )
+
+
+__all__ = ["EvidenceLedger", "planned_hit_from_candidate"]

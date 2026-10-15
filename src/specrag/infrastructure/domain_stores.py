@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from specrag.models import ResearchRun, RunEvent, SpecFact, SpecFactProposal, UserMemoryItem
+from specrag.models import (
+    MemoryEntry,
+    MemoryMaintenanceState,
+    MemoryProposal,
+    MemoryTopic,
+    ResearchRun,
+    RunEvent,
+    SpecFact,
+    SpecFactProposal,
+)
 
 
 class InMemoryRunStore:
@@ -53,15 +62,36 @@ class InMemorySpecFactStore:
         self._facts[fact.fact_id] = fact
 
 
-class InMemoryUserMemoryStore:
+class InMemoryMemoryStore:
     def __init__(self) -> None:
-        self._records: dict[str, UserMemoryItem] = {}
+        self._entries: dict[str, MemoryEntry] = {}
+        self._topics: dict[str, MemoryTopic] = {}
+        self._proposals: dict[str, MemoryProposal] = {}
+        self._maintenance: dict[str, MemoryMaintenanceState] = {}
 
-    def all(self) -> tuple[UserMemoryItem, ...]:
-        return tuple(self._records[key] for key in sorted(self._records))
+    def all_entries(self) -> tuple[MemoryEntry, ...]:
+        return tuple(self._entries[key] for key in sorted(self._entries))
 
-    def put(self, item: UserMemoryItem) -> None:
-        self._records[item.memory_id] = item
+    def put_entry(self, item: MemoryEntry) -> None:
+        self._entries[item.memory_id] = item
+
+    def all_topics(self) -> tuple[MemoryTopic, ...]:
+        return tuple(self._topics[key] for key in sorted(self._topics))
+
+    def put_topic(self, topic: MemoryTopic) -> None:
+        self._topics[topic.topic_id] = topic
+
+    def all_proposals(self) -> tuple[MemoryProposal, ...]:
+        return tuple(self._proposals[key] for key in sorted(self._proposals))
+
+    def put_proposal(self, proposal: MemoryProposal) -> None:
+        self._proposals[proposal.proposal_id] = proposal
+
+    def get_maintenance(self, maintenance_id: str) -> MemoryMaintenanceState | None:
+        return self._maintenance.get(maintenance_id)
+
+    def put_maintenance(self, state: MemoryMaintenanceState) -> None:
+        self._maintenance[state.maintenance_id] = state
 
 
-__all__ = ["InMemoryRunStore", "InMemorySpecFactStore", "InMemoryUserMemoryStore"]
+__all__ = ["InMemoryMemoryStore", "InMemoryRunStore", "InMemorySpecFactStore"]

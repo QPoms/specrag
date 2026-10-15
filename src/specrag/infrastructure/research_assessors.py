@@ -28,12 +28,14 @@ class StructuredTaskSufficiencyAssessor:
         self,
         task: ResearchTask,
         evidence: tuple[CandidateEvidence, ...],
+        original_question: str | None = None,
     ) -> TaskSufficiencyAssessment:
         response = self.agent.parse(
             purpose="select supporting evidence and judge task sufficiency",
             prompt_version=SUFFICIENCY_PROMPT_VERSION,
             instructions=SUFFICIENCY_INSTRUCTIONS,
             input_payload={
+                "original_question": original_question,
                 "task": {
                     "task_id": task.task_id,
                     "question": task.question,

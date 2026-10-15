@@ -12,7 +12,11 @@ Permission = Literal[
     "run.read",
     "run.cancel",
     "run.resume",
-    "memory.manage",
+    "memory.user.manage",
+    "memory.project.read",
+    "memory.project.propose",
+    "memory.project.manage",
+    "memory.project.review",
     "specfact.read",
     "specfact.propose",
     "specfact.review",
@@ -31,7 +35,9 @@ class AccessPolicy:
             "run.read",
             "run.cancel",
             "run.resume",
-            "memory.manage",
+            "memory.user.manage",
+            "memory.project.read",
+            "memory.project.propose",
             "specfact.read",
             "specfact.propose",
         }),
@@ -40,7 +46,11 @@ class AccessPolicy:
             "run.read",
             "run.cancel",
             "run.resume",
-            "memory.manage",
+            "memory.user.manage",
+            "memory.project.read",
+            "memory.project.propose",
+            "memory.project.manage",
+            "memory.project.review",
             "specfact.read",
             "specfact.propose",
             "specfact.review",
@@ -50,7 +60,11 @@ class AccessPolicy:
             "run.read",
             "run.cancel",
             "run.resume",
-            "memory.manage",
+            "memory.user.manage",
+            "memory.project.read",
+            "memory.project.propose",
+            "memory.project.manage",
+            "memory.project.review",
             "specfact.read",
             "specfact.propose",
             "specfact.review",
@@ -70,7 +84,7 @@ class AccessPolicy:
             raise AuthorizationError("access denied")
         if permission not in self._ROLE_PERMISSIONS.get(context.role, frozenset()):
             raise AuthorizationError("access denied")
-        if permission == "memory.manage" and owner_user_id is not None:
+        if permission == "memory.user.manage" and owner_user_id is not None:
             if context.user_id != owner_user_id:
                 raise AuthorizationError("access denied")
         run_owner_scoped = permission in {"run.read", "run.cancel", "run.resume"}

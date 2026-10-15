@@ -12,8 +12,13 @@ from typing import Any
 
 from specrag.access import AuthorizationError
 from specrag.config import load_config
+from specrag.infrastructure import (
+    StructuredMemoryConsolidator,
+    StructuredMemoryExtractor,
+)
+from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
 from specrag.memory import resolve_user_configuration
-from specrag.models import ResearchBudget, ResearchRequest
+from specrag.models import MemoryExtractionSource, ResearchBudget, ResearchRequest
 
 from . import diagnostics
 from .workspace_services import WorkspaceServices
@@ -112,21 +117,88 @@ def _parser() -> argparse.ArgumentParser:
     decision.add_argument("--reject", action="store_true")
     review.add_argument("--reason")
 
-    memory = commands.add_parser("memory", help="manage private User Memory")
+    memory = commands.add_parser("memory", help="manage Core and Topic Memory")
     memory_commands = memory.add_subparsers(dest="memory_command", required=True)
     set_command = memory_commands.add_parser("set")
     _workspace(set_command)
+    set_command.add_argument("--scope", choices=("user", "project"), default="user")
     set_command.add_argument("--kind", required=True, choices=(
         "default_release", "answer_language", "detail_level",
-        "followed_topic", "research_lead",
+        "preference", "research_habit", "followed_topic", "research_lead",
+        "project_decision", "evaluation_convention", "experiment_lesson",
     ))
     set_command.add_argument("--key", required=True)
     set_command.add_argument("--value", required=True)
     list_command = memory_commands.add_parser("list")
     _workspace(list_command)
+    list_command.add_argument("--scope", choices=("user", "project"), default="user")
     delete = memory_commands.add_parser("delete")
     _workspace(delete)
     delete.add_argument("memory_id")
+
+    topic = memory_commands.add_parser("topic")
+    topic_commands = topic.add_subparsers(dest="topic_command", required=True)
+    topic_create = topic_commands.add_parser("create")
+    _workspace(topic_create)
+    topic_create.add_argument("--slug", required=True)
+    topic_create.add_argument("--description", required=True)
+    topic_create.add_argument("--pinned", action="store_true")
+    topic_list = topic_commands.add_parser("list")
+    _workspace(topic_list)
+    topic_add = topic_commands.add_parser("add")
+    _workspace(topic_add)
+    topic_add.add_argument("topic_id")
+    topic_add.add_argument("--kind", required=True, choices=(
+        "project_decision", "evaluation_convention", "experiment_lesson",
+    ))
+    topic_add.add_argument("--key", required=True)
+    topic_add.add_argument("--content", required=True)
+    for name, pinned in (("pin", True), ("unpin", False)):
+        topic_pin = topic_commands.add_parser(name)
+        _workspace(topic_pin)
+        topic_pin.add_argument("topic_id")
+        topic_pin.set_defaults(topic_pinned=pinned)
+
+    proposal = memory_commands.add_parser("proposal")
+    proposal_commands = proposal.add_subparsers(dest="proposal_command", required=True)
+    proposal_list = proposal_commands.add_parser("list")
+    _workspace(proposal_list)
+    proposal_review = proposal_commands.add_parser("review")
+    _workspace(proposal_review)
+    proposal_review.add_argument("proposal_id")
+    proposal_decision = proposal_review.add_mutually_exclusive_group(required=True)
+    proposal_decision.add_argument("--approve", action="store_true")
+    proposal_decision.add_argument("--reject", action="store_true")
+    proposal_review.add_argument("--reason")
+
+    recall = memory_commands.add_parser("recall")
+    _workspace(recall)
+    recall.add_argument("--query", required=True)
+    extract = memory_commands.add_parser("extract")
+    _workspace(extract)
+    extract.add_argument("--source-ref", required=True)
+    extract.add_argument("--user-text", required=True)
+    extract.add_argument("--assistant-text", default="")
+
+    maintenance = memory_commands.add_parser("maintenance")
+    maintenance_commands = maintenance.add_subparsers(
+        dest="maintenance_command", required=True
+    )
+    maintenance_status = maintenance_commands.add_parser("status")
+    _workspace(maintenance_status)
+    maintenance_status.add_argument(
+        "--scope", choices=("user", "workspace"), required=True
+    )
+    maintenance_consolidate = maintenance_commands.add_parser("consolidate")
+    _workspace(maintenance_consolidate)
+    maintenance_consolidate.add_argument(
+        "--scope", choices=("user", "workspace"), required=True
+    )
+    maintenance_prune = maintenance_commands.add_parser("prune")
+    _workspace(maintenance_prune)
+    maintenance_restore = maintenance_commands.add_parser("restore")
+    _workspace(maintenance_restore)
+    maintenance_restore.add_argument("memory_ids", nargs="+")
     return parser
 
 
@@ -222,6 +294,134 @@ def _dispatch_research(args: argparse.Namespace, services: WorkspaceServices) ->
     return 0
 
 
+def _memory_agent() -> LLMApiStructuredAgent:
+    return LLMApiStructuredAgent(
+        role="summary", reasoning_effort="high", config=load_config()
+    )
+
+
+def _dispatch_memory(args: argparse.Namespace, services: WorkspaceServices) -> int:
+    context = _context(services, args.workspace)
+    if args.memory_command == "set":
+        if args.scope == "project":
+            result = services.memory.set_project_core(
+                context, kind=args.kind, key=args.key, content=args.value
+            )
+        else:
+            result = services.memory.set(
+                context, kind=args.kind, key=args.key, value=args.value
+            )
+        _json(result)
+    elif args.memory_command == "list":
+        records = (
+            services.memory.list_project_core(context)
+            if args.scope == "project"
+            else services.memory.list(context)
+        )
+        _json([item.model_dump(mode="json") for item in records])
+    elif args.memory_command == "delete":
+        _json(services.memory.delete(context, args.memory_id))
+    elif args.memory_command == "topic":
+        if args.topic_command == "create":
+            result = services.memory.create_topic(
+                context,
+                slug=args.slug,
+                description=args.description,
+                pinned=args.pinned,
+            )
+        elif args.topic_command == "list":
+            _json(
+                [
+                    {
+                        **topic.model_dump(mode="json"),
+                        "entries": [
+                            item.model_dump(mode="json")
+                            for item in services.memory.list_topic_entries(
+                                context, topic.topic_id
+                            )
+                        ],
+                    }
+                    for topic in services.memory.list_topics(context)
+                ]
+            )
+            return 0
+        elif args.topic_command == "add":
+            result = services.memory.add_topic_entry(
+                context,
+                args.topic_id,
+                kind=args.kind,
+                key=args.key,
+                content=args.content,
+            )
+        else:
+            result = services.memory.set_topic_pinned(
+                context, args.topic_id, pinned=args.topic_pinned
+            )
+        _json(result)
+    elif args.memory_command == "proposal":
+        if args.proposal_command == "list":
+            _json(
+                [
+                    item.model_dump(mode="json")
+                    for item in services.memory_proposals.list(context)
+                ]
+            )
+        else:
+            _json(
+                services.memory_proposals.review(
+                    context,
+                    args.proposal_id,
+                    approve=args.approve,
+                    reason=args.reason,
+                )
+            )
+    elif args.memory_command == "recall":
+        result = services.memory_recall.recall(context, args.query)
+        _json(
+            {
+                "entries": [item.model_dump(mode="json") for item in result.entries],
+                "pinned_topic_ids": result.pinned_topic_ids,
+                "recalled_topic_ids": result.recalled_topic_ids,
+                "omitted_entry_count": result.omitted_entry_count,
+                "characters_used": result.characters_used,
+            }
+        )
+    elif args.memory_command == "extract":
+        extractor = StructuredMemoryExtractor(_memory_agent())
+        records = services.memory_extraction.propose_from_source(
+            context,
+            MemoryExtractionSource(
+                source_ref=args.source_ref,
+                user_text=args.user_text,
+                assistant_text=args.assistant_text,
+            ),
+            extractor,
+        )
+        _json([item.model_dump(mode="json") for item in records])
+    elif args.maintenance_command == "status":
+        _json(
+            services.memory_maintenance.eligibility(
+                context, scope=args.scope
+            ).__dict__
+        )
+    elif args.maintenance_command == "consolidate":
+        consolidator = StructuredMemoryConsolidator(_memory_agent())
+        records = services.memory_maintenance.propose_consolidation(
+            context, scope=args.scope, consolidator=consolidator
+        )
+        _json([item.model_dump(mode="json") for item in records])
+    elif args.maintenance_command == "prune":
+        records = services.memory_maintenance.propose_pruning(context)
+        _json([item.model_dump(mode="json") for item in records])
+    else:
+        _json(
+            services.memory_maintenance.propose_restore(
+                context, *args.memory_ids
+            )
+        )
+    return 0
+
+
 def _dispatch(args: argparse.Namespace, services: WorkspaceServices) -> int:
     if args.command == "auth":
         return _dispatch_auth(args, services)
@@ -229,19 +429,13 @@ def _dispatch(args: argparse.Namespace, services: WorkspaceServices) -> int:
         return _dispatch_workspace(args, services)
     if args.command == "research":
         return _dispatch_research(args, services)
+    if args.command == "memory":
+        return _dispatch_memory(args, services)
     context = _context(services, args.workspace)
     if args.command == "specfact":
         _json(services.specfacts.review(
             context, args.proposal_id, approve=args.approve, reason=args.reason
         ))
-    elif args.memory_command == "set":
-        _json(services.memory.set(
-            context, kind=args.kind, key=args.key, value=args.value
-        ))
-    elif args.memory_command == "list":
-        _json([item.model_dump(mode="json") for item in services.memory.list(context)])
-    else:
-        _json(services.memory.delete(context, args.memory_id))
     return 0
 
 

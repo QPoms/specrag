@@ -21,7 +21,7 @@ These rules apply to every human- or AI-authored change in this repository.
   algorithms and provider SDK calls do not.
 - `orchestration`: routing and supervision across multiple agents.
 - `evidence`: provenance, validation, sufficiency, gap analysis, and synthesis.
-- `memory`: private User Memory persistence and lookup.
+- `memory`: User/Project Core Memory, Topic recall, reviewed extraction, and maintenance.
 - `access`: authentication-independent authorization policy and local identity services.
 - `specfacts`: reviewed, workspace-scoped specification fact lifecycle and lookup hints.
 - `interfaces`: CLI parsing and application command composition.

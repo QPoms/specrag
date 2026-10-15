@@ -8,6 +8,25 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TaskStatus = Literal["pending", "running", "completed", "blocked", "failed"]
+GapDimension = Literal[
+    "actor",
+    "action",
+    "object",
+    "message_or_value",
+    "direction",
+    "condition",
+    "result",
+    "state_transition",
+    "scope",
+]
+GapEvidenceNeed = Literal[
+    "direct_fact",
+    "relationship",
+    "procedure",
+    "condition_or_exception",
+    "cross_reference",
+    "conflict",
+]
 ResearcherStopReason = Literal[
     "submitted_for_validation",
     "round_budget",
@@ -158,6 +177,10 @@ class TaskSufficiencyAssessment(_StrictModel):
     status: Literal["sufficient", "partial", "insufficient", "conflict"]
     supporting_evidence_ids: tuple[str, ...] = ()
     missing_relation: str | None = None
+    required_proposition: str | None = None
+    missing_dimensions: tuple[GapDimension, ...] = ()
+    evidence_need: GapEvidenceNeed | None = None
+    trusted_anchors: tuple[str, ...] = ()
     rationale: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -166,10 +189,38 @@ class TaskSufficiencyAssessment(_StrictModel):
             raise ValueError("sufficient assessment cannot contain a gap")
         if self.status != "sufficient" and not self.missing_relation:
             raise ValueError("non-sufficient assessment requires missing_relation")
+        if self.status == "sufficient" and any((
+            self.required_proposition is not None,
+            self.missing_dimensions,
+            self.evidence_need is not None,
+            self.trusted_anchors,
+        )):
+            raise ValueError("sufficient assessment cannot contain gap details")
+        if self.status != "sufficient":
+            if self.required_proposition is None:
+                object.__setattr__(
+                    self,
+                    "required_proposition",
+                    self.missing_relation,
+                )
+            if self.evidence_need is None:
+                object.__setattr__(
+                    self,
+                    "evidence_need",
+                    (
+                        "conflict"
+                        if self.status == "conflict"
+                        else "relationship"
+                    ),
+                )
         if len(self.supporting_evidence_ids) != len(
             set(self.supporting_evidence_ids)
         ):
             raise ValueError("supporting evidence IDs must be unique")
+        if len(self.missing_dimensions) != len(set(self.missing_dimensions)):
+            raise ValueError("missing dimensions must be unique")
+        if len(self.trusted_anchors) != len(set(self.trusted_anchors)):
+            raise ValueError("trusted anchors must be unique")
         return self
 
 
@@ -211,7 +262,25 @@ class ResearchGap(_StrictModel):
         "version_conflict",
     ]
     description: str = Field(min_length=1)
+    required_proposition: str | None = None
+    missing_dimensions: tuple[GapDimension, ...] = ()
+    evidence_need: GapEvidenceNeed = "relationship"
+    trusted_anchors: tuple[str, ...] = ()
+    supporting_evidence_ids: tuple[str, ...] = ()
     resolved: bool = False
+
+    @model_validator(mode="after")
+    def _structured_requirement(self) -> "ResearchGap":
+        if self.required_proposition is None:
+            object.__setattr__(self, "required_proposition", self.description)
+        for name, values in (
+            ("missing dimensions", self.missing_dimensions),
+            ("trusted anchors", self.trusted_anchors),
+            ("supporting evidence IDs", self.supporting_evidence_ids),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must be unique")
+        return self
 
 
 class ToolCallRecord(_StrictModel):

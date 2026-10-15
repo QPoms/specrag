@@ -41,7 +41,7 @@ class _Agent:
 
     def parse(self, *, prompt_version, input_payload, output_type, **kwargs):
         self.payloads.append((prompt_version, input_payload))
-        if prompt_version == "evidence-sufficiency/v1.9":
+        if prompt_version == "evidence-sufficiency/v1.13":
             value = {
                 "task_id": "T1",
                 "status": "sufficient",
@@ -67,6 +67,7 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     sufficiency = StructuredTaskSufficiencyAssessor(agent).assess(
         task,
         (first,),
+        "What starts registration?",
     )
     synthesis = StructuredEvidenceSynthesisGenerator(
         agent, answer_language="Chinese", detail_level="detailed"
@@ -79,10 +80,13 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     assert sufficiency.status == "sufficient"
     assert synthesis.claims[0].evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
-        "evidence-sufficiency/v1.9",
-        "evidence-synthesis/v1.2",
+        "evidence-sufficiency/v1.13",
+        "evidence-synthesis/v1.5",
     ]
     sufficiency_payload = agent.payloads[0][1]
+    assert sufficiency_payload["original_question"] == (
+        "What starts registration?"
+    )
     assert sufficiency_payload["task"] == {
         "task_id": "T1",
         "question": "What starts registration?",
@@ -110,10 +114,12 @@ def test_synthesis_prompt_enforces_final_answer_boundary() -> None:
     assert "The claim texts are the final answer" in SYNTHESIS_INSTRUCTIONS
     assert "different specifications or radio" in SYNTHESIS_INSTRUCTIONS
     assert "systems into one generalized statement" in SYNTHESIS_INSTRUCTIONS
+    assert "nested conditions" in SYNTHESIS_INSTRUCTIONS
+    assert "implication direction" in SYNTHESIS_INSTRUCTIONS
 
 
 def test_sufficiency_prompt_uses_question_as_authoritative_scope() -> None:
-    assert "complete and authoritative scope" in SUFFICIENCY_INSTRUCTIONS
+    assert "authoritative local scope" in SUFFICIENCY_INSTRUCTIONS
     assert "Identify Answer Units" in SUFFICIENCY_INSTRUCTIONS
     assert "Map Evidence" in SUFFICIENCY_INSTRUCTIONS
     assert "smallest non-redundant set" in SUFFICIENCY_INSTRUCTIONS
@@ -124,6 +130,10 @@ def test_sufficiency_prompt_uses_question_as_authoritative_scope() -> None:
     assert "every substantive answer unit" in SUFFICIENCY_INSTRUCTIONS
     assert "Do not introduce an unstated" in SUFFICIENCY_INSTRUCTIONS
     assert "normative relation" in SUFFICIENCY_INSTRUCTIONS
+    assert "compositional evidence closure" in SUFFICIENCY_INSTRUCTIONS
+    assert "explicit source-backed identity mapping" in SUFFICIENCY_INSTRUCTIONS
+    assert "same actors, message or" in SUFFICIENCY_INSTRUCTIONS
+    assert "matching target-routing passage" in SUFFICIENCY_INSTRUCTIONS
     assert "local\n   procedure step" in SUFFICIENCY_INSTRUCTIONS
     assert "Use partial when at least one requested answer unit" in (
         SUFFICIENCY_INSTRUCTIONS

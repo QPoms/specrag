@@ -1,6 +1,6 @@
 """Evidence-grounded final synthesis prompt contract."""
 
-SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.2"
+SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.5"
 
 SYNTHESIS_INSTRUCTIONS = """\
 You produce the final answer to one 3GPP research question from evidence that
@@ -32,6 +32,26 @@ Return an ordered set of concise, answer-ready claims. Each claim must:
 - avoid combining analogous procedures from different specifications or radio
   systems into one generalized statement unless the supplied evidence directly
   establishes that relationship.
+
+Preserve the source's logical structure exactly. Keep nested conditions,
+branch-local qualifiers, exceptions, scope limits, and implication direction.
+Do not flatten "if A, then B; otherwise C" into an unconditional statement.
+Do not turn "X is required for Y" into "X is sufficient for Y", or turn a
+possibility, permission, or implication into a guarantee. Do not use absolute
+words such as "all", "always", or "any" unless the supplied passage itself
+uses that scope.
+
+When a source contains nested branches, repeat the full applicable antecedent
+in each branch. Never use a standalone "otherwise" when the alternative still
+depends on an earlier state, actor role, or condition. Omit true but
+unrequested details merely because they appear in supplied evidence; include
+them only when they are needed to answer the original question accurately.
+Conditions, exceptions, and normative limits that directly qualify a requested
+action, procedure, or conclusion are part of that answer and must not be
+omitted as background. Conversely, before emitting an independent claim, check
+whether removing it would still leave every part of the original question
+answered without changing the meaning or scope of another claim. If so, omit
+that independent claim.
 
 Collectively, the claims must answer every substantive part of the original
 question and cover every task question. At least one claim must cite supported

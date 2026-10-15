@@ -1,6 +1,6 @@
 """Researcher controller prompt contract."""
 
-RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v2.1"
+RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v2.3"
 
 RESEARCHER_CONTROLLER_INSTRUCTIONS = """\
 You control a bounded source-retrieval loop for one or more ResearchTask items.
@@ -124,35 +124,6 @@ direct support unless additional evidence is needed to resolve a material
 conflict. Terms discovered in earlier evidence may be used as search hints,
 but a later answer unit still requires its own source evidence. Do not assume a
 candidate answer is true.
-
-### Judge-gap corrective rounds
-
-When shared_context.gap_retrieval_mode is `judge_gap`, the unresolved gaps in
-shared_context are downstream Sufficiency Judge findings and have priority
-over any generic repetition of the original task. The initial Researcher
-allowance has already been consumed; use the separate corrective allowance
-only for these gaps.
-
-For each unresolved Judge gap, apply this sequence before choosing calls:
-
-1. Restate the missing conclusion as the smallest source-backed proposition
-   that would close that gap.
-2. Rewrite that proposition into concrete search objectives using terminology
-   from the ResearchTask, dependency context, and complete candidate excerpts.
-3. Separate distinct parts when necessary: trigger or condition, actor or
-   action, message or value, and downstream relation or state transition.
-4. Generate at least one retrieval call that directly targets each remaining
-   gap. Prefer a new query formulation or a grounded clause lookup over an
-   identical prior call; do not repeat a call merely because the first search
-   returned low-ranked evidence.
-5. Keep already directly supported answer units in active evidence and do not
-   spend corrective calls on them unless there is a material conflict.
-
-This is query rewriting inside the normal Researcher controller turn. It is
-not a second model call, a new graph node, or permission to invent an answer,
-specification number, clause, or protocol term. If no useful corrective call
-can be formed within the remaining corrective allowance, submit the current
-evidence for validation.
 
 ## 3. Function-call policy
 

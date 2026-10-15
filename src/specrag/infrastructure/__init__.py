@@ -4,10 +4,11 @@ from .research_assessors import (
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
-from .domain_stores import InMemoryRunStore, InMemorySpecFactStore, InMemoryUserMemoryStore
+from .memory_agents import StructuredMemoryConsolidator, StructuredMemoryExtractor
+from .domain_stores import InMemoryMemoryStore, InMemoryRunStore, InMemorySpecFactStore
 from .database import DEFAULT_DATABASE_PATH, SQLiteDatabase
 from .identity_store import SQLiteIdentityStore
-from .sqlite_stores import SQLiteRunStore, SQLiteSpecFactStore, SQLiteUserMemoryStore
+from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
 from .research_planning import (
     RouteGoalAssessment,
     StructuredPlanResponse,
@@ -19,15 +20,17 @@ from .research_planning import (
 __all__ = [
     "StructuredEvidenceSynthesisGenerator",
     "StructuredTaskSufficiencyAssessor",
+    "StructuredMemoryConsolidator",
+    "StructuredMemoryExtractor",
     "InMemorySpecFactStore",
     "InMemoryRunStore",
-    "InMemoryUserMemoryStore",
+    "InMemoryMemoryStore",
     "DEFAULT_DATABASE_PATH",
     "SQLiteDatabase",
     "SQLiteIdentityStore",
     "SQLiteRunStore",
     "SQLiteSpecFactStore",
-    "SQLiteUserMemoryStore",
+    "SQLiteMemoryStore",
     "RouteGoalAssessment",
     "StructuredPlanResponse",
     "StructuredQuestionRouter",

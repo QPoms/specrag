@@ -126,7 +126,15 @@ class _FakeService:
         self.calls: list[str] = []
         self.contexts: dict[str, dict[str, object]] = {}
 
-    def run(self, tasks, *, shared_context, max_tool_calls):
+    def run(
+        self,
+        tasks,
+        *,
+        shared_context,
+        max_tool_calls,
+        initial_evidence=(),
+        initial_active_evidence_ids=(),
+    ):
         task_id = tasks[0].task_id
         self.calls.append(task_id)
         self.contexts[task_id] = shared_context

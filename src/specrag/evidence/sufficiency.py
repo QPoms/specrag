@@ -20,6 +20,7 @@ class TaskSufficiencyAssessor(Protocol):
         self,
         task: ResearchTask,
         evidence: tuple[CandidateEvidence, ...],
+        original_question: str | None = None,
     ) -> TaskSufficiencyAssessment: ...
 
 
@@ -41,6 +42,7 @@ class EvidenceSufficiencyService:
         tasks: tuple[ResearchTask, ...],
         candidates: tuple[CandidateEvidence, ...],
         source_validations: tuple[SourceValidationResult, ...],
+        original_question: str | None = None,
     ) -> EvidenceSufficiencyBatch:
         candidate_by_id = {item.evidence_id: item for item in candidates}
         if len(candidate_by_id) != len(candidates):
@@ -82,7 +84,14 @@ class EvidenceSufficiencyService:
                 # re-plan before its predecessors complete.
                 updated_tasks.append(task)
                 continue
-            assessment = self.assessor.assess(task, valid_candidates)
+            if original_question is None:
+                assessment = self.assessor.assess(task, valid_candidates)
+            else:
+                assessment = self.assessor.assess(
+                    task,
+                    valid_candidates,
+                    original_question,
+                )
             if assessment.task_id != task.task_id:
                 raise ValueError(
                     "sufficiency assessment returned a mismatched task ID"
@@ -104,6 +113,17 @@ class EvidenceSufficiencyService:
                     "sufficient task requires at least one selected evidence item"
                 )
 
+            grounded_anchors = _grounded_gap_anchors(
+                assessment.trusted_anchors,
+                task=task,
+                original_question=original_question,
+                evidence=valid_candidates,
+            )
+            if grounded_anchors != assessment.trusted_anchors:
+                assessment = assessment.model_copy(update={
+                    "trusted_anchors": grounded_anchors,
+                })
+
             assessments.append(assessment)
             assessment_by_task[task.task_id] = assessment
             if assessment.status == "sufficient":
@@ -124,6 +144,13 @@ class EvidenceSufficiencyService:
                     task_id=task.task_id,
                     kind=kind,
                     description=assessment.missing_relation or assessment.rationale,
+                    required_proposition=assessment.required_proposition,
+                    missing_dimensions=assessment.missing_dimensions,
+                    evidence_need=assessment.evidence_need or "relationship",
+                    trusted_anchors=assessment.trusted_anchors,
+                    supporting_evidence_ids=(
+                        assessment.supporting_evidence_ids
+                    ),
                 ))
 
         validated: list[ValidatedEvidence] = []
@@ -187,6 +214,39 @@ class EvidenceSufficiencyService:
             validated_evidence=tuple(validated),
             evidence_sufficient=sufficient,
         )
+
+
+def _grounded_gap_anchors(
+    anchors: tuple[str, ...],
+    *,
+    task: ResearchTask,
+    original_question: str | None,
+    evidence: tuple[CandidateEvidence, ...],
+) -> tuple[str, ...]:
+    """Keep only exact anchors present in trusted task or source content."""
+
+    trusted_text = "\n".join((
+        task.question,
+        original_question or "",
+        *(
+            "\n".join((
+                item.specification,
+                *item.heading_path,
+                item.excerpt,
+            ))
+            for item in evidence
+        ),
+    )).casefold()
+    grounded: list[str] = []
+    seen: set[str] = set()
+    for raw_anchor in anchors:
+        anchor = raw_anchor.strip()
+        normalized = anchor.casefold()
+        if not anchor or normalized in seen or normalized not in trusted_text:
+            continue
+        seen.add(normalized)
+        grounded.append(anchor)
+    return tuple(grounded)
 
 
 __all__ = [

@@ -22,6 +22,8 @@ from specrag.models import NativeFunctionCall, ResearchTask
 from specrag.prompts import (
     RESEARCHER_CONTROLLER_INSTRUCTIONS,
     RESEARCHER_CONTROLLER_PROMPT_VERSION,
+    RESEARCHER_GAP_INSTRUCTIONS,
+    RESEARCHER_GAP_PROMPT_VERSION,
 )
 from specrag.retrieval.models import CorpusScope, SourceDocument
 from specrag.tools import (
@@ -215,14 +217,43 @@ def _config() -> AppConfig:
     ))
 
 
-def test_researcher_prompt_rewrites_downstream_judge_gaps_in_order() -> None:
-    assert RESEARCHER_CONTROLLER_PROMPT_VERSION == "researcher-controller/v2.1"
-    assert "Judge-gap corrective rounds" in RESEARCHER_CONTROLLER_INSTRUCTIONS
-    assert "Restate the missing conclusion" in RESEARCHER_CONTROLLER_INSTRUCTIONS
+def test_researcher_prompt_uses_evidence_gap_paths_in_order() -> None:
+    assert RESEARCHER_CONTROLLER_PROMPT_VERSION == "researcher-controller/v2.3"
+    assert "Judge-gap corrective rounds" not in RESEARCHER_CONTROLLER_INSTRUCTIONS
     assert "Update Active Evidence" in RESEARCHER_CONTROLLER_INSTRUCTIONS
-    assert "This is query rewriting inside the normal Researcher controller" in (
-        RESEARCHER_CONTROLLER_INSTRUCTIONS
+    assert "Corrective input and evidence semantics" in RESEARCHER_GAP_INSTRUCTIONS
+    assert "Mandatory corrective sequence" in RESEARCHER_GAP_INSTRUCTIONS
+    assert "### Path A: existing evidence" in RESEARCHER_GAP_INSTRUCTIONS
+    assert "### Path B: source navigation" in RESEARCHER_GAP_INSTRUCTIONS
+    assert "### Path C: new search" in RESEARCHER_GAP_INSTRUCTIONS
+    assert RESEARCHER_GAP_PROMPT_VERSION == "researcher-controller-gap/v1.0"
+
+
+def test_evidence_gap_uses_dedicated_prompt_contract() -> None:
+    agent = _SequenceAgent((_review_call(submit=True),))
+    service = RegistryResearcherService(
+        controller_agent=StructuredResearcherController(agent),
+        retriever=_retriever(),
+        app_config=_config(),
     )
+
+    service.run(
+        _tasks(),
+        shared_context={
+            "gap_retrieval_mode": "evidence_gap",
+            "unresolved_gaps": ({
+                "query_id": "Q1",
+                "required_proposition": "The procedure is explicitly defined.",
+                "missing_dimensions": ["relation"],
+                "evidence_need": "direct_fact",
+                "trusted_anchors": ["registration"],
+            },),
+        },
+    )
+
+    call = agent.calls[0]
+    assert call["prompt_version"] == RESEARCHER_GAP_PROMPT_VERSION
+    assert call["instructions"] == RESEARCHER_GAP_INSTRUCTIONS
 
 
 def test_submission_records_stop_reason_without_retrieval() -> None:

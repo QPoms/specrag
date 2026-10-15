@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sqlite3
 
 
@@ -94,6 +95,49 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX memory_owner_workspace
             ON user_memory(owner_user_id, workspace_id, status);
     """),
+    (3, """
+        CREATE TABLE memory_topics (
+            topic_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            slug TEXT NOT NULL,
+            status TEXT NOT NULL,
+            pinned INTEGER NOT NULL CHECK (pinned IN (0, 1)),
+            payload_json TEXT NOT NULL,
+            UNIQUE(workspace_id, slug)
+        );
+        CREATE INDEX memory_topics_workspace
+            ON memory_topics(workspace_id, status, pinned);
+        CREATE TABLE memory_entries (
+            memory_id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL CHECK (scope IN ('user', 'workspace')),
+            owner_user_id TEXT REFERENCES users(user_id),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            topic_id TEXT REFERENCES memory_topics(topic_id),
+            status TEXT NOT NULL,
+            operation_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        CREATE INDEX memory_entries_scope
+            ON memory_entries(workspace_id, scope, owner_user_id, status, topic_id);
+        CREATE UNIQUE INDEX memory_entries_operation
+            ON memory_entries(workspace_id, operation_key);
+        CREATE TABLE memory_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            operation_key TEXT NOT NULL UNIQUE,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            owner_user_id TEXT REFERENCES users(user_id),
+            status TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        CREATE INDEX memory_proposals_scope
+            ON memory_proposals(workspace_id, owner_user_id, status);
+        CREATE TABLE memory_maintenance (
+            maintenance_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            owner_user_id TEXT REFERENCES users(user_id),
+            payload_json TEXT NOT NULL
+        );
+    """),
 )
 
 
@@ -121,9 +165,69 @@ class SQLiteDatabase:
                 continue
             with self.connection:
                 self.connection.executescript(script)
+                if version == 3:
+                    self._migrate_legacy_memory()
                 self.connection.execute(
                     "INSERT INTO schema_migrations(version) VALUES (?)", (version,)
                 )
+
+    def _migrate_legacy_memory(self) -> None:
+        exists = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_memory'"
+        ).fetchone()
+        if exists is None:
+            return
+        rows = self.connection.execute(
+            "SELECT payload_json FROM user_memory ORDER BY memory_id"
+        ).fetchall()
+        for row in rows:
+            old = json.loads(row[0])
+            status = {
+                "active": "active",
+                "deleted": "retracted",
+                "expired": "archived",
+            }[old["status"]]
+            payload = {
+                "schema_version": "memory-entry/v1",
+                "memory_id": old["memory_id"],
+                "scope": "user",
+                "layer": "core",
+                "workspace_id": old["workspace_id"],
+                "owner_user_id": old["owner_user_id"],
+                "topic_id": None,
+                "kind": old["kind"],
+                "key": old["key"],
+                "content": old["value"],
+                "created_by": old["owner_user_id"],
+                "created_at": old["created_at"],
+                "updated_at": old["updated_at"],
+                "expires_at": old.get("expires_at"),
+                "status": status,
+                "origin": "migrated",
+                "revision": old.get("revision", 1),
+                "supersedes_id": old.get("supersedes_id"),
+                "merged_from_ids": [],
+                "source_refs": [],
+                "operation_key": old.get("operation_key") or (
+                    "memory:migrated:" + old["memory_id"]
+                ),
+            }
+            self.connection.execute(
+                "INSERT OR IGNORE INTO memory_entries("
+                "memory_id, scope, owner_user_id, workspace_id, topic_id, status, "
+                "operation_key, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    payload["memory_id"],
+                    payload["scope"],
+                    payload["owner_user_id"],
+                    payload["workspace_id"],
+                    None,
+                    payload["status"],
+                    payload["operation_key"],
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+        self.connection.execute("DROP TABLE user_memory")
 
     def close(self) -> None:
         self.connection.close()

@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-14
+Updated: 2026-10-15
 
 ## Current state
 
@@ -14,21 +14,29 @@ Approved facts retain Release, exact version, source path, document hash,
 heading, and line locator and can only guide a fresh source lookup. They never
 become final Evidence directly.
 
-`memory/` now means private User Memory only. Its active types are default
-Release, answer language, detail level, followed topic, and saved research
-lead. Values are type-checked, writes are explicit-user only, and updates
-create stable content-addressed revisions with a predecessor and operation key;
-deletion and expiry remain auditable. Owner/workspace checks apply on every
-operation. Configuration resolves in the order command argument, active User
-Memory, then `config.yaml`. A Run records the exact SpecFact and User Memory
-revision IDs used at start, and resume loads those authorized historical
-revisions so later edits do not alter the Run. Workspace admins can operate a
-member Run but cannot browse or edit that member's Memory; resume may load only
-the Memory IDs already captured by the authorized Run. Configuration memories
-resolve Release/language/detail only; followed topics and research leads are
-the only kinds admitted to Researcher context. The Run records only the
-configuration revisions actually selected plus the context revisions actually
-supplied. Injected memory is marked as untrusted context and never enters
+`memory/` now implements a compact Core/Topic design. User Core remains private
+and stores typed configuration, preferences, research habits, followed topics,
+and saved leads. Project Core and Topic Memory use the existing Workspace as
+their project boundary. Core and pinned Topics are assembled by default within
+entry/character budgets; non-pinned Topics are ranked by a local BM25 path and
+at most three are selected. SQLite is authoritative; there is no parallel
+Markdown store.
+
+Explicit writes retain stable content IDs, immutable predecessor chains,
+operation keys, expiry, retraction, and archival. Structured Memory Extractor
+output creates pending add/supersede/retract/create-topic proposals. A user
+approves their private proposal; a workspace reviewer/admin approves a Project
+proposal. Consolidation requires both 24 elapsed hours and 10 accepted changes,
+can merge only within one scope/Topic/kind, cannot introduce a source reference,
+and preserves all input IDs. Capacity maintenance runs separately and proposes
+reversible archival only for non-pinned Topic entries.
+
+Configuration still resolves command argument, active User Core, then
+`config.yaml`. A Run records the exact SpecFact and Memory revision IDs used at
+start; resume loads only those authorized historical revisions, so later edits,
+pin changes, consolidation, or archival do not alter the Run. Workspace admins
+can operate a member Run but cannot browse that member's User Core. Every entry
+injected into Researcher is marked as untrusted context and cannot enter
 Evidence, Source Validator, Sufficiency Judge, or SpecFact proposal logic.
 
 Local `scrypt` accounts, 12-hour sessions, workspaces, and member/reviewer/admin
@@ -38,7 +46,9 @@ roles are active through the single `specrag` CLI. SQLite state lives at
 CLI bearer token is kept in ignored `.local/state/session-token`. Authorization is
 default-deny and occurs before a Run's checkpoint thread is resolved. Members
 manage their own Runs and memories, reviewers review their workspace's facts,
-and admins manage members and all workspace Runs.
+and admins manage members and all workspace Runs. Workspace members read
+Project/Topic Memory and submit proposals; reviewers/admins publish it, manage
+pinning, and approve maintenance proposals.
 
 The durable `RunHarness` provides `start`, `resume`, `inspect`, and `cancel`.
 It uses `langgraph-checkpoint-sqlite` with the existing strict serializer
@@ -58,7 +68,8 @@ still outside the active scope.
 
 Focused tests cover password verification, expired/revoked sessions, role
 checks, cross-workspace denial, typed and immutable memory revisions, exact
-memory snapshots, configuration precedence, SpecFact proposal/review/conflict/supersession/invalidation,
+memory snapshots, configuration precedence, SpecFact
+proposal/review/conflict/supersession/invalidation,
 idempotent Run events, cancellation, elapsed deadlines, interrupted-process
 resume, and SQLite checkpoint restart. The complete suite passes 127 tests at
 this point. The historical 2026-10-13 quality batch remains 47/50; focused
@@ -823,3 +834,88 @@ passage without the annotated delegated SRB-entity release detail, while 044's
 Judge-supported set contains both X2AP and XnAP variants. The Synthesizer now
 keeps those systems separate, but correctly does not replace the Judge by
 discarding otherwise supported input evidence.
+
+An offline semantic evaluation was then run over all 48 complete final-answer
+artifacts using `synthesis-quality-evaluator/v1.0`; QA annotations were supplied
+only to this evaluator and never to the runtime Synthesizer. The four scored
+dimensions are factual completeness, evidence faithfulness, scope precision,
+and clarity, each on a 0--4 scale. Simple answers averaged 3.92/4.00 (30 pass,
+4 review); complex answers averaged 3.79/4.00 (8 pass, 5 review, 1 fail). The
+only fail was complex question 041, whose Judge-supported evidence omitted the
+distinct AMF re-allocation registration step. The main review findings were
+minor omitted conditions or scope broadening; no answer had an invalid evidence
+reference. The two Researcher-insufficient cases, 039 and 047, were excluded
+from synthesis quality scoring and remain explicit incomplete runs.
+
+The task-level evidence contract is now `evidence-sufficiency/v1.11`. The
+original user question is passed to the Judge as a coverage guard, while the
+ResearchTask question remains the authoritative local scope. Exact requested
+actors, actions, messages, directions, and return paths must be directly
+supported; for requested negotiation procedures the Judge separately checks
+the proposal or decision basis, peer response, and initiator-side response
+handling or applicable limits. This prevents a broad procedural passage or
+success/failure message pair from being treated as proof of a more specific
+relation.
+
+Final synthesis uses `evidence-synthesis/v1.5`. It preserves nested branch
+antecedents, exceptions, implication direction, and normative limits that
+qualify the requested conclusion, while omitting independent evidence-backed
+facts that are unnecessary to answer the original question. Focused live
+regressions scored 003 at 3.75, 020 at 3.50, and 024 and 044 at 4.00 on the
+offline four-dimension evaluator. Questions 041 and 049 remained partial at
+the Judge because their evidence did not directly establish the requested
+Registration Request/load-rebalancing link and selected PDU Session Type
+return/handling link; synthesis correctly did not run for either case.
+
+Judge-gap corrective retrieval is now being migrated from mandatory query
+rewriting to evidence-gap-directed acquisition. The runtime contract is
+`research-state/v1.7` and the Researcher controller contract is
+`researcher-controller/v2.2`. Non-sufficient Judge assessments now carry a
+small required proposition, missing semantic dimensions, evidence-need type,
+trusted source-grounded anchors, and already-supported evidence IDs. Before a
+corrective Researcher run, orchestration restores all source-valid candidates,
+the Judge-supported active evidence, and prior tool-call outcomes. The
+Researcher can therefore reselect existing evidence, navigate a grounded
+clause or local context, rerank candidates, or perform a new search; query
+rewriting is only one possible search strategy and no extra model node was
+added.
+
+The first live validation of this design completed complex question 049:
+T2 recovered the direct V-SMF-to-H-SMF request and H-SMF-to-V-SMF response
+evidence and ended sufficient. Question 041 consumed its corrective allowance
+but remained incomplete because the retrieved passages still did not directly
+connect the AMF load-rebalancing initial NAS message to a Registration Request.
+This remaining issue is retrieval-navigation quality rather than loss of
+candidate state or incorrect corrective budget accounting.
+
+The corrective Researcher pass is now separated from the initial pass at the
+prompt-contract level. Initial retrieval uses `researcher-controller/v2.3`,
+while Judge-gap retrieval uses `researcher-controller-gap/v1.0`. They share the
+same Researcher service, native tools, evidence ledger, validation policy, and
+independent budgets; the runtime selects the prompt and receipt version from
+`gap_retrieval_mode`. The dedicated corrective prompt requires review of the
+restored evidence first, then grounded clause/context navigation, and only then
+a new search when necessary. It also stops repeated searches that produce no
+ new candidates.
+
+The follow-up live run of 041 used `researcher-controller-gap/v1.0` for all
+corrective turns. It completed with 12 retrieval actions, including targeted
+Reroute NAS Request searches and grounded clause/context navigation, but T2
+remained partial because the corpus still did not provide a direct statement
+identifying the AMF load-rebalancing initial NAS message as a Registration
+Request. This confirms the prompt split is active; it does not by itself solve
+the underlying cross-clause evidence-closure limitation.
+
+The Sufficiency Judge now uses `evidence-sufficiency/v1.13`. Its evidence
+selection rules preserve strict source grounding while allowing a small set of
+complementary passages to close one relationship when each link is explicit
+and the passages share an aligned actor, message/object identity, stage,
+direction, and condition. A source-backed identity mapping is mandatory;
+topically related or analogous passages still remain insufficient.
+
+The 041 rerun with `evidence-sufficiency/v1.13` completed successfully. The
+Judge selected the TS 23.501 §5.19.4 load-rebalancing passage together with
+the TS 23.502 §4.2.2.2.2 Registration Request/Initial NAS identity mapping,
+and marked both T1 and T2 sufficient. This confirms that the earlier 041
+failure was caused by the former single-passage closure rule, not by missing
+retrieval evidence.

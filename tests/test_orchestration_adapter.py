@@ -16,6 +16,7 @@ from specrag.models import (
     ResearchGap,
     ResearchPlan,
     ResearchTask,
+    SourceValidationResult,
     TaskSufficiencyAssessment,
     ValidatedEvidence,
 )
@@ -344,10 +345,22 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
         def __init__(self) -> None:
             self.max_tool_calls = None
             self.shared_context = {}
+            self.initial_evidence = ()
+            self.initial_active_evidence_ids = ()
 
-        def run(self, tasks, *, shared_context, max_tool_calls):
+        def run(
+            self,
+            tasks,
+            *,
+            shared_context,
+            max_tool_calls,
+            initial_evidence=(),
+            initial_active_evidence_ids=(),
+        ):
             self.max_tool_calls = max_tool_calls
             self.shared_context = shared_context
+            self.initial_evidence = initial_evidence
+            self.initial_active_evidence_ids = initial_active_evidence_ids
             return _execution(), {"Q1": tasks[0].task_id}
 
     gap = ResearchGap(
@@ -355,6 +368,13 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
         task_id="T1",
         kind="missing_relation",
         description="The trigger relation remains unsupported.",
+        required_proposition=(
+            "The source directly states the trigger-to-procedure relation."
+        ),
+        missing_dimensions=("condition", "action"),
+        evidence_need="relationship",
+        trusted_anchors=("registration",),
+        supporting_evidence_ids=("E1",),
     )
     budget = ResearchBudget(
         max_tool_calls=1,
@@ -372,12 +392,30 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
         status="running",
     ),)
     state["gaps"] = (gap,)
+    state["candidate_evidence"] = (_candidate("E1"),)
+    state["source_validations"] = (SourceValidationResult(
+        evidence_id="E1",
+        valid=True,
+        path_allowed=True,
+        document_hash_valid=True,
+        locator_valid=True,
+        excerpt_valid=True,
+    ),)
+    state["validated_evidence"] = (_validated("E1"),)
     service = FakeService()
 
     update = SingleResearcherHandler(service)(state)
 
     assert service.max_tool_calls == 2
-    assert service.shared_context["gap_retrieval_mode"] == "judge_gap"
+    assert service.shared_context["gap_retrieval_mode"] == "evidence_gap"
+    assert service.shared_context["unresolved_gaps"][0][
+        "required_proposition"
+    ].startswith("The source directly states")
+    assert service.shared_context["prior_tool_calls"] == ()
+    assert tuple(item.evidence_id for item in service.initial_evidence) == (
+        "E1",
+    )
+    assert service.initial_active_evidence_ids == ("E1",)
     assert update["budget"].initial_tool_calls_used_for("T1") == 1
     assert update["budget"].gap_tool_calls_used_for("T1") == 1
     assert update["budget"].tool_calls_used_for("T1") == 2
@@ -531,7 +569,15 @@ def test_insufficient_evidence_routes_gap_back_to_researcher() -> None:
         def __init__(self) -> None:
             self.contexts = []
 
-        def run(self, tasks, *, shared_context, max_tool_calls):
+        def run(
+            self,
+            tasks,
+            *,
+            shared_context,
+            max_tool_calls,
+            initial_evidence=(),
+            initial_active_evidence_ids=(),
+        ):
             self.contexts.append(shared_context)
             return _execution(), {"Q1": tasks[0].task_id}
 

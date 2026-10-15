@@ -25,7 +25,7 @@ from specrag.models import (
 
 
 class ResearchState(TypedDict):
-    schema_version: Literal["research-state/v1.6"]
+    schema_version: Literal["research-state/v1.7"]
     research_id: str
     user_question: str
     route: Literal["plan", "finish"]
@@ -72,7 +72,7 @@ def new_research_state(
     if not user_question.strip():
         raise ValueError("user_question must not be blank")
     return ResearchState(
-        schema_version="research-state/v1.6",
+        schema_version="research-state/v1.7",
         research_id=research_id,
         user_question=user_question,
         route="plan",

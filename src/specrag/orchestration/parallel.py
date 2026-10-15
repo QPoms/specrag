@@ -16,6 +16,7 @@ from specrag.models import ResearchBudget, ResearchTask, ResearchWorkerResult
 
 from .adapters import researcher_execution_update
 from .dependencies import build_dependency_context
+from .gap_context import build_corrective_research_input
 from .state import ResearchState, new_research_state
 from .workflow import (
     ResearchNodeHandlers,
@@ -58,25 +59,30 @@ class ParallelResearcherHandler:
         max_tool_calls: int,
     ) -> ResearchWorkerResult:
         running = task.model_copy(update={"status": "running"})
-        relevant_gaps = tuple(
-            gap.model_dump(mode="json")
-            for gap in state["gaps"]
-            if gap.task_id == task.task_id and not gap.resolved
-        )
-        corrective = bool(relevant_gaps)
+        corrective = _has_judge_gap(state, task.task_id)
+        shared_context: dict[str, object] = {
+            "research_id": state["research_id"],
+            "iteration": state["iteration"],
+            "gap_retrieval_mode": "initial",
+            "unresolved_gaps": (),
+            "worker_task_id": task.task_id,
+            "dependency_context": build_dependency_context(state, task),
+        }
+        corrective_options: dict[str, object] = {}
+        if corrective:
+            corrective_input = build_corrective_research_input(state, task)
+            shared_context.update(corrective_input.shared_context)
+            corrective_options = {
+                "initial_evidence": corrective_input.initial_evidence,
+                "initial_active_evidence_ids": (
+                    corrective_input.initial_active_evidence_ids
+                ),
+            }
         execution, query_to_task = self.service.run(
             (running,),
-            shared_context={
-                "research_id": state["research_id"],
-                "iteration": state["iteration"],
-                "gap_retrieval_mode": (
-                    "judge_gap" if corrective else "initial"
-                ),
-                "unresolved_gaps": relevant_gaps,
-                "worker_task_id": task.task_id,
-                "dependency_context": build_dependency_context(state, task),
-            },
+            shared_context=shared_context,
             max_tool_calls=max_tool_calls,
+            **corrective_options,
         )
         update = researcher_execution_update(
             cast(ResearchState, state),

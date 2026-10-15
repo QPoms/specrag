@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 from specrag.infrastructure import (
     SQLiteDatabase,
+    SQLiteMemoryStore,
     SQLiteRunStore,
-    SQLiteUserMemoryStore,
 )
-from specrag.models import ResearchRun, RunEvent, UserMemoryItem
+from specrag.models import MemoryEntry, ResearchRun, RunEvent
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -19,7 +20,7 @@ def test_sqlite_enables_foreign_keys_wal_and_records_schema_versions(tmp_path) -
         versions = database.connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in versions] == [1, 2]
+        assert [row[0] for row in versions] == [1, 2, 3]
     finally:
         database.close()
 
@@ -70,19 +71,100 @@ def test_memory_revisions_survive_sqlite_upserts(tmp_path) -> None:
                 "INSERT INTO workspaces VALUES (?, ?, ?, ?)",
                 ("WA", "Workspace A", "alice", NOW.isoformat()),
             )
-        store = SQLiteUserMemoryStore(database)
-        first = UserMemoryItem(
-            memory_id="UM-" + "1" * 32, owner_user_id="alice", workspace_id="WA",
-            kind="detail_level", key="default", value="short",
-            created_at=NOW, updated_at=NOW,
+        store = SQLiteMemoryStore(database)
+        first = MemoryEntry(
+            memory_id="MEM-" + "1" * 32,
+            scope="user",
+            layer="core",
+            owner_user_id="alice",
+            workspace_id="WA",
+            kind="detail_level",
+            key="default",
+            content="short",
+            created_by="alice",
+            created_at=NOW,
+            updated_at=NOW,
+            operation_key="memory:first",
         )
         second = first.model_copy(update={
-            "memory_id": "UM-" + "2" * 32, "value": "detailed",
+            "memory_id": "MEM-" + "2" * 32,
+            "content": "detailed",
             "created_at": NOW + timedelta(minutes=1),
             "updated_at": NOW + timedelta(minutes=1),
+            "operation_key": "memory:second",
         })
-        store.put(first)
-        store.put(second)
-        assert {item.value for item in store.all()} == {"short", "detailed"}
+        store.put_entry(first)
+        store.put_entry(second)
+        assert {item.content for item in store.all_entries()} == {"short", "detailed"}
     finally:
         database.close()
+
+
+def test_legacy_user_memory_is_migrated_once_to_core_memory(tmp_path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    database = SQLiteDatabase(path)
+    connection = database.connection
+    with connection:
+        connection.execute("DROP TABLE memory_maintenance")
+        connection.execute("DROP TABLE memory_proposals")
+        connection.execute("DROP TABLE memory_entries")
+        connection.execute("DROP TABLE memory_topics")
+        connection.execute(
+            "CREATE TABLE user_memory ("
+            "memory_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
+            "workspace_id TEXT NOT NULL, kind TEXT NOT NULL, memory_key TEXT NOT NULL, "
+            "status TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+        connection.execute(
+            "INSERT INTO users VALUES (?, ?, ?, ?)",
+            ("alice", "alice", "active", NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO workspaces VALUES (?, ?, ?, ?)",
+            ("WA", "Workspace A", "alice", NOW.isoformat()),
+        )
+        payload = {
+            "schema_version": "user-memory/v1",
+            "memory_id": "UM-" + "A" * 32,
+            "owner_user_id": "alice",
+            "workspace_id": "WA",
+            "kind": "research_lead",
+            "key": "lead",
+            "value": "Study registration recovery",
+            "created_at": NOW.isoformat(),
+            "updated_at": NOW.isoformat(),
+            "expires_at": None,
+            "status": "active",
+            "origin": "explicit_user",
+            "revision": 1,
+            "supersedes_id": None,
+            "operation_key": "legacy-operation",
+        }
+        connection.execute(
+            "INSERT INTO user_memory VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                payload["memory_id"],
+                "alice",
+                "WA",
+                "research_lead",
+                "lead",
+                "active",
+                json.dumps(payload),
+            ),
+        )
+    database.close()
+
+    migrated = SQLiteDatabase(path)
+    try:
+        item = SQLiteMemoryStore(migrated).all_entries()[0]
+        assert item.memory_id == payload["memory_id"]
+        assert item.scope == "user"
+        assert item.layer == "core"
+        assert item.content == payload["value"]
+        assert item.origin == "migrated"
+        assert migrated.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'user_memory'"
+        ).fetchone() is None
+    finally:
+        migrated.close()

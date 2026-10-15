@@ -83,12 +83,15 @@ user question or task
 - `src/specrag/specfacts/`: pending proposal, reviewer approval, conflict,
   supersession, invalidation, and authorized hint lookup for reusable
   specification facts.
-- `src/specrag/memory/`: explicit private User Memory for preferences,
-  followed topics, and saved research leads. User Memory never becomes
-  Evidence or a SpecFact. Values are typed, explicit-user writes are
-  revisioned and idempotent, and each Run consumes an authorized immutable
-  snapshot. Configuration preferences resolve settings; only followed topics
-  and research leads enter the Researcher as untrusted context.
+- `src/specrag/memory/`: User Core, workspace Project Core, and workspace Topic
+  Memory. Core and pinned Topics are selected by default within a bounded
+  context budget; non-pinned Topics use a small local BM25 recall path. Memory
+  never becomes Evidence or a SpecFact. Explicit writes are revisioned and
+  idempotent, Extractor output remains pending until owner/reviewer approval,
+  and each Run records the exact authorized revisions it consumed. Low-frequency
+  consolidation requires both a 24-hour interval and 10 accepted changes;
+  capacity maintenance proposes reversible archival only for non-pinned Topic
+  entries.
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
   dependency-context handoff, bounded re-planning, SQLite checkpointing,
   authorized Run lifecycle, events, cancellation, deadlines, and recovery.
@@ -129,8 +132,8 @@ Markdown corpus; the deleted threat model is no longer an input source.
 - `data/3gpp/manifest.json`: compact corpus manifest.
 - `data/3gpp/catalog.jsonl`: one catalog record per specification version.
 - `.local/state/specrag.sqlite3`: ignored local accounts, workspaces,
-  memberships, sessions, Runs, events, checkpoints, SpecFacts, and User
-  Memory. SQLite runs with foreign keys and WAL and applies numbered schema
+  memberships, sessions, Runs, events, checkpoints, SpecFacts, Core/Topic
+  Memory, proposals, and maintenance cursors. SQLite runs with foreign keys and WAL and applies numbered schema
   migrations.
 - `data/QA/questions.jsonl`: curated Release 17 development questions with
   exact local evidence bindings; complete upstream snapshots stay in ignored
@@ -161,12 +164,19 @@ specrag research run --workspace standards --question "..." [--release 17]
 specrag research inspect|resume|cancel --workspace standards RUN-...
 specrag specfact review --workspace standards SFP-... --approve
 specrag memory set|list|delete --workspace standards ...
+specrag memory topic create|list|add|pin|unpin --workspace standards ...
+specrag memory recall --workspace standards --query "reranker experiment"
+specrag memory extract --workspace standards --source-ref TURN-... --user-text "..."
+specrag memory proposal list|review --workspace standards ...
+specrag memory maintenance status|consolidate|prune|restore --workspace standards ...
 ```
 
 Every product research command requires `--workspace`. A trusted session and
 membership produce `ActorContext` before corpus or checkpoint access. Members
-manage their own Runs and User Memory; reviewers approve workspace SpecFacts;
-admins manage members and every Run in their workspace. Missing context or
+manage their own Runs and User Core. Workspace members read Project/Topic
+Memory and submit candidates; reviewers and admins publish Project/Topic
+Memory, manage pinning, approve Memory proposals, and maintain it. Reviewers
+also approve workspace SpecFacts; admins manage members and every Run in their workspace. Missing context or
 membership is denied. Run IDs and checkpoint thread IDs are separate; a thread
 ID never grants access.
 
@@ -191,7 +201,7 @@ is supplied to Researcher as a source-finding hint; the workflow still retrieves
 validates, and cites the original specification text.
 
 User configuration precedence is command arguments, then active private User
-Memory, then `config.yaml`. A Run stores the exact SpecFact and User Memory IDs
+Core, then `config.yaml`. A Run stores the exact SpecFact and Memory revision IDs
 used at start, so later revisions do not change its research context.
 
 Each planning artifact records whether its plan was generated deterministically

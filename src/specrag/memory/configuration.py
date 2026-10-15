@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from specrag.models import UserMemoryItem
+from specrag.models import MemoryEntry
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class ResolvedUserConfiguration:
 
 
 def resolve_user_configuration(
-    memories: tuple[UserMemoryItem, ...],
+    memories: tuple[MemoryEntry, ...],
     *,
     config_release: int,
     explicit_release: int | None = None,
@@ -31,7 +31,7 @@ def resolve_user_configuration(
     release_item = values.get("default_release")
     language_item = values.get("answer_language")
     detail_item = values.get("detail_level")
-    memory_release = int(release_item.value) if release_item else None
+    memory_release = int(release_item.content) if release_item else None
     used = tuple(sorted(
         item.memory_id for item, explicit in (
             (release_item, explicit_release),
@@ -42,10 +42,10 @@ def resolve_user_configuration(
     return ResolvedUserConfiguration(
         release=explicit_release or memory_release or config_release,
         answer_language=(
-            explicit_language or (language_item.value if language_item else None) or "English"
+            explicit_language or (language_item.content if language_item else None) or "English"
         ),
         detail_level=(
-            explicit_detail or (detail_item.value if detail_item else None) or "standard"
+            explicit_detail or (detail_item.content if detail_item else None) or "standard"
         ),
         memory_ids=used,
     )

@@ -13,7 +13,7 @@ the source tree contains only the active implementation.
 The active package responsibilities are:
 
 - `models`: dependency-free identity, Run/event, research, Evidence, SpecFact,
-  User Memory, and transport contracts.
+  Core/Topic Memory, proposal, maintenance, and transport contracts.
 - `access`: default-deny policy and local identity/session application service.
 - `retrieval`: public corpus discovery, indexing, search, fusion, reranking,
   and retrieval planning.
@@ -21,11 +21,12 @@ The active package responsibilities are:
 - `agents`: bounded model-controlled research loops.
 - `evidence`: provenance validation, sufficiency, gaps, and synthesis.
 - `specfacts`: workspace-scoped proposal, review, lifecycle, and hint lookup.
-- `memory`: private user preferences, followed topics, and research leads.
+- `memory`: authorized User/Project Core, Topic recall, reviewable extraction,
+  consolidation, pruning, and immutable Run snapshots.
 - `orchestration`: LangGraph state, graph scheduling, durable checkpoints,
   runtime controls, Run Harness, and event emission.
 - `infrastructure`: provider, vector-store, SQLite, identity, Run/event,
-  SpecFact, and User Memory adapters.
+  SpecFact, Memory, and structured Memory-agent adapters.
 - `interfaces`: the single CLI's parsers, handlers, and application composition.
 - `evaluation`: offline evaluation only.
 - `prompts`: versioned prompt text only.
@@ -38,7 +39,7 @@ src/specrag/
 ├── agents/            bounded researcher loops
 ├── orchestration/     LangGraph runtime, graph nodes, routing, checkpoints
 ├── evidence/          validation, sufficiency, gaps, and synthesis
-├── memory/            private User Memory preferences and research leads
+├── memory/            Core/Topic Memory, recall, proposals, maintenance
 ├── specfacts/         reviewed workspace-scoped specification facts
 ├── access/            local identity and default-deny authorization
 ├── infrastructure/    external service and persistence adapters
@@ -122,15 +123,17 @@ task completeness. A Researcher submission is only a handoff to these nodes,
 not a sufficiency verdict.
 Framework-independent workflow contracts live in `models/research.py`, and the
 tool protocol remains under `tools/`. `specfacts/service.py` owns the migrated
-validated-claim behavior plus pending review. `memory/service.py` owns only
-explicit private User Memory. It validates the small typed kind set, records
-explicit-user revisions and operation keys, and serves authorized run
-snapshots/context views. Configuration kinds stay out of model context;
-followed topics and research leads are injected only as untrusted hints. SQLite
-adapters live under `infrastructure/`.
-Researcher receives authorized, read-only snapshots containing hint IDs; it
-does not receive SpecFact or User Memory write services. Pending facts and User
-Memory cannot enter Source Validator or the Sufficiency Judge as Evidence.
+validated-claim behavior plus pending review. `memory/service.py` owns explicit
+Core and Topic writes and immutable snapshots; `memory/recall.py` owns bounded
+Core/pinned assembly and local Topic BM25; `memory/proposals.py` applies only
+reviewed mutations; `memory/extraction.py` and `memory/maintenance.py` own the
+provider-neutral Extractor, consolidation, and capacity policies. Provider
+calls and SQLite adapters stay under `infrastructure/`. Configuration kinds
+stay out of model context. Every injected entry is marked as untrusted.
+Researcher receives authorized, read-only revision snapshots containing Memory
+IDs; it does not receive Memory write services. Pending Memory and active
+Memory cannot enter Source Validator, Sufficiency Judge, Evidence, or SpecFact
+creation as trusted assertions.
 
 `orchestration/checkpointing.py` is the only durable LangGraph checkpointer
 adapter. It uses the same local SQLite file as domain stores while preserving

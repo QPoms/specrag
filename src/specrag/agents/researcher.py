@@ -1,7 +1,5 @@
 """Bounded Researcher loop over native trusted retrieval function calls."""
-
 from __future__ import annotations
-
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -10,7 +8,7 @@ from specrag.config import AppConfig
 from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
-from specrag.models import NativeFunctionCallOutput, ResearchTask
+from specrag.models import CandidateEvidence, NativeFunctionCallOutput, ResearchTask
 from specrag.retrieval.hybrid import HybridMarkdownRetriever, effective_corpus_scope
 from specrag.retrieval.planner import PlannedRetrievalExecution, PlannedRetrievalTaskResult
 from specrag.tools import (
@@ -26,13 +24,11 @@ from specrag.tools import (
     build_retrieval_tool_registry,
     parse_retrieval_tool_arguments,
 )
-
 from .models import AgentRetrievalCall, AgentRetrievalTurn, AgentToolOutcome, AgenticRetrievalExecution
 from .planning import propose_researcher_turn
 from .policy import call_signature
 from .state import EvidenceLedger
 from .tool_results import planned_hits_from_tool
-
 
 @dataclass
 class RegistryResearcherService:
@@ -51,13 +47,14 @@ class RegistryResearcherService:
     stop_requested: Callable[
         [str], Literal["cancelled", "elapsed_time_budget"] | None
     ] | None = None
-
     def run(
         self,
         tasks: tuple[ResearchTask, ...],
         *,
         shared_context: Mapping[str, Any] | None = None,
         max_tool_calls: int | None = None,
+        initial_evidence: tuple[CandidateEvidence, ...] = (),
+        initial_active_evidence_ids: tuple[str, ...] = (),
     ) -> tuple[AgenticRetrievalExecution, dict[str, str]]:
         if not tasks:
             raise ValueError("Researcher requires at least one research task")
@@ -71,6 +68,8 @@ class RegistryResearcherService:
                 **dict(shared_context or {}),
                 "authorized_research_context": list(self.research_context),
             },
+            initial_evidence=initial_evidence,
+            initial_active_evidence_ids=initial_active_evidence_ids,
             max_rounds=self.max_rounds,
             max_total_actions=(
                 max_tool_calls
@@ -85,8 +84,6 @@ class RegistryResearcherService:
             ))) if self.stop_requested is not None else None,
         )
         return execution, {task.task_id: task.task_id for task in tasks}
-
-
 def build_retrieval_tool_request(
     call: AgentRetrievalCall,
     *,
@@ -138,8 +135,6 @@ def build_retrieval_tool_request(
         seed_chunk_ids=seeds,
         limit=min(arguments.max_results, result_limit),
     )
-
-
 def _evidence_execution(
     *,
     research_tasks: tuple[ResearchTask, ...],
@@ -174,8 +169,6 @@ def _evidence_execution(
         corpus_versions=active_scope.versions,
         tasks=tuple(tasks),
     )
-
-
 def _history(turns: list[AgentRetrievalTurn]) -> list[dict[str, Any]]:
     return [
         {
@@ -270,6 +263,8 @@ def run_agentic_retrieval_loop(
     app_config: AppConfig,
     tool_registry: ToolRegistry | None = None,
     shared_context: Mapping[str, Any] | None = None,
+    initial_evidence: tuple[CandidateEvidence, ...] = (),
+    initial_active_evidence_ids: tuple[str, ...] = (),
     max_rounds: int = 4,
     max_total_actions: int = 9,
     hits_per_search: int = 8,
@@ -307,6 +302,10 @@ def run_agentic_retrieval_loop(
     ledger = EvidenceLedger(
         query_ids,
         max_per_question=max_evidence_per_question,
+    )
+    ledger.seed_candidates(
+        initial_evidence,
+        active_evidence_ids=initial_active_evidence_ids,
     )
     turns: list[AgentRetrievalTurn] = []
     errors: list[str] = []

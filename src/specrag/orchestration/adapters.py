@@ -20,6 +20,7 @@ from specrag.models import (
 )
 
 from .dependencies import build_dependency_context
+from .gap_context import build_corrective_research_input
 from .state import ResearchState
 
 
@@ -75,24 +76,34 @@ class SingleResearcherHandler:
             corrective=corrective,
         )
 
-        relevant_gaps = tuple(
-            gap.model_dump(mode="json")
-            for gap in state["gaps"]
-            if gap.task_id == selected.task_id and not gap.resolved
-        )
+        shared_context: dict[str, object] = {
+            "research_id": state["research_id"],
+            "iteration": state["iteration"],
+            "gap_retrieval_mode": "initial",
+            "unresolved_gaps": (),
+            "dependency_context": build_dependency_context(
+                state,
+                selected,
+            ),
+        }
+        corrective_options: dict[str, object] = {}
+        if corrective:
+            corrective_input = build_corrective_research_input(
+                state,
+                selected,
+            )
+            shared_context.update(corrective_input.shared_context)
+            corrective_options = {
+                "initial_evidence": corrective_input.initial_evidence,
+                "initial_active_evidence_ids": (
+                    corrective_input.initial_active_evidence_ids
+                ),
+            }
         execution, query_to_task = self.service.run(
             (running,),
-            shared_context={
-                "research_id": state["research_id"],
-                "iteration": state["iteration"],
-                "gap_retrieval_mode": "judge_gap" if corrective else "initial",
-                "unresolved_gaps": relevant_gaps,
-                "dependency_context": build_dependency_context(
-                    state,
-                    selected,
-                ),
-            },
+            shared_context=shared_context,
             max_tool_calls=remaining_calls,
+            **corrective_options,
         )
         adapted_state = cast(ResearchState, {**state, "research_tasks": tasks})
         update = researcher_execution_update(
@@ -133,6 +144,7 @@ class EvidenceSufficiencyHandler:
             state["research_tasks"],
             state["candidate_evidence"],
             state["source_validations"],
+            original_question=state["user_question"],
         )
         return {
             "research_tasks": batch.tasks,

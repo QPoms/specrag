@@ -346,6 +346,37 @@ def test_evidence_ledger_keeps_complete_candidates_and_replaces_active() -> None
     assert views["inactive_candidates"][0]["excerpt"] == hits[1].excerpt
 
 
+def test_corrective_ledger_restores_candidates_and_judge_active_set() -> None:
+    ledger = EvidenceLedger(("T1",), max_per_question=3)
+    seeded = tuple(
+        _observed_cross_reference().model_copy(update={
+            "hit_id": f"E-T1:{index}",
+            "chunk_id": f"38.331:17.17.0:seed-{index}",
+            "excerpt": f"Restored source-valid candidate {index}.",
+        })
+        for index in range(1, 3)
+    )
+
+    ledger.seed("T1", seeded, active_evidence_ids=("E-T1:2",))
+    _, added = ledger.add(
+        "T1",
+        (_observed_cross_reference().model_copy(update={
+            "chunk_id": "38.331:17.17.0:new",
+            "excerpt": "New corrective evidence.",
+        }),),
+        action_id="call-corrective",
+    )
+
+    views = ledger.selection_payload()
+    assert [item["evidence_id"] for item in views["active_evidence"]] == [
+        "E-T1:2",
+    ]
+    assert [item["evidence_id"] for item in views["inactive_candidates"]] == [
+        "E-T1:1",
+    ]
+    assert added == ("E-T1:3",)
+
+
 def test_grounded_clause_call_is_accepted_from_observed_evidence() -> None:
     ledger = EvidenceLedger(("T1",), max_per_question=12)
     ledger.add("T1", (_observed_cross_reference(),), action_id="call-search")
