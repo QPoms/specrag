@@ -28,7 +28,9 @@ The active package responsibilities are:
   runtime controls, Run Harness, and event emission.
 - `infrastructure`: provider, vector-store, SQLite, identity, Run/event,
   SpecFact, Memory, corpus-registry, and structured Memory-agent adapters.
-- `interfaces`: the single CLI's parsers, handlers, and application composition.
+- `interfaces`: CLI and HTTP transport adapters, request authentication, error
+  mapping, and application composition. Authorization decisions remain in
+  `access`; business workflows remain in their owning packages.
 - `evaluation`: offline evaluation only.
 - `prompts`: versioned prompt text only.
 
@@ -47,7 +49,7 @@ src/specrag/
 ├── evaluation/        offline evaluation only
 ├── prompts/           versioned model instructions without runtime logic
 ├── config.py
-└── cli.py             the single supported product entry point
+└── cli.py             the stable local CLI entry point
 ```
 
 Packages are created only when their first real implementation is added. The
@@ -97,7 +99,10 @@ lives in Git rather than parallel source files.
 `access` depends only on `models`; `specfacts` and `memory` depend on the
 trusted policy and pure models. `infrastructure` implements their persistence
 protocols without importing those business packages. `interfaces` is the
-outer composition layer and may depend on all application packages. The
+outer composition and transport layer and may depend on all application
+packages. HTTP handlers authenticate transport credentials and construct
+trusted contexts, then delegate role decisions to `access` and behavior to the
+existing services; they do not implement a parallel permission system. The
 structure checker enforces these directions and continues to permit LangGraph
 imports only in `orchestration`.
 

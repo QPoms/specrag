@@ -25,6 +25,27 @@ class InMemoryRunStore:
     def get(self, run_id: str) -> ResearchRun | None:
         return self._runs.get(run_id)
 
+    def list_runs(
+        self, workspace_id: str, *, owner_user_id: str | None, limit: int,
+    ) -> tuple[ResearchRun, ...]:
+        visible = (
+            run
+            for run in self._runs.values()
+            if run.workspace_id == workspace_id
+            and (owner_user_id is None or run.owner_user_id == owner_user_id)
+        )
+        return tuple(sorted(
+            visible,
+            key=lambda run: (run.created_at, run.run_id),
+            reverse=True,
+        )[:limit])
+
+    def list_active_runs(self) -> tuple[ResearchRun, ...]:
+        return tuple(
+            run for run in self._runs.values()
+            if run.status in {"queued", "running"}
+        )
+
     def is_cancel_requested(self, run_id: str) -> bool:
         run = self.get(run_id)
         return bool(run and run.cancel_requested_at)

@@ -31,8 +31,11 @@ RunStopReason = Literal[
 
 
 class ResearchRun(_StrictModel):
-    schema_version: Literal["research-run/v1", "research-run/v1.1"] = (
-        "research-run/v1.1"
+    schema_version: Literal[
+        "research-run/v1", "research-run/v1.1", "research-run/v1.2",
+        "research-run/v1.3",
+    ] = (
+        "research-run/v1.3"
     )
     run_id: str = Field(pattern=r"^RUN-[0-9A-F]{32}$")
     thread_id: str = Field(pattern=r"^THREAD-[0-9A-F]{32}$")
@@ -42,6 +45,7 @@ class ResearchRun(_StrictModel):
     release: int = Field(ge=1)
     answer_language: str = Field(default="English", min_length=1)
     detail_level: str = Field(default="standard", min_length=1)
+    budget: ResearchBudget = Field(default_factory=ResearchBudget)
     status: RunStatus = "queued"
     stop_reason: RunStopReason | None = None
     development_question_id: str | None = None
@@ -53,6 +57,9 @@ class ResearchRun(_StrictModel):
     finished_at: datetime | None = None
     deadline_at: datetime | None = None
     cancel_requested_at: datetime | None = None
+    retry_of_run_id: str | None = Field(
+        default=None, pattern=r"^RUN-[0-9A-F]{32}$"
+    )
     # A Run may be created by an older persisted schema without a corpus
     # binding. New Runs receive an exact binding before execution starts.
     corpus_version_policy: Literal[
@@ -76,6 +83,8 @@ class ResearchRun(_StrictModel):
         if self.finished_at is not None and self.started_at is not None:
             if self.finished_at < self.started_at:
                 raise ValueError("run cannot finish before start")
+        if self.retry_of_run_id == self.run_id:
+            raise ValueError("Run cannot retry itself")
         if self.corpus_version_policy is None and (
             self.corpus_release is not None or self.corpus_versions
         ):

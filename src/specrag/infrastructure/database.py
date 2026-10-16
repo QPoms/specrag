@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import sqlite3
+from threading import Lock, local
 
 
 DEFAULT_DATABASE_PATH = Path(".local/state/specrag.sqlite3")
@@ -164,6 +165,26 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX run_corpus_versions
             ON run_corpus_bindings(version_id, run_id);
     """),
+    (5, """
+        CREATE TABLE run_jobs (
+            run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+            action TEXT NOT NULL CHECK (action IN ('execute', 'resume')),
+            state TEXT NOT NULL CHECK (state IN ('queued', 'leased')),
+            available_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (
+                (state = 'queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
+                OR
+                (state = 'leased' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+            )
+        );
+        CREATE INDEX run_jobs_claimable
+            ON run_jobs(state, available_at, lease_expires_at, created_at);
+    """),
 )
 
 
@@ -171,11 +192,34 @@ class SQLiteDatabase:
     def __init__(self, path: Path = DEFAULT_DATABASE_PATH) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA journal_mode = WAL")
+        self._local = local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connection_lock = Lock()
+        self._closed = False
+        connection = self._open_connection()
+        self._local.connection = connection
+        connection.execute("PRAGMA journal_mode = WAL")
         self._migrate()
+
+    def _open_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        self._connections.append(connection)
+        return connection
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        connection = getattr(self._local, "connection", None)
+        if connection is not None:
+            return connection
+        with self._connection_lock:
+            if self._closed:
+                raise RuntimeError("SQLite database is closed")
+            connection = self._open_connection()
+            self._local.connection = connection
+            return connection
 
     def _migrate(self) -> None:
         self.connection.execute(
@@ -256,7 +300,13 @@ class SQLiteDatabase:
         self.connection.execute("DROP TABLE user_memory")
 
     def close(self) -> None:
-        self.connection.close()
+        with self._connection_lock:
+            if self._closed:
+                return
+            self._closed = True
+            for connection in self._connections:
+                connection.close()
+            self._connections.clear()
 
     def __enter__(self) -> "SQLiteDatabase":
         return self

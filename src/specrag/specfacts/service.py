@@ -76,6 +76,36 @@ class SpecFactService:
         self.store = store
         self.policy = policy or AccessPolicy()
 
+    def list_facts(self, context: ActorContext) -> tuple[SpecFact, ...]:
+        """List every reviewed fact in the current workspace."""
+        self.policy.require(context, "specfact.read", workspace_id=context.workspace_id)
+        return tuple(
+            sorted(
+                (
+                    item
+                    for item in self.store.all_facts()
+                    if item.workspace_id == context.workspace_id
+                ),
+                key=lambda item: item.approved_at,
+                reverse=True,
+            )
+        )
+
+    def list_proposals(self, context: ActorContext) -> tuple[SpecFactProposal, ...]:
+        """List reviewable proposals in the current workspace."""
+        self.policy.require(context, "specfact.read", workspace_id=context.workspace_id)
+        return tuple(
+            sorted(
+                (
+                    item
+                    for item in self.store.all_proposals()
+                    if item.workspace_id == context.workspace_id
+                ),
+                key=lambda item: item.proposed_at,
+                reverse=True,
+            )
+        )
+
     def search(
         self,
         context: ActorContext,

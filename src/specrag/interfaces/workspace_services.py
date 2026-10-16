@@ -9,10 +9,12 @@ from pathlib import Path
 from specrag.access import LocalIdentityService
 from specrag.config import REPO_ROOT
 from specrag.infrastructure import (
+    DEFAULT_DATABASE_PATH,
     SQLiteCorpusStore,
     SQLiteDatabase,
     SQLiteIdentityStore,
     SQLiteRunStore,
+    SQLiteRunQueue,
     SQLiteSpecFactStore,
     SQLiteMemoryStore,
 )
@@ -53,11 +55,14 @@ class WorkspaceServices:
     corpus_store: SQLiteCorpusStore
     corpus_sync: CorpusSyncService
     runs: SQLiteRunStore
+    run_queue: SQLiteRunQueue
     harness: RunHarness
 
     @classmethod
-    def create(cls) -> "WorkspaceServices":
-        database = SQLiteDatabase()
+    def create(
+        cls, database_path: Path = DEFAULT_DATABASE_PATH,
+    ) -> "WorkspaceServices":
+        database = SQLiteDatabase(database_path)
         checkpoint = SQLiteCheckpointManager(database.path)
         identity = LocalIdentityService(SQLiteIdentityStore(database))
         memory = MemoryService(SQLiteMemoryStore(database))
@@ -68,6 +73,7 @@ class WorkspaceServices:
         specfacts = SpecFactService(SQLiteSpecFactStore(database))
         corpus_store = SQLiteCorpusStore(database)
         runs = SQLiteRunStore(database)
+        run_queue = SQLiteRunQueue(database)
 
         def build_document(document) -> CorpusBuildResult:
             assert document.specification is not None and document.version is not None
@@ -253,6 +259,7 @@ class WorkspaceServices:
             corpus_store,
             corpus_sync,
             runs,
+            run_queue,
             harness,
         )
 

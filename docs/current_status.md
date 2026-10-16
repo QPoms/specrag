@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-15
+Updated: 2026-10-16
 
 ## Current state
 
@@ -73,13 +73,48 @@ injected into Researcher is marked as untrusted context and cannot enter
 Evidence, Source Validator, Sufficiency Judge, or SpecFact proposal logic.
 
 Local `scrypt` accounts, 12-hour sessions, workspaces, and member/reviewer/admin
-roles are active through the single `specrag` CLI. SQLite state lives at
+roles are active through the `specrag` CLI and the first authenticated HTTP API
+slice. SQLite state lives at
 `.local/state/specrag.sqlite3`, uses foreign keys and WAL, and applies monotonic
 `schema_migrations`. The database stores only token SHA-256 digests; the local
 CLI bearer token is kept in ignored `.local/state/session-token`. Authorization is
 default-deny and occurs before a Run's checkpoint thread is resolved. Members
 manage their own Runs and memories, reviewers review their workspace's facts,
-and admins manage members and all workspace Runs. Workspace members read
+and admins manage members and all workspace Runs. The API accepts only an
+explicit bearer session, reconstructs the trusted actor and current membership
+on every workspace request, rejects client-supplied identity/role fields, and
+maps inaccessible and unknown Runs to the same response. It exposes
+login/logout, workspace listing/creation and context, member administration,
+Run inspection/cancellation, and workspace-scoped Memory/SpecFact dashboards
+and proposal review. User Core responses are always restricted to the current
+user; Project/Topic Memory and SpecFacts remain restricted to the current
+Workspace, and review actions retain the existing owner/reviewer/admin policy.
+Workspace admins can list the member directory, create or attach local
+accounts, change other members' roles, and remove other memberships. The
+identity service rejects self-demotion and self-removal, while non-admin roles
+cannot read the member directory.
+API research submission now persists a queued
+Run and returns immediately; an in-process background Worker executes the same
+RunHarness used by the CLI. Authorized clients can consume ordered durable Run
+events through an SSE endpoint, and terminal streams close after the final
+event. The same Worker now queues checkpoint Resume jobs and fresh Retry jobs.
+Resume keeps the Run ID and its frozen context, clears the prior terminal
+timing/cancellation markers, grants a new elapsed-time window, and is rejected
+unless a durable checkpoint exists. Retry creates a new Run with the original
+research parameters, a fresh context snapshot, and a persisted
+`retry_of_run_id` link. Resume scheduling is de-duplicated per Run/action and
+terminal event operation keys include the resume attempt, so a resumed Run's
+final SSE event is not collapsed into its earlier terminal event. Domain
+SQLite access now uses one connection per API/Worker thread over the same WAL
+database, avoiding unsafe concurrent use of one connection while retaining
+transaction boundaries and foreign-key enforcement. Run jobs now live in a
+durable SQLite queue with atomic leases, heartbeats, expiry recovery, and
+startup repair for queued or interrupted Runs. The API can embed this Worker
+for local development, or run in external-worker mode beside the standalone
+`specrag-worker` process; both modes use the same RunHarness and queue. A
+broker such as Redis remains a later scale-out option. Anonymous bootstrap,
+credential cookies, permissive
+CORS, and private document upload are not exposed. Workspace members read
 Project/Topic Memory and submit proposals; reviewers/admins publish it, manage
 pinning, and approve maintenance proposals.
 
@@ -94,10 +129,38 @@ contract is now `research-state/v1.6`.
 
 The top-level `cli.py` is a small stable entry. Product command handling lives
 under `interfaces/`, with `auth`, `workspace`, `research`, `specfact`, and
-`memory` command groups. Existing route/plan/research-plan/baseline diagnostics
-remain on the same CLI. The public 3GPP corpus remains the only supported
-document corpus in this milestone; private-document upload and UI/API work are
-still outside the active scope.
+`memory` command groups. The same package now owns the FastAPI transport and
+`specrag-api` entry point while delegating all authorization and business work
+to the existing services. Existing route/plan/research-plan/baseline
+diagnostics remain on the same CLI. The public 3GPP corpus remains the only
+supported document corpus in this milestone; private-document upload, rate
+limiting, and production deployment are still outside the active scope.
+
+The first local browser client is now implemented under `frontend/` as a React
++ TypeScript + Vite application. It uses the API-only security boundary, keeps
+the server-issued bearer token in `sessionStorage`, and provides a responsive
+login view, workspace switcher, research-desk shell, async Run submission
+entry point, and an authenticated Fetch-based SSE reader for live Run stages.
+It does not access SQLite directly. Completed Runs now expose only supported,
+claim-referenced evidence through the authorized inspection response, and the
+research desk renders the answer, claim trail, source path, exact version,
+heading, line locator, excerpt, and document hash. The knowledge-management
+surface now shows private User Core, shared Project Core, Topic Memory,
+reviewable Memory proposals, approved SpecFacts, SpecFact proposals, source
+locators, and review status. Authorized users can approve or reject pending
+proposals in place, with a mandatory reason for rejection. An admin-only
+People & Permissions panel now shows the workspace directory and role model,
+creates local members, changes roles, removes memberships with confirmation,
+and protects the signed-in administrator's row. Non-admin users see an
+explicit locked state without requesting directory data. Opening a Run now
+shows lifecycle metrics, checkpoint availability, recent durable events, a
+redacted failure summary, and contextual Cancel, Resume, or Retry controls.
+Cancellation remains cooperative; Resume continues the same checkpoint; Retry
+creates and follows a new linked Run. Run history is now loaded from the
+authorized SQLite-backed API after browser refresh or workspace switching.
+Members and reviewers see their own Runs; admins see all Runs in the selected
+workspace. Persisted active Runs reconnect to the SSE monitor, and historical
+results can be reopened from the research desk.
 
 Focused tests cover password verification, expired/revoked sessions, role
 checks, cross-workspace denial, typed and immutable memory revisions, exact
@@ -105,7 +168,12 @@ memory snapshots, configuration precedence, SpecFact
 proposal/review/conflict/supersession/invalidation,
 idempotent Run events, cancellation, elapsed deadlines, interrupted-process
 resume, SQLite checkpoint restart, specification synchronization, and exact
-Run corpus pinning. The complete suite passes 138 tests at
+Run corpus pinning, API authentication, membership revalidation, role denial,
+hidden cross-owner/cross-workspace Run access, member-directory authorization,
+self-demotion/removal protection, asynchronous Run submission, queued Resume,
+linked Retry, attempt-aware terminal events, safe failure projection, worker
+execution, SSE isolation, evidence filtering, knowledge visibility, and
+proposal review authorization. The complete suite passes 154 tests at
 this point. The historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.

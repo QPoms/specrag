@@ -177,3 +177,50 @@ def test_new_harness_can_resume_after_process_interruption() -> None:
     assert result.run.status == "completed"
     assert result.run.stop_reason == "completed"
     assert [event.event_type for event in result.events].count("run_stopped") == 1
+
+
+def test_terminal_run_can_queue_resume_only_with_checkpoint() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _factory)
+    completed = harness.start(_context(), ResearchRequest(question="question"))
+    failed = completed.run.model_copy(update={
+        "status": "failed",
+        "stop_reason": "failed",
+    })
+    store.put(failed)
+
+    queued = harness.queue_resume(
+        _context(), failed.run_id, elapsed_time_seconds=120
+    )
+    duplicate = harness.queue_resume(
+        _context(), failed.run_id, elapsed_time_seconds=120
+    )
+
+    assert queued.run.status == duplicate.run.status == "queued"
+    assert queued.run.finished_at is None
+    assert queued.run.cancel_requested_at is None
+    assert [event.event_type for event in duplicate.events].count("resumed") == 1
+    resumed = harness.execute_resume(_context(), failed.run_id)
+    assert resumed.run.status == "completed"
+
+
+def test_retry_creates_new_linked_run_with_fresh_lifecycle() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _factory)
+    completed = harness.start(_context(), ResearchRequest(
+        question="question",
+        release=18,
+        answer_language="Chinese",
+        detail_level="detailed",
+    ))
+
+    retried = harness.retry(
+        _context(), completed.run.run_id, elapsed_time_seconds=300
+    )
+
+    assert retried.run.run_id != completed.run.run_id
+    assert retried.run.retry_of_run_id == completed.run.run_id
+    assert retried.run.status == "queued"
+    assert retried.run.question == completed.run.question
+    assert retried.run.release == 18
+    assert retried.run.answer_language == "Chinese"

@@ -30,7 +30,13 @@ class IdentityStore(Protocol):
     def revoke_session(self, token_hash: str, now: datetime) -> bool: ...
     def put_workspace(self, workspace: Workspace, membership: Membership) -> None: ...
     def workspace_by_name_or_id(self, value: str) -> Workspace | None: ...
+    def workspaces_for_user(
+        self, user_id: str,
+    ) -> tuple[tuple[Workspace, Membership], ...]: ...
     def membership(self, workspace_id: str, user_id: str) -> Membership | None: ...
+    def memberships_for_workspace(
+        self, workspace_id: str,
+    ) -> tuple[tuple[User, Membership], ...]: ...
     def put_membership(self, membership: Membership) -> None: ...
     def remove_membership(self, workspace_id: str, user_id: str) -> bool: ...
 
@@ -104,10 +110,15 @@ class LocalIdentityService:
 
     def create_workspace(self, token: str, name: str) -> Workspace:
         user, _, _, _ = self._session(token)
+        name = name.strip()
+        if not name:
+            raise ValueError("workspace name must not be blank")
+        if self.store.workspace_by_name_or_id(name) is not None:
+            raise ValueError("workspace name already exists")
         now = datetime.now(timezone.utc)
         workspace = Workspace(
             workspace_id="WS-" + uuid4().hex.upper(),
-            name=name.strip(),
+            name=name,
             created_by=user.user_id,
             created_at=now,
         )
@@ -119,6 +130,10 @@ class LocalIdentityService:
         )
         self.store.put_workspace(workspace, membership)
         return workspace
+
+    def workspaces(self, token: str) -> tuple[tuple[Workspace, Membership], ...]:
+        user, _, _, _ = self._session(token)
+        return self.store.workspaces_for_user(user.user_id)
 
     def context(self, token: str, workspace_name_or_id: str) -> ActorContext:
         user, session_id, authenticated_at, expires_at = self._session(token)
@@ -155,6 +170,14 @@ class LocalIdentityService:
         self.store.put_membership(membership)
         return membership
 
+    def members(
+        self, context: ActorContext,
+    ) -> tuple[tuple[User, Membership], ...]:
+        self.policy.require(
+            context, "workspace.members.manage", workspace_id=context.workspace_id
+        )
+        return self.store.memberships_for_workspace(context.workspace_id)
+
     def set_role(self, context: ActorContext, username: str, role: str) -> Membership:
         self.policy.require(
             context, "workspace.members.manage", workspace_id=context.workspace_id
@@ -165,6 +188,8 @@ class LocalIdentityService:
         current = self.store.membership(context.workspace_id, user.user_id)
         if current is None:
             raise KeyError(f"user is not a workspace member: {username}")
+        if user.user_id == context.user_id and current.role == "admin" and role != "admin":
+            raise ValueError("administrators cannot demote their own membership")
         updated = current.model_copy(update={"role": role})
         self.store.put_membership(updated)
         return updated
@@ -174,7 +199,11 @@ class LocalIdentityService:
             context, "workspace.members.manage", workspace_id=context.workspace_id
         )
         user = self.store.user_by_name(username)
-        if user is None or not self.store.remove_membership(context.workspace_id, user.user_id):
+        if user is None:
+            raise KeyError(f"user is not a workspace member: {username}")
+        if user.user_id == context.user_id:
+            raise ValueError("administrators cannot remove their own membership")
+        if not self.store.remove_membership(context.workspace_id, user.user_id):
             raise KeyError(f"user is not a workspace member: {username}")
 
     def _session(self, token: str) -> tuple[User, str, datetime, datetime]:

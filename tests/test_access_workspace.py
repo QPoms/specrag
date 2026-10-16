@@ -28,8 +28,18 @@ def test_password_session_and_role_matrix(tmp_path) -> None:
             admin, "bob", "bob secure password", "reviewer"
         )
         assert membership.role == "reviewer"
+        assert [user.username for user, _ in service.members(admin)] == [
+            "alice", "bob"
+        ]
+        with pytest.raises(ValueError, match="cannot demote"):
+            service.set_role(admin, "alice", "member")
+        with pytest.raises(ValueError, match="cannot remove"):
+            service.remove_user(admin, "alice")
         bob_token, _ = service.login("bob", "bob secure password")
-        assert service.context(bob_token, "Workspace A").role == "reviewer"
+        bob = service.context(bob_token, "Workspace A")
+        assert bob.role == "reviewer"
+        with pytest.raises(AuthorizationError):
+            service.members(bob)
         service.logout(bob_token)
         with pytest.raises(AuthorizationError):
             service.context(bob_token, "Workspace A")

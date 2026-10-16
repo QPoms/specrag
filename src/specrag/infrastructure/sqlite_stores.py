@@ -46,6 +46,30 @@ class SQLiteRunStore:
         ).fetchone()
         return ResearchRun.model_validate_json(row[0]) if row else None
 
+    def list_runs(
+        self, workspace_id: str, *, owner_user_id: str | None, limit: int,
+    ) -> tuple[ResearchRun, ...]:
+        if owner_user_id is None:
+            rows = self.database.connection.execute(
+                "SELECT payload_json FROM runs WHERE workspace_id = ? "
+                "ORDER BY rowid DESC LIMIT ?",
+                (workspace_id, limit),
+            ).fetchall()
+        else:
+            rows = self.database.connection.execute(
+                "SELECT payload_json FROM runs WHERE workspace_id = ? "
+                "AND owner_user_id = ? ORDER BY rowid DESC LIMIT ?",
+                (workspace_id, owner_user_id, limit),
+            ).fetchall()
+        return tuple(ResearchRun.model_validate_json(row[0]) for row in rows)
+
+    def list_active_runs(self) -> tuple[ResearchRun, ...]:
+        rows = self.database.connection.execute(
+            "SELECT payload_json FROM runs WHERE status IN ('queued', 'running') "
+            "ORDER BY rowid"
+        ).fetchall()
+        return tuple(ResearchRun.model_validate_json(row[0]) for row in rows)
+
     def is_cancel_requested(self, run_id: str) -> bool:
         row = self.database.connection.execute(
             "SELECT cancel_requested_at FROM runs WHERE run_id = ?", (run_id,)

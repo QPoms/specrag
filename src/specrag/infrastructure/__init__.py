@@ -11,6 +11,7 @@ from .corpus_store import SQLiteCorpusStore
 from .threegpp import ThreeGppArchiveProvider, ThreeGppSourceMaterializer
 from .identity_store import SQLiteIdentityStore
 from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
+from .run_queue import SQLiteRunQueue
 from .research_planning import (
     RouteGoalAssessment,
     StructuredPlanResponse,
@@ -34,6 +35,7 @@ __all__ = [
     "ThreeGppSourceMaterializer",
     "SQLiteIdentityStore",
     "SQLiteRunStore",
+    "SQLiteRunQueue",
     "SQLiteSpecFactStore",
     "SQLiteMemoryStore",
     "RouteGoalAssessment",

@@ -18,12 +18,17 @@ from specrag.models import (
 )
 
 from .application import ResearchApplication, RuntimeStopped
+from .lifecycle import reset_for_resume, resume_attempt, retry_request
 from .state import ResearchState
 
 
 class RunStore(Protocol):
     def put(self, run: ResearchRun) -> None: ...
     def get(self, run_id: str) -> ResearchRun | None: ...
+    def list_runs(
+        self, workspace_id: str, *, owner_user_id: str | None, limit: int,
+    ) -> tuple[ResearchRun, ...]: ...
+    def list_active_runs(self) -> tuple[ResearchRun, ...]: ...
     def is_cancel_requested(self, run_id: str) -> bool: ...
     def append_event(self, event: RunEvent) -> RunEvent: ...
     def events(self, run_id: str) -> tuple[RunEvent, ...]: ...
@@ -75,6 +80,74 @@ class RunHarness:
         self.corpus_binding_writer = corpus_binding_writer
 
     def start(self, context: ActorContext, request: ResearchRequest) -> RunInspection:
+        run = self._prepare(context, request)
+        return self._execute(context, run, request=request, resume=False)
+
+    def submit(self, context: ActorContext, request: ResearchRequest) -> RunInspection:
+        """Persist a queued Run without executing its research graph."""
+
+        run = self._prepare(context, request)
+        return self._queued_inspection(run)
+
+    def execute_queued(self, context: ActorContext, run_id: str) -> RunInspection:
+        """Execute one previously submitted Run from a trusted worker."""
+
+        run = self.store.get(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if run.workspace_id != context.workspace_id or run.owner_user_id != context.user_id:
+            raise PermissionError("queued Run context mismatch")
+        if run.status in {"completed", "cancelled", "timed_out"}:
+            return self._queued_inspection(run)
+        if run.status == "running":
+            return self.resume(context, run_id)
+        if run.cancel_requested_at is not None:
+            return self._finish_cancelled(run)
+        return self._execute(
+            context, run, request=self._request_from_run(run), resume=False
+        )
+
+    def status(self, context: ActorContext, run_id: str) -> ResearchRun:
+        """Return an authorized Run without resolving a graph checkpoint."""
+
+        return self._authorized_run(context, run_id, "run.read")
+
+    def list_runs(
+        self, context: ActorContext, *, limit: int = 50,
+    ) -> tuple[ResearchRun, ...]:
+        """List only Runs visible to the current workspace actor."""
+
+        self.policy.require(
+            context,
+            "run.read",
+            workspace_id=context.workspace_id,
+            owner_user_id=context.user_id,
+        )
+        owner_user_id = None if context.role == "admin" else context.user_id
+        return self.store.list_runs(
+            context.workspace_id,
+            owner_user_id=owner_user_id,
+            limit=limit,
+        )
+
+    def recoverable_runs(self) -> tuple[ResearchRun, ...]:
+        """Return persisted Runs that require trusted Worker recovery."""
+
+        return self.store.list_active_runs()
+
+    def events(self, context: ActorContext, run_id: str) -> tuple[RunEvent, ...]:
+        """Return durable events after authorizing the owning Run."""
+
+        self._authorized_run(context, run_id, "run.read")
+        return self.store.events(run_id)
+
+    def _prepare(
+        self,
+        context: ActorContext,
+        request: ResearchRequest,
+        *,
+        retry_of_run_id: str | None = None,
+    ) -> ResearchRun:
         self.policy.require(context, "research.create", workspace_id=context.workspace_id)
         now = datetime.now(timezone.utc)
         run = ResearchRun(
@@ -86,8 +159,10 @@ class RunHarness:
             release=request.release,
             answer_language=request.answer_language,
             detail_level=request.detail_level,
+            budget=request.budget,
             memory_ids=request.configuration_memory_ids,
             development_question_id=request.development_question_id,
+            retry_of_run_id=retry_of_run_id,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.elapsed_time_seconds),
         )
@@ -121,15 +196,148 @@ class RunHarness:
             "corpus_versions": [
                 item.model_dump(mode="json") for item in run.corpus_versions
             ],
+            "retry_of_run_id": run.retry_of_run_id,
         })
-        return self._execute(context, run, request=request, resume=False)
+        return run
 
-    def resume(self, context: ActorContext, run_id: str) -> RunInspection:
+    def _queued_inspection(self, run: ResearchRun) -> RunInspection:
+        return RunInspection(
+            run=run,
+            events=self.store.events(run.run_id),
+            checkpoint=None,
+            stage_latency_ms={},
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+    @staticmethod
+    def _request_from_run(run: ResearchRun) -> ResearchRequest:
+        remaining = 900
+        if run.deadline_at is not None:
+            remaining = max(
+                1, int((run.deadline_at - datetime.now(timezone.utc)).total_seconds())
+            )
+        return ResearchRequest(
+            question=run.question,
+            release=run.release,
+            answer_language=run.answer_language,
+            detail_level=run.detail_level,
+            configuration_memory_ids=run.memory_ids,
+            budget=run.budget,
+            elapsed_time_seconds=remaining,
+            development_question_id=run.development_question_id,
+        )
+
+    def _finish_cancelled(self, run: ResearchRun) -> RunInspection:
+        now = datetime.now(timezone.utc)
+        terminal = run.model_copy(update={
+            "status": "cancelled",
+            "stop_reason": "cancelled",
+            "started_at": run.started_at or now,
+            "finished_at": now,
+        })
+        self.store.put(terminal)
+        attempt = resume_attempt(self.store.events(terminal.run_id))
+        self._event(
+            terminal,
+            "run_stopped",
+            f"run:stopped:cancelled:attempt:{attempt}",
+            payload={"reason": "cancelled"},
+        )
+        return RunInspection(
+            run=terminal,
+            events=self.store.events(terminal.run_id),
+            checkpoint=None,
+            stage_latency_ms={},
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+    def queue_resume(
+        self,
+        context: ActorContext,
+        run_id: str,
+        *,
+        elapsed_time_seconds: int = 900,
+    ) -> RunInspection:
         run = self._authorized_run(context, run_id, "run.resume")
-        if run.status in {"completed", "cancelled", "timed_out"}:
+        resumed_before = any(
+            event.event_type == "resumed" for event in self.store.events(run_id)
+        )
+        if run.status in {"queued", "running"} and resumed_before:
             return self.inspect(context, run_id)
-        self._event(run, "resumed", f"run:resume:{len(self.store.events(run_id))}")
+        if run.status not in {"failed", "cancelled", "timed_out"}:
+            raise ValueError("only failed, cancelled, or timed-out Runs can resume")
+        inspection = self.inspect(context, run_id)
+        if not inspection.checkpoint:
+            raise ValueError("Run has no durable checkpoint to resume")
+        queued = reset_for_resume(
+            run, elapsed_time_seconds=elapsed_time_seconds
+        )
+        self.store.put(queued)
+        attempt = resume_attempt(self.store.events(run_id)) + 1
+        self._event(
+            queued,
+            "resumed",
+            f"run:resume:{attempt}",
+            payload={"status": "queued", "elapsed_time_seconds": elapsed_time_seconds},
+        )
+        return self._queued_inspection(queued)
+
+    def execute_resume(
+        self, context: ActorContext, run_id: str,
+    ) -> RunInspection:
+        run = self._authorized_run(context, run_id, "run.resume")
+        if run.status in {"completed", "failed", "cancelled", "timed_out"}:
+            return self.inspect(context, run_id)
+        if run.status == "running":
+            return self.resume(context, run_id)
+        if run.cancel_requested_at is not None:
+            return self._finish_cancelled(run)
+        if run.status != "queued" or not any(
+            event.event_type == "resumed" for event in self.store.events(run_id)
+        ):
+            raise ValueError("Run is not queued for resume")
         return self._execute(context, run, request=None, resume=True)
+
+    def resume(
+        self,
+        context: ActorContext,
+        run_id: str,
+        *,
+        elapsed_time_seconds: int = 900,
+    ) -> RunInspection:
+        run = self._authorized_run(context, run_id, "run.resume")
+        if run.cancel_requested_at is not None and run.status in {"queued", "running"}:
+            return self._finish_cancelled(run)
+        if run.status == "completed":
+            return self.inspect(context, run_id)
+        if run.status in {"failed", "cancelled", "timed_out"}:
+            self.queue_resume(
+                context, run_id, elapsed_time_seconds=elapsed_time_seconds
+            )
+            return self.execute_resume(context, run_id)
+        if run.status == "queued":
+            return self.execute_resume(context, run_id)
+        attempt = resume_attempt(self.store.events(run_id)) + 1
+        self._event(run, "resumed", f"run:resume:{attempt}")
+        return self._execute(context, run, request=None, resume=True)
+
+    def retry(
+        self,
+        context: ActorContext,
+        run_id: str,
+        *,
+        elapsed_time_seconds: int = 900,
+    ) -> RunInspection:
+        source = self._authorized_run(context, run_id, "run.read")
+        if source.status not in {"completed", "failed", "cancelled", "timed_out"}:
+            raise ValueError("only terminal Runs can be retried")
+        request = retry_request(
+            source, elapsed_time_seconds=elapsed_time_seconds
+        )
+        run = self._prepare(context, request, retry_of_run_id=source.run_id)
+        return self._queued_inspection(run)
 
     def inspect(self, context: ActorContext, run_id: str) -> RunInspection:
         run = self._authorized_run(context, run_id, "run.read")
@@ -205,7 +413,13 @@ class RunHarness:
                 "finished_at": datetime.now(timezone.utc),
             })
             self.store.put(terminal)
-            self._event(terminal, "run_stopped", "run:failed", payload={"reason": "failed"})
+            attempt = resume_attempt(self.store.events(terminal.run_id))
+            self._event(
+                terminal,
+                "run_stopped",
+                f"run:stopped:failed:attempt:{attempt}",
+                payload={"reason": "failed"},
+            )
             raise
         else:
             reason = state.get("stop_reason") or "completed"
@@ -232,8 +446,11 @@ class RunHarness:
                     update={"specfact_proposal_ids": terminal.specfact_proposal_ids},
                 )
         self.store.put(terminal)
+        attempt = resume_attempt(self.store.events(terminal.run_id))
         self._event(
-            terminal, "run_stopped", f"run:stopped:{terminal.status}",
+            terminal,
+            "run_stopped",
+            f"run:stopped:{terminal.status}:attempt:{attempt}",
             payload={"reason": terminal.stop_reason},
         )
         return self.inspect(context, terminal.run_id)

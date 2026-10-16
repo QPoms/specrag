@@ -23,6 +23,7 @@ from .parallel import (
 )
 from .checkpointing import SQLiteCheckpointManager
 from .harness import RunHarness, RunInspection, RunStore
+from .worker import RunJob, RunQueue, RunWorker
 
 __all__ = [
     "ResearchNodeHandlers",
@@ -44,5 +45,8 @@ __all__ = [
     "RunHarness",
     "RunInspection",
     "RunStore",
+    "RunJob",
+    "RunQueue",
+    "RunWorker",
     "SQLiteCheckpointManager",
 ]

@@ -113,6 +113,30 @@ class SQLiteIdentityStore:
             created_by=row["created_by"], created_at=_dt(row["created_at"]),
         )
 
+    def workspaces_for_user(
+        self, user_id: str,
+    ) -> tuple[tuple[Workspace, Membership], ...]:
+        rows = self._connection.execute(
+            "SELECT w.*, m.role, m.created_at AS membership_created_at "
+            "FROM memberships m JOIN workspaces w ON w.workspace_id = m.workspace_id "
+            "WHERE m.user_id = ? ORDER BY w.name COLLATE NOCASE, w.workspace_id",
+            (user_id,),
+        ).fetchall()
+        return tuple((
+            Workspace(
+                workspace_id=row["workspace_id"],
+                name=row["name"],
+                created_by=row["created_by"],
+                created_at=_dt(row["created_at"]),
+            ),
+            Membership(
+                workspace_id=row["workspace_id"],
+                user_id=user_id,
+                role=row["role"],
+                created_at=_dt(row["membership_created_at"]),
+            ),
+        ) for row in rows)
+
     def membership(self, workspace_id: str, user_id: str) -> Membership | None:
         row = self._connection.execute(
             "SELECT * FROM memberships WHERE workspace_id = ? AND user_id = ?",
@@ -124,6 +148,26 @@ class SQLiteIdentityStore:
             workspace_id=row["workspace_id"], user_id=row["user_id"],
             role=row["role"], created_at=_dt(row["created_at"]),
         )
+
+    def memberships_for_workspace(
+        self, workspace_id: str,
+    ) -> tuple[tuple[User, Membership], ...]:
+        rows = self._connection.execute(
+            "SELECT u.*, m.role, m.created_at AS membership_created_at "
+            "FROM memberships m JOIN users u ON u.user_id = m.user_id "
+            "WHERE m.workspace_id = ? "
+            "ORDER BY u.username COLLATE NOCASE, u.user_id",
+            (workspace_id,),
+        ).fetchall()
+        return tuple((
+            self._user(row),
+            Membership(
+                workspace_id=workspace_id,
+                user_id=row["user_id"],
+                role=row["role"],
+                created_at=_dt(row["membership_created_at"]),
+            ),
+        ) for row in rows)
 
     def _put_membership(self, membership: Membership) -> None:
         self._connection.execute(

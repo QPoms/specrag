@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import sqlite3
+from pathlib import Path
 
 from specrag.models import (
     ActiveCorpusVersion,
@@ -163,12 +163,10 @@ def test_dry_run_has_no_persistent_or_build_side_effects() -> None:
     assert store.records == {}
 
 
-def test_sqlite_activation_is_atomic_and_retains_previous_record() -> None:
-    database = SQLiteDatabase.__new__(SQLiteDatabase)
-    database.connection = sqlite3.connect(":memory:")
-    database.connection.row_factory = sqlite3.Row
-    database.connection.execute("PRAGMA foreign_keys = ON")
-    database._migrate()
+def test_sqlite_activation_is_atomic_and_retains_previous_record(
+    tmp_path: Path,
+) -> None:
+    database = SQLiteDatabase(tmp_path / "corpus-activation.sqlite3")
     store = SQLiteCorpusStore(database)
     try:
         old = CorpusVersionRecord(

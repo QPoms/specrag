@@ -1,0 +1,156 @@
+"""Framework-independent HTTP transport contracts."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .access import Membership, User, Workspace
+from .memory import MemoryEntry, MemoryProposal, MemoryTopic
+from .research import CandidateEvidence, EvidenceBackedClaim, ResearchBudget
+from .runtime import ResearchRun, RunEvent
+from .specfacts import SpecFact, SpecFactProposal
+
+
+class _StrictTransport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class LoginRequest(_StrictTransport):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class SessionResponse(_StrictTransport):
+    access_token: str = Field(min_length=1)
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: datetime
+
+
+class WorkspaceCreateRequest(_StrictTransport):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class RunCreateRequest(_StrictTransport):
+    question: str = Field(min_length=1, max_length=20000)
+    release: int = Field(default=17, ge=1)
+    answer_language: str = Field(default="English", min_length=1, max_length=64)
+    detail_level: str = Field(default="standard", min_length=1, max_length=64)
+    budget: "RunBudgetRequest" = Field(default_factory=lambda: RunBudgetRequest())
+    elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
+    development_question_id: str | None = Field(default=None, max_length=128)
+
+
+class RunBudgetRequest(_StrictTransport):
+    max_iterations: int = Field(default=4, ge=1)
+    max_tool_calls: int = Field(default=12, ge=1)
+    max_gap_tool_calls: int = Field(default=6, ge=0)
+    max_replans: int = Field(default=3, ge=0)
+
+
+class RunRestartRequest(_StrictTransport):
+    elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
+
+
+class WorkspaceContextResponse(_StrictTransport):
+    user_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    role: Literal["member", "reviewer", "admin"]
+    session_expires_at: datetime
+
+
+class WorkspaceMembershipResponse(_StrictTransport):
+    workspace: Workspace
+    membership: Membership
+
+
+class WorkspaceMemberResponse(_StrictTransport):
+    user: User
+    membership: Membership
+
+
+class MemberCreateRequest(_StrictTransport):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=10, max_length=1024)
+    role: Literal["member", "reviewer", "admin"] = "member"
+
+
+class MemberRoleRequest(_StrictTransport):
+    role: Literal["member", "reviewer", "admin"]
+
+
+class MemberRemovedResponse(_StrictTransport):
+    status: Literal["removed"] = "removed"
+    username: str = Field(min_length=1)
+
+
+class RunInspectionResponse(_StrictTransport):
+    run: ResearchRun
+    events: tuple[RunEvent, ...]
+    stage_latency_ms: dict[str, float]
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    checkpoint_available: bool
+    answer: str | None = None
+    claims: tuple[EvidenceBackedClaim, ...] = ()
+    evidence: tuple[CandidateEvidence, ...] = ()
+    failure: "RunFailureResponse | None" = None
+
+
+class RunFailureResponse(_StrictTransport):
+    summary: str = Field(min_length=1, max_length=500)
+    stop_reason: str = Field(min_length=1, max_length=100)
+    last_stage: str | None = Field(default=None, max_length=100)
+    last_event_type: str | None = Field(default=None, max_length=100)
+    last_event_at: datetime | None = None
+
+
+class ReviewDecisionRequest(_StrictTransport):
+    approve: bool
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class MemoryTopicResponse(_StrictTransport):
+    topic: MemoryTopic
+    entries: tuple[MemoryEntry, ...] = ()
+
+
+class MemoryDashboardResponse(_StrictTransport):
+    user_core: tuple[MemoryEntry, ...] = ()
+    project_core: tuple[MemoryEntry, ...] = ()
+    topics: tuple[MemoryTopicResponse, ...] = ()
+    proposals: tuple[MemoryProposal, ...] = ()
+
+
+class SpecFactDashboardResponse(_StrictTransport):
+    facts: tuple[SpecFact, ...] = ()
+    proposals: tuple[SpecFactProposal, ...] = ()
+
+
+class LogoutResponse(_StrictTransport):
+    status: Literal["logged_out"] = "logged_out"
+
+
+__all__ = [
+    "LoginRequest",
+    "LogoutResponse",
+    "MemberCreateRequest",
+    "MemberRemovedResponse",
+    "MemberRoleRequest",
+    "MemoryDashboardResponse",
+    "MemoryTopicResponse",
+    "ReviewDecisionRequest",
+    "RunInspectionResponse",
+    "RunFailureResponse",
+    "RunCreateRequest",
+    "RunBudgetRequest",
+    "RunRestartRequest",
+    "SessionResponse",
+    "SpecFactDashboardResponse",
+    "WorkspaceContextResponse",
+    "WorkspaceCreateRequest",
+    "WorkspaceMemberResponse",
+    "WorkspaceMembershipResponse",
+]

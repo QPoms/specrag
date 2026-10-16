@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+from threading import Thread
 
 from specrag.infrastructure import (
     SQLiteDatabase,
@@ -12,6 +13,26 @@ from specrag.models import MemoryEntry, ResearchRun, RunEvent
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+def test_sqlite_database_uses_one_connection_per_thread(tmp_path) -> None:
+    database = SQLiteDatabase(tmp_path / "threaded.sqlite3")
+    main_connection = database.connection
+    observations: list[tuple[bool, int]] = []
+
+    def inspect_connection() -> None:
+        connection = database.connection
+        observations.append((
+            connection is main_connection,
+            connection.execute("PRAGMA foreign_keys").fetchone()[0],
+        ))
+
+    thread = Thread(target=inspect_connection)
+    thread.start()
+    thread.join()
+    database.close()
+
+    assert observations == [(False, 1)]
+
+
 def test_sqlite_enables_foreign_keys_wal_and_records_schema_versions(tmp_path) -> None:
     database = SQLiteDatabase(tmp_path / "state.sqlite3")
     try:
@@ -20,7 +41,7 @@ def test_sqlite_enables_foreign_keys_wal_and_records_schema_versions(tmp_path) -
         versions = database.connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in versions] == [1, 2, 3, 4]
+        assert [row[0] for row in versions] == [1, 2, 3, 4, 5]
     finally:
         database.close()
 

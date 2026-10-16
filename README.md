@@ -101,8 +101,10 @@ user question or task
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
   dependency-context handoff, bounded re-planning, SQLite checkpointing,
   authorized Run lifecycle, events, cancellation, deadlines, and recovery.
-- `src/specrag/interfaces/`: product CLI command parsing and application
-  composition. The top-level `cli.py` remains a small stable entry point.
+- `src/specrag/interfaces/`: product CLI and HTTP API adapters plus application
+  composition. The API authenticates server-issued bearer sessions, resolves
+  current workspace membership on every protected request, and reuses the
+  same access policy and services as the CLI.
 - `src/specrag/infrastructure/structured_agent.py`: structured-agent runtime
   adapter.
 - `src/specrag/infrastructure/researcher_controller.py`: binds the versioned
@@ -196,6 +198,79 @@ specrag memory maintenance status|consolidate|prune|restore --workspace standard
 specrag corpus status [--release 17]
 specrag corpus sync [--release 17] [--apply] [--official]
 ```
+
+The first Web/API security boundary is also available. Bootstrap the first
+local administrator with the CLI, then start the API on its secure local-only
+default bind address:
+
+```text
+specrag auth bootstrap --username alice
+specrag-api
+```
+
+`POST /api/v1/auth/login` returns a server-issued bearer token. Protected
+requests pass it as `Authorization: Bearer <token>`; the API never accepts a
+client-supplied trusted user ID, role, or session ID. The current slice exposes
+login/logout, workspace listing/creation and context, member administration,
+authorized Run inspection/cancellation, Memory/SpecFact dashboards, and
+proposal review under `/api/v1`. Admins can also list the workspace directory,
+add members, change other members' roles, and remove other memberships; the
+service rejects self-demotion and self-removal. User Core responses are owner-private;
+workspace knowledge remains workspace-scoped and review actions are enforced
+by the existing role policy. Research can now
+also be submitted through `POST /api/v1/workspaces/{workspace}/runs`; the API
+returns HTTP 202 with a queued Run while an in-process worker executes the
+existing RunHarness. Clients can consume ordered durable events from
+`GET /api/v1/workspaces/{workspace}/runs/{run_id}/events` as SSE. It
+also exposes authenticated cancellation plus asynchronous Resume and Retry
+controls. Resume requires a durable checkpoint and continues the same Run with
+a renewed elapsed-time window; Retry creates a new Run and stores its
+`retry_of_run_id` relationship. Inspection returns only a redacted failure
+summary, lifecycle metrics, and durable events rather than exception traces or
+provider payloads. API and Worker threads use separate SQLite connections over
+the same WAL database instead of concurrently sharing one connection. It
+deliberately does not enable credential cookies or permissive CORS, and
+deployments that bind beyond localhost must terminate TLS. Run jobs are stored
+in a durable SQLite queue with atomic leases and startup recovery. The default
+API embeds the Worker for local development; production-style deployments can
+run `specrag-api --worker-mode external` beside a separate `specrag-worker`
+process against the same database. A broker such as Redis remains a later
+scale-out option.
+
+The first browser client lives under `frontend/`. It is a local React +
+TypeScript + Vite application: the browser stores only the server-issued
+session token in `sessionStorage`, calls the API for workspace membership and
+context, and never opens the SQLite state directly. It currently provides the
+login screen, workspace switcher, research desk, async Run submit entry point,
+an authenticated browser-side SSE reader for live Run stages, and a responsive
+Memory/SpecFact management surface. The admin-only People & Permissions panel
+adds local members, edits roles, confirms removal, and explains each role;
+non-admin clients do not request the member directory. Start
+the API in one terminal and the frontend in another:
+
+```text
+specrag-api
+cd frontend
+npm install
+npm run dev
+```
+
+For a separate local Worker, start the API with
+`specrag-api --worker-mode external` and run `specrag-worker` in another
+terminal. Both processes must point at the same SQLite state database.
+
+Vite proxies `/api` to `http://127.0.0.1:8000` by default. Set
+`VITE_API_BASE_URL` when the API is hosted elsewhere. Completed Runs now show
+the source-backed answer, claim trail, and provenance-rich evidence cards. The
+workspace Run list is loaded from SQLite after refresh, preserves owner/admin
+visibility rules, reconnects active Runs to SSE, and lets users reopen prior
+results. The knowledge view displays User/Project/Topic Memory, proposals,
+reviewed SpecFacts, source locators, and proposal state. Owners can review their
+private Memory proposals; reviewers/admins can approve or reject workspace
+Memory and SpecFact proposals, and rejection requires a reason.
+Opening a historical Run also displays checkpoint availability, token/stage
+metrics, recent events, safe failure diagnostics, and state-aware Cancel,
+Resume, and Retry actions.
 
 Every product research command requires `--workspace`. A trusted session and
 membership produce `ActorContext` before corpus or checkpoint access. Members
