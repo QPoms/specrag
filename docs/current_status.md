@@ -174,9 +174,17 @@ self-demotion/removal protection, asynchronous Run submission, queued Resume,
 linked Retry, attempt-aware terminal events, safe failure projection, worker
 execution, SSE isolation, evidence filtering, knowledge visibility, and
 proposal review authorization. The complete suite passes 154 tests at
-this point. The historical 2026-10-13 quality batch remains 47/50; focused
+this point. The complete suite now passes 159 tests. The historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.
+
+The next active milestone is answer evaluation only. The deterministic offline
+runner `scripts/evaluate_answers.py` aligns generated claims and cited evidence
+to the curated QA targets and reports citation validity, citation relevance,
+supported-claim rate, target recall, and all-target coverage by difficulty and
+reasoning scope. The existing structured LLM rubric remains optional and is
+reported separately. Runtime performance, Worker throughput, and Memory
+ablation are intentionally excluded from this first answer benchmark.
 
 The historical generated runs, benchmark tensors, retrieval indexes, staging
 models, analysis outputs, and temporary caches have been removed. The workspace
@@ -581,8 +589,8 @@ question, or select a Release. Goal extraction and task counts belong to Planner
 Release is applied later as a retrieval-run parameter.
 After Router behavior is accepted, inspect Planner decomposition before enabling
 retrieval. All 50 current questions are development data; a fresh external test
-set will be collected after the complete workflow is optimized. Formal benchmark
-design remains intentionally deferred to the project owner.
+set will be collected after the complete workflow is optimized. The historical
+deferral note is superseded by the answer-evaluation milestone described above.
 
 The first revised Router completed all 50 curated questions without schema or
 runtime errors and achieved 29/40 development-label matches. After defining a

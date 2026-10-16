@@ -117,6 +117,10 @@ user question or task
 - `scripts/evaluate_first_turn.py`: executes frozen Researcher first-turn
   artifacts without another model call and reports strict annotated-source
   recall for offline inspection.
+- `scripts/evaluate_answers.py`: runs deterministic answer/evidence alignment
+  against the curated QA targets and writes per-question results plus an
+  aggregate report grouped by difficulty and reasoning scope. It does not call
+  an LLM; the optional structured answer-quality rubric is reported separately.
 - `scripts/evaluate_complex_researcher.py`: runs one frozen complex Planner
   artifact or a resumable directory batch. Batch mode atomically saves each
   question and `summary.json`; rerun it with `--batch --resume` after an
