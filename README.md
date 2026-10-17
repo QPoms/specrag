@@ -73,9 +73,9 @@ user question or task
   original question is authoritative, task questions are coverage checkpoints,
   and only source-valid evidence selected by the Sufficiency Judge is eligible.
 - `src/specrag/evidence/synthesis.py`: validates that every sufficient task is
-  represented in the final cited claim set. Claim text is canonical; the
-  persisted and displayed answer is derived deterministically from the ordered
-  claims so the two representations cannot diverge.
+  represented by eligible inline evidence citations. The Synthesizer produces
+  one complete user-facing answer directly; there is no parallel claim list or
+  claim-concatenation step.
 - `src/specrag/tools/`: provider-neutral per-tool argument schemas, function
   descriptions, registry, and seven trusted retrieval adapters. The Registry
   is the single source for definition, validation, and execution. HyDE embeds an
@@ -230,8 +230,9 @@ also exposes authenticated cancellation plus asynchronous Resume and Retry
 controls. Resume requires a durable checkpoint and continues the same Run with
 a renewed elapsed-time window; Retry creates a new Run and stores its
 `retry_of_run_id` relationship. Inspection returns only a redacted failure
-summary, lifecycle metrics, and durable events rather than exception traces or
-provider payloads. API and Worker threads use separate SQLite connections over
+summary, including a safe failure kind and whether a manual retry is
+appropriate, plus lifecycle metrics and durable events rather than exception
+traces or provider payloads. API and Worker threads use separate SQLite connections over
 the same WAL database instead of concurrently sharing one connection. It
 deliberately does not enable credential cookies or permissive CORS, and
 deployments that bind beyond localhost must terminate TLS. Run jobs are stored
@@ -240,6 +241,12 @@ API embeds the Worker for local development; production-style deployments can
 run `specrag-api --worker-mode external` beside a separate `specrag-worker`
 process against the same database. A broker such as Redis remains a later
 scale-out option.
+
+HTTP failures retain the standard `detail` field and include a stable
+machine-readable `code`; request-shape failures use `validation_error`.
+The supported scope is intentionally frozen at this local 3GPP workspace
+workflow. External brokers, private-document upload, additional corpus
+providers, production deployment, and automatic whole-Run replay are deferred.
 
 The first browser client lives under `frontend/`. It is a local React +
 TypeScript + Vite application: the browser stores only the server-issued
@@ -265,7 +272,7 @@ terminal. Both processes must point at the same SQLite state database.
 
 Vite proxies `/api` to `http://127.0.0.1:8000` by default. Set
 `VITE_API_BASE_URL` when the API is hosted elsewhere. Completed Runs now show
-the source-backed answer, claim trail, and provenance-rich evidence cards. The
+the source-backed answer with inline evidence IDs and provenance-rich evidence cards. The
 workspace Run list is loaded from SQLite after refresh, preserves owner/admin
 visibility rules, reconnects active Runs to SSE, and lets users reopen prior
 results. The knowledge view displays User/Project/Topic Memory, proposals,
@@ -299,11 +306,13 @@ development set with `--all`. LangGraph is restricted to
 logic remain independent from the orchestration runtime.
 
 Research runs use opaque IDs, durable SQLite checkpoints, explicit elapsed
-time and cancellation stops, idempotent events and SpecFact proposal writes,
-and per-stage latency/token summaries. A completed sufficient synthesis creates
-pending SpecFact proposals. Only a reviewer can approve them. An approved fact
-is supplied to Researcher as a source-finding hint; the workflow still retrieves,
-validates, and cites the original specification text.
+time and cancellation stops, idempotent events, and per-stage latency/token
+summaries. SpecFact extraction is separate from final-answer synthesis: an
+independent distiller may create source-bound pending proposals, and only a
+reviewer can approve them. A completed Run no longer turns synthesis output
+into proposals automatically. An approved fact is supplied to Researcher as a
+source-finding hint; the workflow still retrieves, validates, and cites the
+original specification text.
 
 User configuration precedence is command arguments, then active private User
 Core, then `config.yaml`. A Run stores the exact SpecFact and Memory revision IDs

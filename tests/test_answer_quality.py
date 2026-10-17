@@ -31,7 +31,14 @@ def _evidence(evidence_id: str = "E1", line_start: int = 10) -> dict[str, object
     }
 
 
-def _write_artifacts(tmp_path, *, claims, input_ids=("E1",), status="completed"):
+def _write_artifacts(
+    tmp_path,
+    *,
+    claims=None,
+    evidence_ids=None,
+    input_ids=("E1",),
+    status="completed",
+):
     tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "research.json"
     source.write_text(json.dumps({
@@ -46,12 +53,17 @@ def _write_artifacts(tmp_path, *, claims, input_ids=("E1",), status="completed")
         },
     }), encoding="utf-8")
     artifact = tmp_path / "r17-qa-001.json"
+    synthesis = {"answer": "Grounded answer."}
+    if evidence_ids is not None:
+        synthesis["evidence_ids"] = evidence_ids
+    else:
+        synthesis["claims"] = claims or []
     artifact.write_text(json.dumps({
         "status": status,
         "question_id": "r17-qa-001",
         "source_artifact": str(source),
         "input_evidence_ids": list(input_ids),
-        "synthesis": {"answer": "Grounded answer.", "claims": claims},
+        "synthesis": synthesis,
     }), encoding="utf-8")
     return artifact
 
@@ -85,6 +97,17 @@ def test_answer_evaluation_reports_supported_target_coverage(tmp_path) -> None:
     assert result.citation_validity == 1
     assert result.claim_support_rate == 1
     assert result.all_targets_covered is True
+
+
+def test_answer_evaluation_reads_direct_answer_citations(tmp_path) -> None:
+    artifact = _write_artifacts(tmp_path, evidence_ids=["E1"])
+
+    result = evaluate_answer_artifact(artifact, _qa())
+
+    assert result.cited_evidence_count == 1
+    assert result.citation_validity == 1
+    assert result.claim_support_rate == 1
+    assert result.target_recall == 1
 
 
 def test_answer_evaluation_keeps_unknown_citations_auditable(tmp_path) -> None:
@@ -141,3 +164,36 @@ def test_answer_summary_groups_difficulty_and_scope(tmp_path) -> None:
     assert summary["completed_count"] == 1
     assert summary["skipped_count"] == 1
     assert summary["by_difficulty"]["simple"]["completed_count"] == 1
+
+
+def test_answer_evaluation_reads_legacy_state_envelope(tmp_path) -> None:
+    artifact = tmp_path / "r17-qa-001.json"
+    artifact.write_text(json.dumps({
+        "schema_version": "specrag.baseline-run/v1",
+        "question": {"id": "r17-qa-001"},
+        "state": {
+            "stop_reason": "completed",
+            "final_answer": "Grounded answer.",
+            "candidate_evidence": [_evidence()],
+            "validated_evidence": [{
+                "evidence_id": "E1",
+                "source_valid": True,
+                "supports_target": True,
+                "validation_status": "supported",
+            }],
+            "synthesis": {
+                "answer": "Grounded answer.",
+                "claims": [{
+                    "claim_id": "C1",
+                    "text": "Grounded claim.",
+                    "evidence_ids": ["E1"],
+                }],
+            },
+        },
+    }), encoding="utf-8")
+
+    result = evaluate_answer_artifact(artifact, _qa())
+
+    assert result.status == "completed"
+    assert result.target_recall == 1
+    assert result.citation_validity == 1

@@ -28,14 +28,42 @@ RunStopReason = Literal[
     "insufficient_evidence",
     "failed",
 ]
+RunFailureKind = Literal[
+    "retryable_transient",
+    "rate_limited",
+    "timeout",
+    "provider_unavailable",
+    "authentication_or_configuration",
+    "invalid_request",
+    "structured_output",
+    "model_refusal",
+    "internal_error",
+    "unknown",
+]
+
+# Keep the persisted/API failure vocabulary in one dependency-free contract.
+# Adapters and projections import this set instead of maintaining their own
+# silently divergent allowlists.
+RUN_FAILURE_KINDS: frozenset[str] = frozenset({
+    "retryable_transient",
+    "rate_limited",
+    "timeout",
+    "provider_unavailable",
+    "authentication_or_configuration",
+    "invalid_request",
+    "structured_output",
+    "model_refusal",
+    "internal_error",
+    "unknown",
+})
 
 
 class ResearchRun(_StrictModel):
     schema_version: Literal[
         "research-run/v1", "research-run/v1.1", "research-run/v1.2",
-        "research-run/v1.3",
+        "research-run/v1.3", "research-run/v1.4",
     ] = (
-        "research-run/v1.3"
+        "research-run/v1.4"
     )
     run_id: str = Field(pattern=r"^RUN-[0-9A-F]{32}$")
     thread_id: str = Field(pattern=r"^THREAD-[0-9A-F]{32}$")
@@ -48,6 +76,10 @@ class ResearchRun(_StrictModel):
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
     status: RunStatus = "queued"
     stop_reason: RunStopReason | None = None
+    failure_kind: RunFailureKind | None = None
+    failure_retryable: bool | None = None
+    failure_attempt_count: int | None = Field(default=None, ge=1)
+    failure_status_code: int | None = Field(default=None, ge=100, le=599)
     development_question_id: str | None = None
     specfact_ids: tuple[str, ...] = ()
     specfact_proposal_ids: tuple[str, ...] = ()
@@ -155,4 +187,5 @@ class RunEvent(_StrictModel):
 
 __all__ = [
     "ResearchRequest", "ResearchRun", "RunEvent", "RunStatus", "RunStopReason",
+    "RunFailureKind", "RUN_FAILURE_KINDS",
 ]

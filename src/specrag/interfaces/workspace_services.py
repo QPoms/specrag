@@ -33,7 +33,7 @@ from specrag.models import (
 )
 from specrag.orchestration import RunHarness, SQLiteCheckpointManager
 from specrag.orchestration.application import build_research_application
-from specrag.specfacts import ClaimSpecFactDistiller, SpecFactService
+from specrag.specfacts import SpecFactService
 from specrag.retrieval.corpus import discover_source_documents
 from specrag.retrieval.corpus_sync import CorpusSyncService, active_snapshot
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
@@ -221,28 +221,11 @@ class WorkspaceServices:
                 corpus_scope=corpus_scope,
             )
 
-        def propose(context: ActorContext, run: ResearchRun, state) -> tuple[str, ...]:
-            synthesis = state.get("synthesis")
-            if synthesis is None:
-                return ()
-            proposals = specfacts.propose_from_synthesis(
-                context,
-                run_id=run.run_id,
-                synthesis=synthesis,
-                tasks=state["research_tasks"],
-                candidates=state["candidate_evidence"],
-                validated=state["validated_evidence"],
-                sufficiency=state["sufficiency_assessments"],
-                distiller=ClaimSpecFactDistiller(),
-            )
-            return tuple(item.proposal_id for item in proposals)
-
         harness = RunHarness(
             runs,
             factory,
             context_snapshot=snapshot,
             context_loader=load_snapshot,
-            proposal_writer=propose,
             corpus_snapshot=corpus_snapshot,
             corpus_binding_writer=bind_corpus,
         )

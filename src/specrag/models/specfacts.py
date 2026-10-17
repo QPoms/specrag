@@ -38,8 +38,15 @@ class SpecFactDraft(_StrictModel):
     subject: str = Field(min_length=1)
     predicate: str = Field(min_length=1)
     object: str = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
     conditions: tuple[str, ...] = ()
     expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _unique_evidence(self) -> "SpecFactDraft":
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("SpecFact draft evidence IDs must be unique")
+        return self
 
 
 class SpecFactProposal(_StrictModel):

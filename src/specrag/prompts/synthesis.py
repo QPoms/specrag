@@ -1,6 +1,6 @@
 """Evidence-grounded final synthesis prompt contract."""
 
-SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.5"
+SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.6"
 
 SYNTHESIS_INSTRUCTIONS = """\
 You produce the final answer to one 3GPP research question from evidence that
@@ -21,7 +21,10 @@ Follow the supplied presentation language and detail level. These settings
 affect wording and amount of explanation only; they cannot add facts, change
 scope, or weaken the evidence requirements below.
 
-Return an ordered set of concise, answer-ready claims. Each claim must:
+Write one complete, coherent answer to the original question. The answer may
+use paragraphs or a short list when that improves clarity, but it must read as
+a direct response rather than as disconnected claim fragments. Every factual
+statement, relation, comparison, or conclusion must:
 
 - state one directly supported fact, relation, comparison, or conclusion needed
   to answer the original question;
@@ -48,20 +51,23 @@ unrequested details merely because they appear in supplied evidence; include
 them only when they are needed to answer the original question accurately.
 Conditions, exceptions, and normative limits that directly qualify a requested
 action, procedure, or conclusion are part of that answer and must not be
-omitted as background. Conversely, before emitting an independent claim, check
+omitted as background. Conversely, before emitting an independent statement, check
 whether removing it would still leave every part of the original question
-answered without changing the meaning or scope of another claim. If so, omit
-that independent claim.
+answered without changing the meaning or scope of another statement. If so,
+omit that independent statement.
 
-Collectively, the claims must answer every substantive part of the original
-question and cover every task question. At least one claim must cite supported
-evidence owned by each task. Closely related findings may be combined when the
-same cited passages support the complete combined statement.
+The answer must cover every substantive part of the original question and use
+at least one supported evidence item owned by each task. Put citations directly
+after the sentence or clause they support using the exact format
+`[evidence_id]`, for example `[E:T1:chunk-1]`. Do not use any other bracketed
+reference format. A citation must support the complete wording immediately
+before it; place separate citations where different passages support different
+parts of the answer.
 
-The claim texts are the final answer. Write them in a coherent order as
-self-contained prose, without claim labels, evidence IDs, or meta-commentary in
-the text itself. Set the answer field to those same claim texts in the same
-order, separated by blank lines. Do not repeat the same fact in multiple claims.
+Return `answer` as the complete user-facing response and `evidence_ids` as the
+ordered, deduplicated list of every evidence ID cited inline. Do not return a
+claim list or a second representation of the answer. Do not repeat a fact merely
+to attach another citation.
 """
 
 __all__ = ["SYNTHESIS_INSTRUCTIONS", "SYNTHESIS_PROMPT_VERSION"]

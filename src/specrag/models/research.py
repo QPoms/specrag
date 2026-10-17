@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -224,31 +225,37 @@ class TaskSufficiencyAssessment(_StrictModel):
         return self
 
 
-class EvidenceBackedClaim(_StrictModel):
-    claim_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _unique_evidence(self) -> "EvidenceBackedClaim":
-        if len(self.evidence_ids) != len(set(self.evidence_ids)):
-            raise ValueError("claim evidence IDs must be unique")
-        return self
-
-
 class EvidenceSynthesis(_StrictModel):
     answer: str = Field(min_length=1)
-    claims: tuple[EvidenceBackedClaim, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_legacy_claim_artifacts(cls, value: Any) -> Any:
+        """Read historical JSON artifacts without retaining claims at runtime."""
+
+        if not isinstance(value, Mapping) or "claims" not in value:
+            return value
+        claims = value.get("claims") or ()
+        evidence_ids = tuple(dict.fromkeys(
+            str(evidence_id)
+            for claim in claims
+            if isinstance(claim, Mapping)
+            for evidence_id in claim.get("evidence_ids", ())
+        ))
+        answer = str(value.get("answer") or "").strip()
+        if not answer:
+            answer = "\n\n".join(
+                str(claim.get("text", "")).strip()
+                for claim in claims
+                if isinstance(claim, Mapping) and str(claim.get("text", "")).strip()
+            )
+        return {"answer": answer, "evidence_ids": evidence_ids}
 
     @model_validator(mode="after")
-    def _derive_answer_from_claims(self) -> "EvidenceSynthesis":
-        """Keep the persisted answer identical to its auditable claim units."""
-
-        object.__setattr__(
-            self,
-            "answer",
-            "\n\n".join(claim.text for claim in self.claims),
-        )
+    def _unique_evidence(self) -> "EvidenceSynthesis":
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("synthesis evidence IDs must be unique")
         return self
 
 
@@ -444,7 +451,6 @@ class ResearchBudget(_StrictModel):
 
 __all__ = [
     "CandidateEvidence",
-    "EvidenceBackedClaim",
     "EvidenceSynthesis",
     "ResearchBudget",
     "ResearchGap",

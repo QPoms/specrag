@@ -85,7 +85,7 @@ def _evaluate(path: Path, qa: dict[str, object], output: Path) -> dict[str, obje
             "expected_answer": qa["expected_answer"],
             "expected_facts": qa["expected_facts"],
             "generated_answer": synthesis["answer"],
-            "generated_claims": synthesis["claims"],
+            "cited_evidence_ids": synthesis.get("evidence_ids", ()),
             "judge_supported_evidence": evidence,
         },
         output_type=SynthesisQualityAssessment,

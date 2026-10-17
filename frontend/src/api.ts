@@ -59,7 +59,7 @@ export type RunInspection = {
   output_tokens: number;
   checkpoint_available: boolean;
   answer: string | null;
-  claims: EvidenceClaim[];
+  evidence_ids: string[];
   evidence: EvidenceItem[];
   failure: RunFailure | null;
 };
@@ -67,15 +67,13 @@ export type RunInspection = {
 export type RunFailure = {
   summary: string;
   stop_reason: string;
+  failure_kind: string | null;
+  retryable: boolean;
+  attempt_count: number | null;
+  status_code: number | null;
   last_stage: string | null;
   last_event_type: string | null;
   last_event_at: string | null;
-};
-
-export type EvidenceClaim = {
-  claim_id: string;
-  text: string;
-  evidence_ids: string[];
 };
 
 export type EvidenceItem = {
@@ -204,12 +202,34 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repl
 
 export class ApiError extends Error {
   status: number;
+  code: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code = "http_error") {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
+}
+
+type ApiErrorPayload = { detail?: unknown; code?: unknown };
+
+function formatApiError(payload: ApiErrorPayload, fallback: string): string {
+  if (typeof payload.detail === "string" && payload.detail.trim()) {
+    return payload.detail;
+  }
+  if (Array.isArray(payload.detail)) {
+    const messages = payload.detail.map((item) => {
+      if (!item || typeof item !== "object") return String(item);
+      const record = item as { loc?: unknown; msg?: unknown };
+      const location = Array.isArray(record.loc)
+        ? record.loc.filter((part) => typeof part === "string" || typeof part === "number").join(".")
+        : "request";
+      return typeof record.msg === "string" ? `${location}: ${record.msg}` : location;
+    }).filter(Boolean);
+    if (messages.length) return messages.join("; ");
+  }
+  return fallback;
 }
 
 export class SpecRagApi {
@@ -376,7 +396,7 @@ export class SpecRagApi {
     onEvent: (event: RunEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (!this.token) throw new ApiError(401, "authentication required");
+    if (!this.token) throw new ApiError(401, "authentication required", "authentication_required");
     const path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events?since=0&wait_seconds=300`;
     const response = await fetch(`${API_BASE}${path}`, {
       headers: { Accept: "text/event-stream", Authorization: `Bearer ${this.token}` },
@@ -384,14 +404,17 @@ export class SpecRagApi {
     });
     if (!response.ok) {
       if (response.status === 401) this.setToken(null);
-      let message = `Event stream failed (${response.status})`;
+      const fallback = `Event stream failed (${response.status})`;
+      let message = fallback;
+      let code = "http_error";
       try {
-        const payload = (await response.json()) as { detail?: string };
-        if (payload.detail) message = payload.detail;
+        const payload = (await response.json()) as ApiErrorPayload;
+        message = formatApiError(payload, fallback);
+        if (typeof payload.code === "string") code = payload.code;
       } catch {
         // Keep the status-based message when the API did not return JSON.
       }
-      throw new ApiError(response.status, message);
+      throw new ApiError(response.status, message, code);
     }
     if (!response.body) throw new Error("Event stream has no response body");
     const reader = response.body.getReader();
@@ -431,15 +454,18 @@ export class SpecRagApi {
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     if (!response.ok) {
-      let message = `Request failed (${response.status})`;
+      const fallback = `Request failed (${response.status})`;
+      let message = fallback;
+      let code = "http_error";
       try {
-        const payload = (await response.json()) as { detail?: string };
-        if (payload.detail) message = payload.detail;
+        const payload = (await response.json()) as ApiErrorPayload;
+        message = formatApiError(payload, fallback);
+        if (typeof payload.code === "string") code = payload.code;
       } catch {
         // Keep the status-based message when the API did not return JSON.
       }
       if (response.status === 401) this.setToken(null);
-      throw new ApiError(response.status, message);
+      throw new ApiError(response.status, message, code);
     }
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;

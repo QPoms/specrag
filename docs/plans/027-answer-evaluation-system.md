@@ -1,6 +1,6 @@
 # Answer evaluation system
 
-Status: implemented locally
+Status: implemented locally; legacy baseline artifact compatibility added
 
 ## Goal
 
@@ -11,9 +11,9 @@ scope for the first benchmark.
 
 ## Evaluation layers
 
-1. Deterministic answer alignment: map generated claims and cited evidence to
-   the QA record's expected source targets using document hash, source path,
-   and overlapping line locators.
+1. Deterministic answer alignment: map the final answer's cited evidence to the
+   QA record's expected source targets using document hash, source path, and
+   overlapping line locators. Historical claim-based artifacts remain readable.
 2. Deterministic answer integrity: measure non-empty answers, claim citation
    validity, supported-claim rate, target coverage, target recall, and the
    fraction of questions whose annotated targets are all covered.
@@ -36,6 +36,11 @@ test splits without changing the evaluator contract.
 - Emit one per-question JSON result and one aggregate report grouped by
   difficulty and reasoning scope.
 - Cover complete answers, partial target coverage, unknown citations, skipped
-  and failed artifacts, and duplicate/reordered claims in tests.
+  and failed artifacts, and duplicate/reordered citations in tests.
 - Do not call an LLM from the deterministic runner.
 - Run `python scripts/check.py` and preserve the existing CLI/runtime behavior.
+
+The evaluator accepts both the current flat synthesis-artifact contract and
+the retained `specrag.baseline-run/v1` envelope, where synthesis and evidence
+are nested under `state`. This allows the first benchmark to use the existing
+50-answer batch without rewriting generated artifacts.

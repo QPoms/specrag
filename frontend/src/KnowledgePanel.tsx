@@ -145,7 +145,7 @@ function SpecFactView({ data, canReview, onReview }: {
   if (!data) return <KnowledgeEmpty title="SpecFacts are unavailable" detail="Refresh to try loading them again." />;
   return <div className="knowledge-body">
     <KnowledgeSection title="Fact proposals" count={data.proposals.length} note="Evidence-backed, awaiting review">
-      {data.proposals.length === 0 ? <KnowledgeEmpty title="No fact proposals" detail="Grounded synthesis claims will appear here for review." />
+      {data.proposals.length === 0 ? <KnowledgeEmpty title="No fact proposals" detail="Independently extracted specification facts will appear here for review." />
         : <div className="proposal-list">{data.proposals.map((proposal) => <article className="proposal-card fact-card" key={proposal.proposal_id}>
           <div className="card-topline"><span className={`knowledge-status ${proposal.status}`}>{proposal.status}</span><time>{formatDate(proposal.proposed_at)}</time></div>
           <span className="card-kicker">{proposal.subject} · {proposal.predicate}</span>

@@ -1,6 +1,6 @@
 # Synthesizer evidence boundary
 
-Status: complete
+Status: superseded by plan 030 for the final-output contract
 
 ## Goal
 

@@ -16,7 +16,6 @@ from specrag.infrastructure import (
 )
 from specrag.models import (
     CandidateEvidence,
-    EvidenceBackedClaim,
     EvidenceSynthesis,
     ResearchRequest,
     ResearchTask,
@@ -44,10 +43,11 @@ class _Application:
 
 
 class _Distiller:
-    def propose(self, synthesis, evidence):
+    def propose(self, answer, evidence):
         return (SpecFactDraft(
-            claim_id="C1", assertion=synthesis.claims[0].text,
+            claim_id="C1", assertion="The UE initiates registration.",
             subject="UE", predicate="initiates", object="registration",
+            evidence_ids=("E1",),
         ),)
 
 
@@ -97,11 +97,8 @@ def test_two_workspace_acceptance_keeps_runs_and_facts_isolated(tmp_path) -> Non
         )
         assert SourceEvidenceValidator(tmp_path).validate(candidate).valid
         synthesis = EvidenceSynthesis(
-            answer="The UE initiates registration.",
-            claims=(EvidenceBackedClaim(
-                claim_id="C1", text="The UE initiates registration.",
-                evidence_ids=("E1",),
-            ),),
+            answer="The UE initiates registration. [E1]",
+            evidence_ids=("E1",),
         )
         task = ResearchTask(task_id="T1", question="Q", objective="O")
         validated = ValidatedEvidence(
@@ -113,8 +110,8 @@ def test_two_workspace_acceptance_keeps_runs_and_facts_isolated(tmp_path) -> Non
             rationale="complete",
         )
         facts = SpecFactService(InMemorySpecFactStore())
-        proposal = facts.propose_from_synthesis(
-            alice, run_id=run.run.run_id, synthesis=synthesis, tasks=(task,),
+        proposal = facts.propose_from_answer(
+            alice, run_id=run.run.run_id, answer=synthesis.answer, tasks=(task,),
             candidates=(candidate,), validated=(validated,), sufficiency=(sufficient,),
             distiller=_Distiller(), now=datetime.now(timezone.utc),
         )[0]
@@ -122,7 +119,7 @@ def test_two_workspace_acceptance_keeps_runs_and_facts_isolated(tmp_path) -> Non
         result = facts.search(carol, "UE registration", release=17)
         assert result[0].fact.sources[0].document_sha256 == candidate.document_sha256
         assert SourceEvidenceValidator(tmp_path).validate(candidate).valid
-        assert synthesis.claims[0].evidence_ids == ("E1",)
+        assert synthesis.evidence_ids == ("E1",)
         assert facts.search(bob, "UE registration", release=17) == ()
     finally:
         database.close()

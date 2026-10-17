@@ -23,6 +23,7 @@ from .llm import (
     NativeToolLLMResponse,
     OpenAIStructuredClient,
 )
+from .agent_errors import CodexAgentError
 from ..config import AppConfig, load_config
 from ..models import (
     NativeFunctionCall,
@@ -32,12 +33,6 @@ from ..models import (
 
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
-
-
-class CodexAgentError(RuntimeError):
-    """Sanitized failure raised by the isolated Codex adapter."""
-
-
 class CodexAgentReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -510,7 +505,11 @@ class LLMApiStructuredAgent:
             )
         except Exception as exc:  # noqa: BLE001 - keep provider details bounded
             raise CodexAgentError(
-                f"LLM API structured call failed ({type(exc).__name__}: {exc})"
+                f"LLM API structured call failed ({type(exc).__name__}: {exc})",
+                failure_kind=getattr(exc, "failure_kind", "unknown"),
+                retryable=bool(getattr(exc, "retryable", False)),
+                status_code=getattr(exc, "status_code", None),
+                attempt_count=getattr(exc, "attempt_count", None),
             ) from None
 
         return CodexAgentResponse(
@@ -544,7 +543,11 @@ class LLMApiStructuredAgent:
             )
         except Exception as exc:  # noqa: BLE001 - keep provider details bounded
             raise CodexAgentError(
-                f"LLM API native tool call failed ({type(exc).__name__}: {exc})"
+                f"LLM API native tool call failed ({type(exc).__name__}: {exc})",
+                failure_kind=getattr(exc, "failure_kind", "unknown"),
+                retryable=bool(getattr(exc, "retryable", False)),
+                status_code=getattr(exc, "status_code", None),
+                attempt_count=getattr(exc, "attempt_count", None),
             ) from None
 
         return CodexAgentToolResponse(

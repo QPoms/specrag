@@ -9,8 +9,6 @@ from specrag.infrastructure import InMemorySpecFactStore
 from specrag.models import (
     ActorContext,
     CandidateEvidence,
-    EvidenceBackedClaim,
-    EvidenceSynthesis,
     ResearchTask,
     SpecFactDraft,
     TaskSufficiencyAssessment,
@@ -52,12 +50,7 @@ def _validated() -> ValidatedEvidence:
 
 
 def _inputs():
-    synthesis = EvidenceSynthesis(
-        answer="The UE initiates registration.",
-        claims=(EvidenceBackedClaim(
-            claim_id="C1", text="The UE initiates registration.", evidence_ids=("E1",),
-        ),),
-    )
+    answer = "The UE initiates registration. [E1]"
     task = ResearchTask(
         task_id="T1", question="What starts registration?", objective="Find trigger.",
     )
@@ -65,26 +58,27 @@ def _inputs():
         task_id="T1", status="sufficient", supporting_evidence_ids=("E1",),
         rationale="complete",
     )
-    return synthesis, task, sufficient
+    return answer, task, sufficient
 
 
 class _Distiller:
     def __init__(self, object_value: str = "registration") -> None:
         self.object_value = object_value
 
-    def propose(self, synthesis, evidence):
+    def propose(self, answer, evidence):
         return (SpecFactDraft(
             claim_id="C1", assertion=f"UE initiates {self.object_value}.",
             subject="UE", predicate="initiates", object=self.object_value,
+            evidence_ids=("E1",),
             conditions=("registration procedure",),
         ),)
 
 
 def _propose(service, context=None, *, version="17.1.0", distiller=None):
-    synthesis, task, sufficient = _inputs()
-    return service.propose_from_synthesis(
+    answer, task, sufficient = _inputs()
+    return service.propose_from_answer(
         context or _context(), run_id="RUN-" + "1" * 32,
-        synthesis=synthesis, tasks=(task,), candidates=(_candidate(version),),
+        answer=answer, tasks=(task,), candidates=(_candidate(version),),
         validated=(_validated(),), sufficiency=(sufficient,),
         distiller=distiller or _Distiller(), now=NOW,
     )[0]

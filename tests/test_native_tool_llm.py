@@ -7,14 +7,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from specrag.infrastructure.llm import (
+    LLMApiMode,
     OpenAIStructuredClient,
     StructuredLLMError,
+    classify_provider_error,
 )
 from specrag.models import (
     NativeFunctionCallOutput,
     NativeFunctionDefinition,
+    RUN_FAILURE_KINDS,
 )
 
 
@@ -39,6 +43,21 @@ class _TextItem:
 
     def model_dump(self, **_: object) -> dict[str, Any]:
         return {"type": self.type, "content": "not a tool call"}
+
+
+class _StructuredOutput(BaseModel):
+    value: str
+
+
+class _RefusingChatCompletions:
+    def parse(self, **_: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(refusal="policy refusal", parsed=None),
+            )],
+            usage=None,
+        )
 
 
 class _Responses:
@@ -143,3 +162,68 @@ def test_native_call_rejects_response_without_function_calls() -> None:
             input_payload={"round": 1},
             tools=(_tool(),),
         )
+
+
+@pytest.mark.parametrize(
+    ("error", "kind", "retryable"),
+    [
+        (SimpleNamespace(status_code=429), "rate_limited", True),
+        (SimpleNamespace(status_code=503), "provider_unavailable", True),
+        (SimpleNamespace(status_code=401), "authentication_or_configuration", False),
+        (SimpleNamespace(status_code=400), "invalid_request", False),
+        (SimpleNamespace(status_code=408), "timeout", True),
+        (SimpleNamespace(status_code=None), "unknown", False),
+    ],
+)
+def test_provider_error_classification_is_safe(error, kind, retryable) -> None:
+    result = classify_provider_error(error)
+    assert result.kind == kind
+    assert result.retryable is retryable
+
+
+def test_structured_failure_keeps_only_safe_retry_metadata() -> None:
+    failure = StructuredLLMError(
+        "temporary failure",
+        failure_kind="rate_limited",
+        retryable=True,
+        status_code=429,
+        attempt_count=4,
+    )
+    assert failure.failure_kind == "rate_limited"
+    assert failure.retryable is True
+    assert failure.status_code == 429
+    assert failure.attempt_count == 4
+
+
+def test_failure_vocabulary_is_shared_and_accepts_model_refusal() -> None:
+    assert "model_refusal" in RUN_FAILURE_KINDS
+    failure = StructuredLLMError(
+        "refused",
+        failure_kind="model_refusal",
+        retryable=False,
+    )
+    assert failure.failure_kind == "model_refusal"
+
+
+def test_chat_refusal_is_projected_as_model_refusal() -> None:
+    client = OpenAIStructuredClient(
+        api_key="test-key",
+        model="test-model",
+        api_mode=LLMApiMode.CHAT_COMPLETIONS,
+        max_retries=0,
+        client=SimpleNamespace(
+            chat=SimpleNamespace(completions=_RefusingChatCompletions())
+        ),
+    )
+
+    with pytest.raises(StructuredLLMError) as caught:
+        client.parse(
+            purpose="test",
+            prompt_version="test/v1",
+            instructions="Return structured output.",
+            input_payload={"question": "test"},
+            output_type=_StructuredOutput,
+        )
+
+    assert caught.value.failure_kind == "model_refusal"
+    assert caught.value.retryable is False

@@ -59,6 +59,7 @@ export function RunLifecyclePanel({ inspection, busy, notice, onCancel, onResume
     </div>
     {inspection.failure && <div className="failure-diagnostic">
       <div><span className="failure-mark">!</span><div><p className="eyebrow">Safe failure summary</p><h3>{inspection.failure.summary}</h3><p>Reason: <strong>{inspection.failure.stop_reason.replaceAll("_", " ")}</strong>{inspection.failure.last_stage && <> · Last stage: <strong>{inspection.failure.last_stage.replaceAll("_", " ")}</strong></>}</p></div></div>
+      <p className="failure-retryability">Manual retry: <strong>{inspection.failure.retryable ? "recommended when ready" : "check configuration first"}</strong>{inspection.failure.attempt_count && <> · Attempts: <strong>{inspection.failure.attempt_count}</strong></>}</p>
       <p className="failure-safety">Provider payloads, stack traces, credentials, and raw exception text are intentionally excluded.</p>
     </div>}
     {latestEvents.length > 0 && <div className="recent-events"><span>Recent durable events</span>{latestEvents.map((event) => <div key={event.event_id ?? `${event.sequence}-${event.event_type}`}><b>#{event.sequence}</b><p>{event.event_type.replaceAll("_", " ")}</p><small>{event.stage?.replaceAll("_", " ") ?? "run"} · {formatTime(event.occurred_at)}</small></div>)}</div>}

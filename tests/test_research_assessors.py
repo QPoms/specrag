@@ -6,7 +6,7 @@ from specrag.infrastructure import (
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
-from specrag.models import CandidateEvidence, ResearchTask
+from specrag.models import CandidateEvidence, EvidenceSynthesis, ResearchTask
 from specrag.prompts import SUFFICIENCY_INSTRUCTIONS
 from specrag.prompts import SYNTHESIS_INSTRUCTIONS
 
@@ -50,12 +50,8 @@ class _Agent:
             }
         else:
             value = {
-                "answer": "The UE initiates registration.",
-                "claims": [{
-                    "claim_id": "C1",
-                    "text": "The UE initiates registration.",
-                    "evidence_ids": ["E1"],
-                }],
+                "answer": "The UE initiates registration. [E1]",
+                "evidence_ids": ["E1"],
             }
         return SimpleNamespace(output=output_type.model_validate(value))
 
@@ -78,10 +74,10 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     )
 
     assert sufficiency.status == "sufficient"
-    assert synthesis.claims[0].evidence_ids == ("E1",)
+    assert synthesis.evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
         "evidence-sufficiency/v1.13",
-        "evidence-synthesis/v1.5",
+        "evidence-synthesis/v1.6",
     ]
     sufficiency_payload = agent.payloads[0][1]
     assert sufficiency_payload["original_question"] == (
@@ -101,7 +97,7 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
         "detail_level": "detailed",
     }
     assert "objective" not in synthesis_payload["task_evidence"][0]
-    assert synthesis.answer == synthesis.claims[0].text
+    assert synthesis.answer == "The UE initiates registration. [E1]"
 
 
 def test_synthesis_prompt_enforces_final_answer_boundary() -> None:
@@ -109,13 +105,28 @@ def test_synthesis_prompt_enforces_final_answer_boundary() -> None:
     assert "Task\nquestions are coverage checkpoints only" in (
         SYNTHESIS_INSTRUCTIONS
     )
-    assert "At least one claim must cite supported" in SYNTHESIS_INSTRUCTIONS
-    assert "evidence owned by each task" in SYNTHESIS_INSTRUCTIONS
-    assert "The claim texts are the final answer" in SYNTHESIS_INSTRUCTIONS
+    assert "one complete, coherent answer" in SYNTHESIS_INSTRUCTIONS
+    assert "supported evidence item owned by each task" in SYNTHESIS_INSTRUCTIONS
+    assert "Do not return a\nclaim list" in SYNTHESIS_INSTRUCTIONS
     assert "different specifications or radio" in SYNTHESIS_INSTRUCTIONS
     assert "systems into one generalized statement" in SYNTHESIS_INSTRUCTIONS
     assert "nested conditions" in SYNTHESIS_INSTRUCTIONS
     assert "implication direction" in SYNTHESIS_INSTRUCTIONS
+
+
+def test_synthesis_model_reads_legacy_claim_json_without_retaining_claims() -> None:
+    synthesis = EvidenceSynthesis.model_validate({
+        "answer": "The UE initiates registration.",
+        "claims": [{
+            "claim_id": "C1",
+            "text": "The UE initiates registration.",
+            "evidence_ids": ["E1"],
+        }],
+    })
+
+    assert synthesis.answer == "The UE initiates registration."
+    assert synthesis.evidence_ids == ("E1",)
+    assert "claims" not in synthesis.model_dump()
 
 
 def test_sufficiency_prompt_uses_question_as_authoritative_scope() -> None:

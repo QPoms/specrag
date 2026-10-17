@@ -9,13 +9,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .access import Membership, User, Workspace
 from .memory import MemoryEntry, MemoryProposal, MemoryTopic
-from .research import CandidateEvidence, EvidenceBackedClaim, ResearchBudget
-from .runtime import ResearchRun, RunEvent
+from .research import CandidateEvidence, ResearchBudget
+from .runtime import ResearchRun, RunEvent, RunFailureKind
 from .specfacts import SpecFact, SpecFactProposal
 
 
 class _StrictTransport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ApiErrorResponse(_StrictTransport):
+    """Stable error envelope shared by HTTP clients."""
+
+    code: str = Field(min_length=1, max_length=100)
+    detail: str | tuple[dict[str, object], ...]
 
 
 class LoginRequest(_StrictTransport):
@@ -94,7 +101,7 @@ class RunInspectionResponse(_StrictTransport):
     output_tokens: int = Field(ge=0)
     checkpoint_available: bool
     answer: str | None = None
-    claims: tuple[EvidenceBackedClaim, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
     evidence: tuple[CandidateEvidence, ...] = ()
     failure: "RunFailureResponse | None" = None
 
@@ -102,6 +109,10 @@ class RunInspectionResponse(_StrictTransport):
 class RunFailureResponse(_StrictTransport):
     summary: str = Field(min_length=1, max_length=500)
     stop_reason: str = Field(min_length=1, max_length=100)
+    failure_kind: RunFailureKind | None = None
+    retryable: bool = False
+    attempt_count: int | None = Field(default=None, ge=1)
+    status_code: int | None = Field(default=None, ge=100, le=599)
     last_stage: str | None = Field(default=None, max_length=100)
     last_event_type: str | None = Field(default=None, max_length=100)
     last_event_at: datetime | None = None
@@ -134,6 +145,7 @@ class LogoutResponse(_StrictTransport):
 
 
 __all__ = [
+    "ApiErrorResponse",
     "LoginRequest",
     "LogoutResponse",
     "MemberCreateRequest",

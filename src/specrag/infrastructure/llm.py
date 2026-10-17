@@ -25,6 +25,13 @@ from specrag.models import (
     NativeFunctionDefinition,
 )
 
+from .api_errors import (
+    ProviderFailure,
+    StructuredLLMError,
+    classify_provider_error,
+    is_retryable_provider_error,
+)
+
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
 
@@ -103,9 +110,6 @@ class StructuredLLMClient(Protocol):
     ) -> StructuredLLMResponse[OutputT]: ...
 
 
-class StructuredLLMError(RuntimeError):
-    pass
-
 def _canonical_json(value: Any) -> str:
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json")
@@ -144,6 +148,7 @@ def _safe_error(
 ) -> StructuredLLMError:
     """Do not persist provider bodies, headers, request objects, or prompts."""
 
+    failure = classify_provider_error(exc)
     details = [type(exc).__name__]
     request_id = getattr(exc, "request_id", None)
     for label, value in (
@@ -160,23 +165,16 @@ def _safe_error(
     if exhausted_models is not None:
         details.append(f"models={exhausted_models}")
     return StructuredLLMError(
-        "structured LLM request failed (" + ", ".join(details) + ")"
+        "structured LLM request failed (" + ", ".join(details) + ")",
+        failure_kind=failure.kind,
+        retryable=failure.retryable,
+        status_code=failure.status_code,
+        attempt_count=attempt_count,
     )
 
 
 def _is_retryable_provider_error(exc: Exception) -> bool:
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code in {408, 409, 425, 429} or status_code >= 500
-    return type(exc).__name__ in {
-        "APIConnectionError",
-        "APITimeoutError",
-        "ConnectError",
-        "ConnectTimeout",
-        "ReadTimeout",
-        "RateLimitError",
-        "TimeoutError",
-    }
+    return is_retryable_provider_error(exc)
 
 
 class OpenAIStructuredClient:
@@ -352,7 +350,8 @@ class OpenAIStructuredClient:
                         refusal = getattr(choice.message, "refusal", None)
                         if refusal:
                             raise StructuredLLMError(
-                                "structured chat completion was refused"
+                                "structured chat completion was refused",
+                                failure_kind="model_refusal",
                             )
                         parsed = choice.message.parsed
                         usage = getattr(raw, "usage", None)
@@ -588,13 +587,14 @@ class OpenAIStructuredClient:
             receipt=receipt,
         )
 
-
 __all__ = [
     "LLMApiMode",
     "LLMCallReceipt",
     "NativeToolLLMResponse",
     "OpenAIStructuredClient",
+    "ProviderFailure",
     "StructuredLLMClient",
     "StructuredLLMError",
     "StructuredLLMResponse",
+    "classify_provider_error",
 ]

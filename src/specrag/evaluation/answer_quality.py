@@ -110,16 +110,29 @@ def evaluate_answer_artifact(
     reasoning_scope = str(qa_record.get("reasoning_scope", "unknown"))
     raw = json.loads(artifact_path.read_text(encoding="utf-8"))
     question_id = str(raw.get("question_id") or qa_record["id"])
-    if raw.get("status") != "completed":
+    # Current synthesis artifacts are flat; the retained baseline runner used
+    # a durable `state` envelope.  Normalize both formats at this boundary so
+    # historical runs can be evaluated without rewriting generated artifacts.
+    state = raw.get("state", {})
+    if not isinstance(state, Mapping):
+        state = {}
+    status = raw.get("status")
+    if status is None:
+        status = "completed" if state.get("stop_reason") == "completed" else state.get(
+            "stop_reason", "not_completed"
+        )
+    if status != "completed":
         return AnswerEvaluation(
             question_id=question_id,
             difficulty=difficulty,
             reasoning_scope=reasoning_scope,
             status="skipped",
-            reason=str(raw.get("status", "not_completed")),
+            reason=str(status),
         )
 
-    synthesis = raw.get("synthesis") or {}
+    synthesis = raw.get("synthesis") or state.get("synthesis") or {}
+    if not synthesis and state.get("final_answer"):
+        synthesis = {"answer": state["final_answer"], "evidence_ids": ()}
     answer = str(synthesis.get("answer", "")).strip()
     claims = tuple(item for item in synthesis.get("claims", ()) if isinstance(item, Mapping))
     source_value = raw.get("source_artifact")
@@ -128,21 +141,23 @@ def evaluate_answer_artifact(
         source_path = _artifact_path(source_value, base_directory=artifact_path.parent)
         if source_path.is_file():
             source = json.loads(source_path.read_text(encoding="utf-8"))
+    elif state:
+        source = raw
     evidence_by_id = _source_evidence(source)
-    selected_ids = {
-        str(value) for value in raw.get("input_evidence_ids", ())
-    }
+    selected_ids = {str(value) for value in raw.get("input_evidence_ids", ())}
     if not selected_ids:
         selected_ids = set(evidence_by_id)
     evidence_by_id = {
         key: value for key, value in evidence_by_id.items() if key in selected_ids
     }
     supported_ids = _supported_ids(source) & set(evidence_by_id)
-    cited_ids = tuple(
-        str(evidence_id)
-        for claim in claims
-        for evidence_id in claim.get("evidence_ids", ())
-    )
+    cited_ids = tuple(str(value) for value in synthesis.get("evidence_ids", ()))
+    if not cited_ids:
+        cited_ids = tuple(
+            str(evidence_id)
+            for claim in claims
+            for evidence_id in claim.get("evidence_ids", ())
+        )
     known_citations = sum(item in evidence_by_id for item in cited_ids)
     supported_citations = sum(item in supported_ids for item in cited_ids)
     targets = tuple(qa_record.get("evidence_targets", ()))
@@ -166,13 +181,19 @@ def evaluate_answer_artifact(
             "matched_evidence_ids": matches,
             "covered": bool(matches),
         })
-    supported_claims = sum(
-        bool(claim.get("evidence_ids"))
-        and all(str(item) in supported_ids for item in claim.get("evidence_ids", ()))
-        for claim in claims
+    supported_claims = (
+        sum(
+            bool(claim.get("evidence_ids"))
+            and all(str(item) in supported_ids for item in claim.get("evidence_ids", ()))
+            for claim in claims
+        )
+        if claims
+        else int(bool(answer) and bool(cited_ids) and all(
+            item in supported_ids for item in cited_ids
+        ))
     )
     citation_count = len(cited_ids)
-    claim_count = len(claims)
+    claim_count = len(claims) if claims else int(bool(answer))
     target_count = len(targets)
     return AnswerEvaluation(
         question_id=question_id,

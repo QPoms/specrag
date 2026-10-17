@@ -12,7 +12,6 @@ from specrag.access import AccessPolicy
 from specrag.models import (
     ActorContext,
     CandidateEvidence,
-    EvidenceSynthesis,
     ResearchTask,
     SpecFact,
     SpecFactDraft,
@@ -34,30 +33,9 @@ class SpecFactStore(Protocol):
 class SpecFactDistiller(Protocol):
     def propose(
         self,
-        synthesis: EvidenceSynthesis,
+        answer: str,
         evidence: tuple[CandidateEvidence, ...],
     ) -> tuple[SpecFactDraft, ...]: ...
-
-
-class ClaimSpecFactDistiller:
-    """Convert already grounded synthesis claims into reviewable drafts."""
-
-    def propose(
-        self,
-        synthesis: EvidenceSynthesis,
-        evidence: tuple[CandidateEvidence, ...],
-    ) -> tuple[SpecFactDraft, ...]:
-        del evidence
-        return tuple(
-            SpecFactDraft(
-                claim_id=claim.claim_id,
-                assertion=claim.text,
-                subject="specification claim",
-                predicate="states",
-                object=claim.text,
-            )
-            for claim in synthesis.claims
-        )
 
 
 def _key(prefix: str, *parts: str) -> str:
@@ -150,12 +128,12 @@ class SpecFactService:
                 ))
         return tuple(sorted(results, key=lambda item: (-item.score, item.fact.fact_id))[:limit])
 
-    def propose_from_synthesis(
+    def propose_from_answer(
         self,
         context: ActorContext,
         *,
         run_id: str,
-        synthesis: EvidenceSynthesis,
+        answer: str,
         tasks: tuple[ResearchTask, ...],
         candidates: tuple[CandidateEvidence, ...],
         validated: tuple[ValidatedEvidence, ...],
@@ -163,23 +141,23 @@ class SpecFactService:
         distiller: SpecFactDistiller,
         now: datetime | None = None,
     ) -> tuple[SpecFactProposal, ...]:
+        """Persist independently distilled, source-bound answer assertions."""
+
         self.policy.require(context, "specfact.propose", workspace_id=context.workspace_id)
+        if not answer.strip():
+            raise ValueError("SpecFact proposal requires a completed answer")
         if not tasks or not sufficiency or any(item.status != "sufficient" for item in sufficiency):
             raise ValueError("SpecFact proposal requires sufficient evidence for every task")
+        candidates_by_id = {item.evidence_id: item for item in candidates}
         eligible = {
             item.evidence_id for item in validated
             if item.source_valid and item.validation_status == "supported"
-        }
-        claims = {claim.claim_id: claim for claim in synthesis.claims}
-        candidates_by_id = {item.evidence_id: item for item in candidates}
+        } & set(candidates_by_id)
         timestamp = now or datetime.now(timezone.utc)
         records: list[SpecFactProposal] = []
-        for draft in distiller.propose(synthesis, candidates):
-            claim = claims.get(draft.claim_id)
-            if claim is None:
-                raise ValueError("SpecFact draft references unknown synthesis claim")
-            if not set(claim.evidence_ids).issubset(eligible):
-                raise ValueError("synthesis claim is not fully validated")
+        for draft in distiller.propose(answer, candidates):
+            if not set(draft.evidence_ids).issubset(eligible):
+                raise ValueError("SpecFact draft is not fully validated")
             sources = tuple(
                 SpecFactSource(
                     evidence_id=item.evidence_id,
@@ -192,7 +170,7 @@ class SpecFactService:
                     line_start=item.line_start,
                     line_end=item.line_end,
                 )
-                for evidence_id in claim.evidence_ids
+                for evidence_id in draft.evidence_ids
                 for item in (candidates_by_id[evidence_id],)
             )
             operation_key = _key(
@@ -305,5 +283,5 @@ class SpecFactService:
 
 
 __all__ = [
-    "ClaimSpecFactDistiller", "SpecFactDistiller", "SpecFactService", "SpecFactStore",
+    "SpecFactDistiller", "SpecFactService", "SpecFactStore",
 ]

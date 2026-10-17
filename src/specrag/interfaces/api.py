@@ -8,7 +8,7 @@ import json
 import time
 from typing import Annotated, AsyncIterator, Iterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 import uvicorn
 
@@ -44,23 +44,12 @@ from specrag.models import (
 
 from .workspace_services import WorkspaceServices
 from .api_inspection import inspection_response
+from .api_errors import error as _error
+from .api_errors import forbidden as _forbidden
+from .api_errors import install_error_handlers
+from .api_errors import run_not_found as _run_not_found
+from .api_errors import unauthenticated as _unauthenticated
 from specrag.orchestration import RunWorker
-
-
-def _unauthenticated() -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="authentication required",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
-def _forbidden() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="access denied")
-
-
-def _run_not_found() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
 
 
 def _services(request: Request) -> WorkspaceServices:
@@ -136,6 +125,8 @@ def create_app(
         lifespan=lifespan,
     )
 
+    install_error_handlers(app)
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         response = await call_next(request)
@@ -181,7 +172,7 @@ def create_app(
         except AuthorizationError as exc:
             raise _unauthenticated() from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _error(409, str(exc), code="workspace_conflict") from exc
 
     @app.get(
         "/api/v1/workspaces",
@@ -242,7 +233,7 @@ def create_app(
         except AuthorizationError as exc:
             raise _forbidden() from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _error(409, str(exc), code="member_conflict") from exc
 
     @app.patch(
         "/api/v1/workspaces/{workspace}/members/{username}",
@@ -259,9 +250,9 @@ def create_app(
         except AuthorizationError as exc:
             raise _forbidden() from exc
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="member not found") from exc
+            raise _error(404, "member not found", code="member_not_found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _error(409, str(exc), code="member_conflict") from exc
 
     @app.delete(
         "/api/v1/workspaces/{workspace}/members/{username}",
@@ -275,9 +266,9 @@ def create_app(
         except AuthorizationError as exc:
             raise _forbidden() from exc
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="member not found") from exc
+            raise _error(404, "member not found", code="member_not_found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _error(409, str(exc), code="member_conflict") from exc
         return MemberRemovedResponse(username=username)
 
     @app.get(
@@ -330,9 +321,9 @@ def create_app(
         except AuthorizationError as exc:
             raise _forbidden() from exc
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="proposal not found") from exc
+            raise _error(404, "proposal not found", code="proposal_not_found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise _error(422, str(exc), code="review_invalid") from exc
 
     @app.get(
         "/api/v1/workspaces/{workspace}/specfacts",
@@ -373,9 +364,9 @@ def create_app(
         except AuthorizationError as exc:
             raise _forbidden() from exc
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="proposal not found") from exc
+            raise _error(404, "proposal not found", code="proposal_not_found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise _error(422, str(exc), code="review_invalid") from exc
 
     @app.post(
         "/api/v1/workspaces/{workspace}/runs",
@@ -405,6 +396,8 @@ def create_app(
             return inspection_response(worker.submit(context, request))
         except AuthorizationError as exc:
             raise _forbidden() from exc
+        except ValueError as exc:
+            raise _error(409, str(exc), code="run_submission_conflict") from exc
 
     @app.get(
         "/api/v1/workspaces/{workspace}/runs",
@@ -465,7 +458,7 @@ def create_app(
         except (AuthorizationError, KeyError) as exc:
             raise _run_not_found() from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _error(409, str(exc), code="run_lifecycle_conflict") from exc
 
     @app.post(
         "/api/v1/workspaces/{workspace}/runs/{run_id}/retry",
@@ -487,7 +480,7 @@ def create_app(
         except (AuthorizationError, KeyError) as exc:
             raise _run_not_found() from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _error(409, str(exc), code="run_lifecycle_conflict") from exc
 
     @app.get(
         "/api/v1/workspaces/{workspace}/runs/{run_id}/events",

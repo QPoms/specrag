@@ -18,6 +18,7 @@ from specrag.models import (
 )
 
 from .application import ResearchApplication, RuntimeStopped
+from .failure import failure_metadata
 from .lifecycle import reset_for_resume, resume_attempt, retry_request
 from .state import ResearchState
 
@@ -45,8 +46,6 @@ ContextLoader = Callable[[ActorContext, ResearchRun], tuple[dict[str, object], .
 ProposalWriter = Callable[[ActorContext, ResearchRun, ResearchState], tuple[str, ...]]
 CorpusSnapshot = Callable[[int], tuple[CorpusVersionRef, ...]]
 CorpusBindingWriter = Callable[[ResearchRun], None]
-
-
 @dataclass(frozen=True)
 class RunInspection:
     run: ResearchRun
@@ -406,11 +405,13 @@ class RunHarness:
                 "stop_reason": exc.reason,
                 "finished_at": datetime.now(timezone.utc),
             })
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - persisted metadata is sanitized
+            failure = failure_metadata(exc)
             terminal = active.model_copy(update={
                 "status": "failed",
                 "stop_reason": "failed",
                 "finished_at": datetime.now(timezone.utc),
+                **failure,
             })
             self.store.put(terminal)
             attempt = resume_attempt(self.store.events(terminal.run_id))
@@ -418,7 +419,13 @@ class RunHarness:
                 terminal,
                 "run_stopped",
                 f"run:stopped:failed:attempt:{attempt}",
-                payload={"reason": "failed"},
+                payload={
+                    "reason": "failed",
+                    "failure_kind": terminal.failure_kind,
+                    "retryable": terminal.failure_retryable,
+                    "attempt_count": terminal.failure_attempt_count,
+                    "status_code": terminal.failure_status_code,
+                },
             )
             raise
         else:

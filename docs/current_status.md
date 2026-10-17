@@ -1,8 +1,16 @@
 # Current project status
 
-Updated: 2026-10-16
+Updated: 2026-10-17
 
 ## Current state
+
+The current internship-project scope is frozen around the local 3GPP research
+workspace: authenticated multi-user API, durable Run/Worker lifecycle,
+evidence-backed answers, reviewed Memory/SpecFacts, and the browser client.
+No new corpus provider, private-document upload, external broker, production
+deployment layer, or automatic whole-Run replay is part of the supported
+workflow. Remaining work is hardening, documentation, reproducibility, and
+answer evaluation rather than another product slice.
 
 The first specification-version synchronization slice is implemented as an
 explicit, dormant-by-default maintenance capability. SQLite now records every
@@ -41,8 +49,10 @@ The multi-user local workspace milestone is implemented. The former
 `ValidatedKnowledge` and `ValidatedMemoryService` implementation has been
 mechanically migrated to `SpecFact` under `models/specfacts.py` and
 `specfacts/service.py`; the replaced modules and names were deleted. A
-SpecFact begins as an idempotent pending proposal created only from sufficient,
-source-valid synthesis claims. Workspace reviewers approve or reject it.
+SpecFact begins as an idempotent pending proposal created by an independent
+distiller from a completed answer and source-valid evidence. Final synthesis no
+longer creates claims or automatically creates SpecFact proposals. Workspace
+reviewers approve or reject independently extracted proposals.
 Approved facts retain Release, exact version, source path, document hash,
 heading, and line locator and can only guide a fresh source lookup. They never
 become final Evidence directly.
@@ -126,6 +136,16 @@ receipts, and per-stage latency/token inspection. Events cover transitions,
 task dispatch, tool calls, evidence selection, source validation, Judge, Gap,
 replan, synthesis, resume, cancellation, and stop. The runtime state wire
 contract is now `research-state/v1.6`.
+Outbound model API failures use a safe taxonomy covering transient, rate-limit,
+timeout, provider-unavailable, authentication/configuration, invalid-request,
+structured-output, and internal/unknown failures. The LLM adapter retains
+bounded request-level retries; Harness persists only the failure kind,
+retryable flag, attempt count, and provider status code, and emits the same
+redacted metadata in the terminal event. Whole-Run automatic replay remains
+disabled; the API can show whether a manual Retry is appropriate. HTTP errors
+now also carry a stable machine-readable `code` alongside `detail`, request
+validation uses `validation_error`, and Run submission conflicts are mapped
+explicitly instead of escaping as an unclassified server error.
 
 The top-level `cli.py` is a small stable entry. Product command handling lives
 under `interfaces/`, with `auth`, `workspace`, `research`, `specfact`, and
@@ -141,9 +161,11 @@ The first local browser client is now implemented under `frontend/` as a React
 the server-issued bearer token in `sessionStorage`, and provides a responsive
 login view, workspace switcher, research-desk shell, async Run submission
 entry point, and an authenticated Fetch-based SSE reader for live Run stages.
-It does not access SQLite directly. Completed Runs now expose only supported,
-claim-referenced evidence through the authorized inspection response, and the
-research desk renders the answer, claim trail, source path, exact version,
+It does not access SQLite directly. Completed Runs now expose only supported
+evidence cited by the final answer through the authorized inspection response,
+and the
+research desk renders the directly generated answer, inline evidence IDs,
+source path, exact version,
 heading, line locator, excerpt, and document hash. The knowledge-management
 surface now shows private User Core, shared Project Core, Topic Memory,
 reviewable Memory proposals, approved SpecFacts, SpecFact proposals, source
@@ -173,18 +195,48 @@ hidden cross-owner/cross-workspace Run access, member-directory authorization,
 self-demotion/removal protection, asynchronous Run submission, queued Resume,
 linked Retry, attempt-aware terminal events, safe failure projection, worker
 execution, SSE isolation, evidence filtering, knowledge visibility, and
-proposal review authorization. The complete suite passes 154 tests at
-this point. The complete suite now passes 159 tests. The historical 2026-10-13 quality batch remains 47/50; focused
+proposal review authorization. The complete suite now contains 174 tests. The
+historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.
 
+Final synthesis now returns one complete user-facing answer directly, together
+with the ordered evidence IDs cited inline as `[evidence_id]`. The service
+rejects citations outside the Judge-supported set, mismatches between inline
+markers and declared IDs, and citation sets that omit a sufficient
+ResearchTask. The separate synthesis-claim representation and claim-joining
+answer derivation have been removed for both simple and complex questions.
+Run inspection and the browser expose only the cited supported evidence.
+Historical claim-based JSON evaluation artifacts remain readable. SpecFact
+distillation is now an independent reviewed operation and is no longer invoked
+automatically at Run completion.
+
+A live direct-answer acceptance run completed simple question `r17-qa-001`
+and complex question `r17-qa-008` against the local Release 17 corpus. Both
+Runs stopped normally with sufficient evidence, zero replans, and zero errors;
+the simple case used one ResearchTask and the complex case covered all three
+ResearchTasks. Both persisted synthesis objects contain only `answer` and
+`evidence_ids`. Deterministic evaluation reported target recall 1.0 and
+citation validity 1.0 for both answers. The same run also completed the local
+Chroma embedding cache at 27,858 chunks, so later Runs over this unchanged
+corpus snapshot reuse the populated vector cache.
+
 The next active milestone is answer evaluation only. The deterministic offline
-runner `scripts/evaluate_answers.py` aligns generated claims and cited evidence
+runner `scripts/evaluate_answers.py` aligns final-answer citations and evidence
 to the curated QA targets and reports citation validity, citation relevance,
 supported-claim rate, target recall, and all-target coverage by difficulty and
 reasoning scope. The existing structured LLM rubric remains optional and is
-reported separately. Runtime performance, Worker throughput, and Memory
-ablation are intentionally excluded from this first answer benchmark.
+reported separately. The first 50-question deterministic baseline has now
+been run against the retained native-tool-calling answer batch from
+`artifacts/runs/full-workflow/20261013-native-tool-calling-50`; the report is
+under `artifacts/evaluations/20261017-native-tool-calling-50/summary.json`.
+All 47 completed answers had non-empty answers, citation validity 1.0, and
+claim support rate 1.0. Target recall was 0.9362 and all-target coverage was
+0.8936 across the 47 completed answers; three Runs were skipped because they
+ended at a tool or replan budget before synthesis. This is a retrospective
+baseline over existing generated artifacts, not a regenerated current-model
+run. Runtime performance, Worker throughput, and Memory ablation remain
+excluded from this first answer benchmark.
 
 The historical generated runs, benchmark tensors, retrieval indexes, staging
 models, analysis outputs, and temporary caches have been removed. The workspace
@@ -924,14 +976,16 @@ V1.2 also accepts the Run's resolved answer language and detail level as
 presentation controls. They can change wording only; the original question,
 eligible evidence, and claim coverage remain authoritative.
 
-Evidence-backed claims are the canonical final-answer units. Code requires the
-claim set to cite eligible evidence owned by every sufficient ResearchTask and
-continues to reject unknown or ineligible evidence IDs. The persisted and
-displayed answer is deterministically derived from the ordered claim texts,
-preventing free-form answer content from omitting claim facts or adding facts
-outside the auditable claim set. The prompt also requires minimum sufficient
-scope and preservation of specification-specific actors, interfaces, messages,
-states, and terminology instead of merging analogous procedures across systems.
+The Synthesizer now produces the complete user-facing answer directly. Its
+runtime output is `answer + evidence_ids`, with exact `[evidence_id]` markers
+placed inline after supported statements. Code requires the declared IDs to
+match the inline citations, rejects unknown or ineligible evidence IDs, and
+requires cited evidence owned by every sufficient ResearchTask. There is no
+parallel synthesis-claim list and no claim-concatenation step. The prompt still
+requires minimum sufficient scope and preservation of specification-specific
+actors, interfaces, messages, states, and terminology instead of merging
+analogous procedures across systems. Historical claim-based JSON artifacts
+remain readable by the offline compatibility path.
 
 Live compatibility and quality checks completed for simple questions 003, 033,
 and 044 and frozen-plan complex questions 008, 048, and 050. All six completed
@@ -967,7 +1021,7 @@ handling or applicable limits. This prevents a broad procedural passage or
 success/failure message pair from being treated as proof of a more specific
 relation.
 
-Final synthesis uses `evidence-synthesis/v1.5`. It preserves nested branch
+Final synthesis uses `evidence-synthesis/v1.6`. It preserves nested branch
 antecedents, exceptions, implication direction, and normative limits that
 qualify the requested conclusion, while omitting independent evidence-backed
 facts that are unnecessary to answer the original question. Focused live

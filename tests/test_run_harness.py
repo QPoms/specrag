@@ -7,6 +7,7 @@ import pytest
 
 from specrag.access import AuthorizationError
 from specrag.infrastructure import InMemoryRunStore
+from specrag.infrastructure.structured_agent import CodexAgentError
 from specrag.models import ActorContext, CorpusVersionRef, ResearchRequest
 from specrag.orchestration import RunHarness
 
@@ -71,6 +72,21 @@ class _CrashingApplication(_Application):
 
 def _crashing_factory(release, control, event_sink, research_context):
     return _CrashingApplication(control)
+
+
+class _ApiFailureApplication(_Application):
+    def run(self, **kwargs):
+        raise CodexAgentError(
+            "sanitized provider failure",
+            failure_kind="rate_limited",
+            retryable=True,
+            status_code=429,
+            attempt_count=8,
+        )
+
+
+def _api_failure_factory(release, control, event_sink, research_context):
+    return _ApiFailureApplication(control)
 
 
 def test_run_access_is_owner_scoped_with_admin_override() -> None:
@@ -177,6 +193,29 @@ def test_new_harness_can_resume_after_process_interruption() -> None:
     assert result.run.status == "completed"
     assert result.run.stop_reason == "completed"
     assert [event.event_type for event in result.events].count("run_stopped") == 1
+
+
+def test_api_failure_is_persisted_as_safe_machine_readable_metadata() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _api_failure_factory)
+    with pytest.raises(CodexAgentError):
+        harness.start(_context(), ResearchRequest(question="question"))
+
+    failed = next(iter(store._runs.values()))
+    assert failed.status == "failed"
+    assert failed.failure_kind == "rate_limited"
+    assert failed.failure_retryable is True
+    assert failed.failure_attempt_count == 8
+    assert failed.failure_status_code == 429
+    stopped = store.events(failed.run_id)[-1]
+    assert stopped.event_type == "run_stopped"
+    assert stopped.payload == {
+        "reason": "failed",
+        "failure_kind": "rate_limited",
+        "retryable": True,
+        "attempt_count": 8,
+        "status_code": 429,
+    }
 
 
 def test_terminal_run_can_queue_resume_only_with_checkpoint() -> None:

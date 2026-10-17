@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 from specrag.models import (
@@ -66,26 +67,29 @@ class EvidenceSynthesisService:
                 + ", ".join(sorted(missing_evidence_tasks))
             )
         proposal = self.generator.synthesize(question, tasks, evidence)
-        claim_ids = [claim.claim_id for claim in proposal.claims]
-        if len(claim_ids) != len(set(claim_ids)):
-            raise ValueError("synthesis claim IDs must be unique")
-        for claim in proposal.claims:
-            unknown = set(claim.evidence_ids) - eligible_ids
-            if unknown:
-                raise ValueError(
-                    f"claim {claim.claim_id} cites ineligible evidence: "
-                    + ", ".join(sorted(unknown))
-                )
+        unknown = set(proposal.evidence_ids) - eligible_ids
+        if unknown:
+            raise ValueError(
+                "synthesis cites ineligible evidence: "
+                + ", ".join(sorted(unknown))
+            )
+        inline_ids = tuple(dict.fromkeys(re.findall(
+            r"\[([A-Za-z0-9_.:-]+)\]",
+            proposal.answer,
+        )))
+        if inline_ids != proposal.evidence_ids:
+            raise ValueError(
+                "inline answer citations must match synthesis evidence IDs"
+            )
         covered_tasks = {
             evidence_by_id[evidence_id].task_id
-            for claim in proposal.claims
-            for evidence_id in claim.evidence_ids
+            for evidence_id in proposal.evidence_ids
         }
-        missing_claim_tasks = expected_tasks - covered_tasks
-        if missing_claim_tasks:
+        missing_answer_tasks = expected_tasks - covered_tasks
+        if missing_answer_tasks:
             raise ValueError(
-                "synthesis claims do not cover tasks: "
-                + ", ".join(sorted(missing_claim_tasks))
+                "synthesis citations do not cover tasks: "
+                + ", ".join(sorted(missing_answer_tasks))
             )
         return proposal
 

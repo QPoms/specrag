@@ -12,7 +12,6 @@ from specrag.evidence import (
 )
 from specrag.models import (
     CandidateEvidence,
-    EvidenceBackedClaim,
     EvidenceSynthesis,
     ResearchPlan,
     ResearchTask,
@@ -323,12 +322,19 @@ class _SynthesisGenerator:
 
     def synthesize(self, question, tasks, evidence):
         return EvidenceSynthesis(
-            answer="This transport value must not become the final answer.",
-            claims=(EvidenceBackedClaim(
-                claim_id="C1",
-                text="The UE initiates the registration procedure.",
-                evidence_ids=(self.evidence_id,),
-            ),),
+            answer=(
+                "The UE initiates the registration procedure. "
+                f"[{self.evidence_id}]"
+            ),
+            evidence_ids=(self.evidence_id,),
+        )
+
+
+class _MissingInlineCitationGenerator:
+    def synthesize(self, question, tasks, evidence):
+        return EvidenceSynthesis(
+            answer="The UE initiates the registration procedure.",
+            evidence_ids=("E1",),
         )
 
 
@@ -341,7 +347,7 @@ def _sufficient_assessment() -> TaskSufficiencyAssessment:
     )
 
 
-def test_synthesis_rejects_claims_with_unvalidated_evidence(tmp_path: Path) -> None:
+def test_synthesis_rejects_unvalidated_answer_citations(tmp_path: Path) -> None:
     service = EvidenceSynthesisService(_SynthesisGenerator("UNKNOWN"))
 
     try:
@@ -358,7 +364,26 @@ def test_synthesis_rejects_claims_with_unvalidated_evidence(tmp_path: Path) -> N
         raise AssertionError("synthesis accepted an unvalidated evidence ID")
 
 
-def test_synthesis_handler_records_claim_to_evidence_chain(tmp_path: Path) -> None:
+def test_synthesis_rejects_declared_citation_missing_from_answer(
+    tmp_path: Path,
+) -> None:
+    service = EvidenceSynthesisService(_MissingInlineCitationGenerator())
+
+    try:
+        service.synthesize(
+            "What starts registration?",
+            (_task(),),
+            (_candidate(tmp_path),),
+            (_validated(),),
+            (_sufficient_assessment(),),
+        )
+    except ValueError as exc:
+        assert "inline answer citations must match" in str(exc)
+    else:
+        raise AssertionError("synthesis accepted an answer without inline citations")
+
+
+def test_synthesis_handler_records_answer_to_evidence_chain(tmp_path: Path) -> None:
     state = new_research_state(
         research_id="R1",
         user_question="What starts registration?",
@@ -376,11 +401,13 @@ def test_synthesis_handler_records_claim_to_evidence_chain(tmp_path: Path) -> No
     )(state)
 
     assert update["stop_reason"] == "completed"
-    assert update["final_answer"] == "The UE initiates the registration procedure."
-    assert update["synthesis"].claims[0].evidence_ids == ("E1",)
+    assert update["final_answer"] == (
+        "The UE initiates the registration procedure. [E1]"
+    )
+    assert update["synthesis"].evidence_ids == ("E1",)
 
 
-def test_synthesis_rejects_claim_set_that_omits_a_task(tmp_path: Path) -> None:
+def test_synthesis_rejects_citations_that_omit_a_task(tmp_path: Path) -> None:
     second_task = ResearchTask(
         task_id="T2",
         question="What does the network do?",
@@ -416,7 +443,7 @@ def test_synthesis_rejects_claim_set_that_omits_a_task(tmp_path: Path) -> None:
     except ValueError as exc:
         assert "do not cover tasks: T2" in str(exc)
     else:
-        raise AssertionError("synthesis accepted a claim set that omitted T2")
+        raise AssertionError("synthesis accepted citations that omitted T2")
 
 
 def test_sufficiency_judge_conflict_becomes_source_conflict_gap(
@@ -505,4 +532,4 @@ def test_real_evidence_handlers_complete_single_research_graph(
     assert result["source_validations"][0].valid is True
     assert result["validated_evidence"][0].validation_status == "supported"
     assert result["sufficiency_assessments"][0].status == "sufficient"
-    assert result["synthesis"].claims[0].evidence_ids == ("E1",)
+    assert result["synthesis"].evidence_ids == ("E1",)

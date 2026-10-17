@@ -2,6 +2,7 @@
 
 from .access import ActorContext, Membership, User, Workspace
 from .api import (
+    ApiErrorResponse,
     LoginRequest,
     LogoutResponse,
     MemberCreateRequest,
@@ -32,7 +33,15 @@ from .corpus import (
     CorpusVersionStatus,
     SpecificationSourceCandidate,
 )
-from .runtime import ResearchRequest, ResearchRun, RunEvent, RunStatus, RunStopReason
+from .runtime import (
+    ResearchRequest,
+    ResearchRun,
+    RunEvent,
+    RunFailureKind,
+    RUN_FAILURE_KINDS,
+    RunStatus,
+    RunStopReason,
+)
 from .specfacts import (
     SpecFact,
     SpecFactDraft,
@@ -61,7 +70,6 @@ from .memory import (
 
 from .research import (
     CandidateEvidence,
-    EvidenceBackedClaim,
     EvidenceSynthesis,
     GapDimension,
     GapEvidenceNeed,
@@ -88,7 +96,6 @@ from .tool_calling import (
 
 __all__ = [
     "CandidateEvidence",
-    "EvidenceBackedClaim",
     "EvidenceSynthesis",
     "GapDimension",
     "GapEvidenceNeed",
@@ -122,12 +129,15 @@ __all__ = [
     "CorpusVersionRef",
     "CorpusVersionStatus",
     "SpecificationSourceCandidate",
+    "ApiErrorResponse",
     "Membership",
     "ResearchRun",
     "ResearchRequest",
     "RunEvent",
     "RunInspectionResponse",
     "RunFailureResponse",
+    "RunFailureKind",
+    "RUN_FAILURE_KINDS",
     "RunCreateRequest",
     "RunBudgetRequest",
     "RunRestartRequest",

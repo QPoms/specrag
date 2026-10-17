@@ -12,7 +12,6 @@ from specrag.interfaces.api_inspection import inspection_response
 from specrag.interfaces.workspace_services import WorkspaceServices
 from specrag.models import (
     CandidateEvidence,
-    EvidenceBackedClaim,
     EvidenceSynthesis,
     MemoryMutationDraft,
     ResearchRun,
@@ -72,21 +71,25 @@ def test_api_authenticates_server_sessions_and_rechecks_membership() -> None:
     services, database_path = _services()
     try:
         with TestClient(create_app(services)) as client:
-            assert client.post(
+            missing_auth = client.post(
                 "/api/v1/workspaces", json={"name": "denied"}
-            ).status_code == 401
+            )
+            assert missing_auth.status_code == 401
+            assert missing_auth.json()["code"] == "authentication_required"
             assert client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "wrong password"},
             ).status_code == 401
-            assert client.post(
+            extra_field = client.post(
                 "/api/v1/auth/login",
                 json={
                     "username": "alice",
                     "password": "alice secure password",
                     "role": "admin",
                 },
-            ).status_code == 422
+            )
+            assert extra_field.status_code == 422
+            assert extra_field.json()["code"] == "validation_error"
 
             alice_token = _login(client, "alice", "alice secure password")
             created = client.post(
@@ -176,6 +179,33 @@ def test_api_authenticates_server_sessions_and_rechecks_membership() -> None:
             assert client.post(
                 "/api/v1/auth/logout", headers=_authorization(bob_token)
             ).status_code == 401
+    finally:
+        _close(services, database_path)
+
+
+def test_api_maps_run_submission_conflicts_to_stable_error() -> None:
+    services, database_path = _services()
+    services.harness = RunHarness(
+        services.runs,
+        lambda *args: _Application(),
+        corpus_snapshot=lambda _release: (),
+    )
+    try:
+        with TestClient(create_app(services)) as client:
+            token = _login(client, "alice", "alice secure password")
+            workspace_id = client.post(
+                "/api/v1/workspaces",
+                headers=_authorization(token),
+                json={"name": "Conflict Workspace"},
+            ).json()["workspace_id"]
+            response = client.post(
+                f"/api/v1/workspaces/{workspace_id}/runs",
+                headers=_authorization(token),
+                json={"question": "Will this be queued?"},
+            )
+            assert response.status_code == 409
+            assert response.json()["code"] == "run_submission_conflict"
+            assert "active specification versions" in response.json()["detail"]
     finally:
         _close(services, database_path)
 
@@ -366,7 +396,7 @@ def test_api_submits_run_to_worker_and_streams_durable_events() -> None:
         _close(services, database_path)
 
 
-def test_api_inspection_exposes_only_supported_claim_evidence() -> None:
+def test_api_inspection_exposes_only_supported_answer_evidence() -> None:
     now = datetime.now(timezone.utc)
     run = ResearchRun(
         run_id="RUN-" + "A" * 32,
@@ -396,12 +426,11 @@ def test_api_inspection_exposes_only_supported_claim_evidence() -> None:
     )
     rejected = supported.model_copy(update={"evidence_id": "E:rejected"})
     synthesis = EvidenceSynthesis(
-        answer="ignored",
-        claims=(EvidenceBackedClaim(
-            claim_id="claim-1",
-            text="The UE sends a registration request.",
-            evidence_ids=(supported.evidence_id,),
-        ),),
+        answer=(
+            "The UE sends a registration request. "
+            f"[{supported.evidence_id}]"
+        ),
+        evidence_ids=(supported.evidence_id,),
     )
     value = RunInspection(
         run=run,
@@ -436,9 +465,11 @@ def test_api_inspection_exposes_only_supported_claim_evidence() -> None:
 
     response = inspection_response(value)
 
-    assert response.answer == "The UE sends a registration request."
+    assert response.answer == (
+        "The UE sends a registration request. [E:supported]"
+    )
     assert [item.evidence_id for item in response.evidence] == [supported.evidence_id]
-    assert response.claims[0].evidence_ids == (supported.evidence_id,)
+    assert response.evidence_ids == (supported.evidence_id,)
     assert response.failure is None
 
 
