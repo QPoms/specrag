@@ -1,0 +1,10 @@
+flowchart TD
+    START([Start]) -->|question| ROUTER[Router]
+    ROUTER -->|route| PLANNER[Planner]
+    PLANNER -->|task| RESEARCHER[Researcher]
+    RESEARCHER -->|candidates| SOURCE[Source Validator]
+    SOURCE -->|evidence| JUDGE[Sufficiency Judge]
+    JUDGE -->|continue| RESEARCHER
+    JUDGE -->|sufficient| SYNTH[Synthesizer]
+    JUDGE -->|stop| END([End])
+    SYNTH -->|answer| END

@@ -204,12 +204,6 @@ def _budget_guard(state: ResearchState) -> dict[str, object]:
     return {}
 
 
-def _route_after_router(state: ResearchState) -> Literal["planner", "__end__"]:
-    if state["route"] == "finish" or state["stop_reason"] is not None:
-        return END
-    return "planner"
-
-
 def _route_after_guard(
     state: ResearchState,
 ) -> Literal["researcher", "replanner", "synthesizer", "__end__"]:
@@ -280,7 +274,7 @@ def build_single_research_workflow(
     builder.add_node("synthesizer", _node("synthesizer", handlers.synthesizer, runtime_guard, event_sink))
 
     builder.add_edge(START, "router")
-    builder.add_conditional_edges("router", _route_after_router)
+    builder.add_edge("router", "planner")
     builder.add_edge("planner", "researcher")
     builder.add_edge("researcher", "source_validator")
     builder.add_edge("source_validator", "sufficiency_judge")

@@ -26,6 +26,7 @@ specrag-worker = "specrag.interfaces.worker:main"
 [project.optional-dependencies]
 dev = [
     "httpx>=0.27,<1",
+    "jupyterlab>=4,<5",
     "pytest>=8.0",
 ]
 

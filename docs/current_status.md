@@ -1225,3 +1225,14 @@ results, failed cases, and reproduction metadata are documented in
 `docs/end_to_end_evaluation.md`, with the metric contract and execution history
 in `docs/plans/032-end-to-end-efficiency-evaluation.md`. The canonical quality
 gate passes: structure check, 50-question QA dataset check, and all 219 tests.
+
+Workflow visualization is now reproducible from the active LangGraph
+implementation. `docs/architecture/single_research_workflow.mmd` holds the
+concise Single Researcher business view, while
+`docs/notebooks/langgraph_workflows.ipynb` compiles both Single and Parallel
+graphs with non-executable test handlers, asserts their exact static topology,
+and exports generated files only to ignored `artifacts/diagrams/`. Explicit
+conditional destinations make the compiled Parallel graph unambiguous, and
+automated topology tests detect drift. JupyterLab remains a development-only
+dependency; notebook checkpoints are ignored. The implementation record is
+`docs/plans/033-workflow-visualization.md`.

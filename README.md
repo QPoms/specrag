@@ -101,6 +101,11 @@ user question or task
 - `src/specrag/orchestration/`: LangGraph `StateGraph`, conditional routing,
   dependency-context handoff, bounded re-planning, SQLite checkpointing,
   authorized Run lifecycle, events, cancellation, deadlines, and recovery.
+- `docs/architecture/single_research_workflow.mmd` and
+  `docs/notebooks/langgraph_workflows.ipynb`: version-controlled business-flow
+  source plus an executable, compile-only topology inspection for the Single
+  and Parallel Researcher graphs. Generated diagrams stay under ignored
+  `artifacts/diagrams/`.
 - `src/specrag/interfaces/`: product CLI and HTTP API adapters plus application
   composition. The API authenticates server-issued bearer sessions, resolves
   current workspace membership on every protected request, and reuses the

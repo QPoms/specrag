@@ -27,7 +27,6 @@ from .workflow import (
     _in_memory_checkpointer,
     _node,
     _replanner_node,
-    _route_after_router,
 )
 
 
@@ -320,14 +319,22 @@ def build_parallel_research_workflow(
     builder.add_node("synthesizer", _node("synthesizer", handlers.synthesizer))
 
     builder.add_edge(START, "router")
-    builder.add_conditional_edges("router", _route_after_router)
+    builder.add_edge("router", "planner")
     builder.add_edge("planner", "dispatch")
-    builder.add_conditional_edges("dispatch", _dispatch_workers)
+    builder.add_conditional_edges(
+        "dispatch",
+        _dispatch_workers,
+        ["researcher_worker", "budget_guard"],
+    )
     builder.add_edge("researcher_worker", "fan_in")
     builder.add_edge("fan_in", "source_validator")
     builder.add_edge("source_validator", "sufficiency_judge")
     builder.add_edge("sufficiency_judge", "budget_guard")
-    builder.add_conditional_edges("budget_guard", _route_after_parallel_guard)
+    builder.add_conditional_edges(
+        "budget_guard",
+        _route_after_parallel_guard,
+        ["dispatch", "replanner", "synthesizer", END],
+    )
     builder.add_edge("replanner", "dispatch")
     builder.add_edge("synthesizer", END)
 
