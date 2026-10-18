@@ -121,6 +121,116 @@ user question or task
   against the curated QA targets and writes per-question results plus an
   aggregate report grouped by difficulty and reasoning scope. It does not call
   an LLM; the optional structured answer-quality rubric is reported separately.
+- `scripts/evaluate_components.py`: evaluates frozen component artifacts
+  against versioned annotations and structured semantic judgments. It supports
+  `router`, `planner`, `retriever`, `researcher`, `judge`, and `synthesizer`;
+  proposed annotations require the explicit `--allow-proposed` flag and
+  produce reports marked `calibration_only`.
+- `scripts/draft_component_evaluation.py`: uses versioned structured offline-
+  judge prompts to draft semantic-unit annotations and Planner mappings for
+  manual review. Generated drafts never promote themselves to `reviewed`.
+- `scripts/run_component_researcher.py`: runs the production Researcher
+  directly from reviewed GoldResearchTasks and freezes per-question evidence
+  and tool-call artifacts without inheriting Planner errors.
+- `scripts/run_component_evidence_pipeline.py`: runs Judge from independently
+  gold-sufficient candidate pools and Synthesizer from a separate approved
+  evidence input, so their metrics remain isolated.
+- `scripts/draft_component_retrieval.py` and
+  `scripts/draft_component_evidence.py`: create versioned structured qrel,
+  evidence-set, Final Evidence, and claim/citation judgment drafts.
+- `scripts/promote_component_judgments.py`: records an explicit manual-audit
+  decision and adds required reviewer metadata; it refuses promotion without
+  `--audit-complete`.
+
+  The same entry point can merge an existing pilot into a full Router
+  annotation seed. The legacy review input must remain `proposed`; promotion
+  to `reviewed` requires an auditable reviewer and timezone-aware timestamp.
+
+  ```powershell
+  uv run python scripts/evaluate_components.py seed-router `
+    --questions data/QA/questions.jsonl `
+    --route-review artifacts/runs/routing/20261010-router-label-review/review.jsonl `
+    --base-annotations data/QA/component_evaluation_pilot.jsonl `
+    --output data/QA/component_evaluation_release17.jsonl
+  ```
+
+  ```powershell
+  uv run python scripts/evaluate_components.py router `
+    --annotations data/QA/component_evaluation_pilot.jsonl `
+    --artifacts artifacts/runs/routing/20261010-all-50-v37-contract-cohesion `
+    --output artifacts/evaluations/components/router-pilot-reviewed
+  ```
+
+  Planner candidate artifacts for a calibration set can be generated without
+  re-running Router by fixing the component annotations explicitly:
+
+  ```powershell
+  uv run specrag plan --id r17-qa-035 --id r17-qa-044 `
+    --route-annotations data/QA/component_evaluation_pilot.jsonl `
+    --output-dir artifacts/runs/planning/component-pilot
+  ```
+
+  Combine that directory with the frozen Planner batch when scoring the five
+  pilot decomposition cases:
+
+  ```powershell
+  uv run python scripts/evaluate_components.py planner `
+    --annotations data/QA/component_evaluation_pilot.jsonl `
+    --judgments data/QA/component_planner_pilot_judgments.jsonl `
+    --artifacts artifacts/runs/planning/20261010-complex-planner-v13-full-acceptance `
+    --artifacts artifacts/runs/planning/component-pilot `
+    --output artifacts/evaluations/components/planner-pilot-reviewed
+  ```
+
+  The reviewed full-development inputs are
+  `data/QA/component_evaluation_release17.jsonl` and
+  `data/QA/component_planner_release17_judgments.jsonl`. Their retained Router
+  and Planner reports cover all 50 routes and all 18 decomposition cases,
+  respectively, and are formal runs with `calibration_only=false`.
+
+  The full reviewed evidence-path inputs are the four
+  `data/QA/component_*_release17_judgments.jsonl` files. Their formal baseline
+  covers 78 Retriever calls, 78 Researcher tasks, and 50 Judge/Synthesizer
+  questions. Retriever Recall@12 is 0.8761 and nDCG@5 is 0.8738; Researcher
+  Coverage/Precision are 0.9872/0.6178; Judge Coverage/Precision/Overlap are
+  0.98/0.908/0.102; Synthesizer Coverage/Groundedness/Citation Correctness are
+  0.975/0.9937/0.9567. All reports have complete reviewed counts and
+  `calibration_only=false`.
+
+  The evidence-path components use the same entry point and frozen runtime
+  artifacts. Each command receives its component-specific structured judgment
+  file; the Retriever additionally rejects navigation-tool calls and records a
+  fixed corpus scope.
+
+  ```powershell
+  uv run python scripts/evaluate_components.py retriever `
+    --annotations data/QA/component_evaluation_pilot.jsonl `
+    --judgments data/QA/component_retrieval_pilot_judgments.jsonl `
+    --artifacts artifacts/runs/researcher-freeze/20261013-native-simple-34 `
+    --artifacts artifacts/runs/researcher-freeze/20261013-native-complex-16 `
+    --output artifacts/evaluations/components/retriever-pilot-reviewed
+
+  uv run python scripts/evaluate_components.py researcher `
+    --annotations data/QA/component_evaluation_pilot.jsonl `
+    --judgments data/QA/component_researcher_pilot_judgments.jsonl `
+    --artifacts artifacts/runs/researcher-freeze/20261013-native-simple-34 `
+    --artifacts artifacts/runs/researcher-freeze/20261013-native-complex-16 `
+    --output artifacts/evaluations/components/researcher-pilot-reviewed
+
+  uv run python scripts/evaluate_components.py judge `
+    --annotations data/QA/component_evaluation_pilot.jsonl `
+    --judgments data/QA/component_final_evidence_pilot_judgments.jsonl `
+    --artifacts artifacts/runs/researcher-freeze/20261013-native-simple-34 `
+    --artifacts artifacts/runs/researcher-freeze/20261013-native-complex-16 `
+    --output artifacts/evaluations/components/final-evidence-pilot-reviewed
+
+  uv run python scripts/evaluate_components.py synthesizer `
+    --annotations data/QA/component_evaluation_pilot.jsonl `
+    --judgments data/QA/component_synthesizer_pilot_judgments.jsonl `
+    --artifacts artifacts/runs/synthesis-v12/20261014-simple `
+    --artifacts artifacts/runs/synthesis-v12/20261014-complex `
+    --output artifacts/evaluations/components/synthesizer-pilot-reviewed
+  ```
 - `scripts/evaluate_complex_researcher.py`: runs one frozen complex Planner
   artifact or a resumable directory batch. Batch mode atomically saves each
   question and `summary.json`; rerun it with `--batch --resume` after an
@@ -137,6 +247,44 @@ The historical attacker-capability validation line, including its versioned
 agents, deterministic gates, Gold/Shadow evaluations, prompts, cases, and
 benchmarks, has been removed. The remaining retriever indexes only the 3GPP
 Markdown corpus; the deleted threat model is no longer an input source.
+
+## Component evaluation baseline
+
+The reviewed internal baseline was completed on 2026-10-17 over the 50-question
+Release 17 development set. It is an engineering regression baseline rather
+than an independent academic benchmark. Every formal report uses reviewed
+annotations and judgments and has `calibration_only=false`.
+
+| Component | Scope | Reviewed baseline |
+| --- | ---: | --- |
+| Router | 50 questions | Route Accuracy 0.9000; Macro-F1 0.8927 |
+| Planner | 18 decomposition questions | Task Coverage 0.8241; Full Task Coverage 0.6111; Overlap 0; Out-of-Scope 0 |
+| Retriever | 78 fixed calls | Target Recall@5/@12 0.8761; nDCG@5/@12 0.8738 |
+| Researcher | 78 GoldResearchTasks | Evidence Coverage 0.9872; Evidence Precision 0.6178 |
+| Judge | 50 gold-sufficient pools | Final Evidence Coverage 0.9800; Precision 0.9080; Overlap 0.1020 |
+| Synthesizer | 50 Judge-independent evidence inputs | Answer Coverage 0.9750; Groundedness 0.9937; Citation Correctness 0.9567 |
+
+`Full Task Coverage` is deliberately strict: a question passes only when every
+reviewed ResearchUnit is covered by at least one generated ResearchTask. The
+Planner covered all units on 11 of 18 decomposition questions even though its
+mean per-question Task Coverage was 0.8241.
+
+The components are isolated, so later-stage scores are not end-to-end scores:
+Planner receives reviewed routes, Researcher receives fixed GoldResearchTasks,
+Judge receives gold-sufficient candidates, and Synthesizer receives approved
+evidence independently of the runtime Judge selection. The current Retriever
+artifacts contain five ranked results per fixed call, so the reported `@12`
+values equal `@5`; a future comparison must retrieve twelve results before
+interpreting the additional depth.
+
+The metric contract and review decisions are documented in
+[`docs/plans/031-component-evaluation-system.md`](docs/plans/031-component-evaluation-system.md)
+and [`docs/component_evaluation_review.md`](docs/component_evaluation_review.md).
+Reviewed annotations and judgments live under [`data/QA/`](data/QA/README.md).
+Generated runs and reports stay under ignored `artifacts/`; the checked-in
+inputs and `scripts/evaluate_components.py` reproduce the reports. Future
+optimization commits should record the changed prompt/model/corpus contract
+and report both the new score and its delta from this baseline.
 
 ## Data
 

@@ -119,6 +119,17 @@ def _imports_langgraph(node: ast.Import | ast.ImportFrom) -> bool:
     return bool(node.module and node.module.split(".", 1)[0] == "langgraph")
 
 
+def _contains_forbidden_fragment(text: str, fragment: str) -> bool:
+    """Match an import token without confusing it with a longer package name."""
+
+    return bool(
+        re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(fragment)}(?![A-Za-z0-9_])",
+            text,
+        )
+    )
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -143,7 +154,7 @@ def main() -> int:
 
         text = path.read_text(encoding="utf-8")
         for fragment in FORBIDDEN_IMPORT_FRAGMENTS:
-            if fragment in text:
+            if _contains_forbidden_fragment(text, fragment):
                 errors.append(f"legacy import {fragment!r} in {relative}")
 
         line_count = len(text.splitlines())

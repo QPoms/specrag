@@ -195,7 +195,7 @@ hidden cross-owner/cross-workspace Run access, member-directory authorization,
 self-demotion/removal protection, asynchronous Run submission, queued Resume,
 linked Retry, attempt-aware terminal events, safe failure projection, worker
 execution, SSE isolation, evidence filtering, knowledge visibility, and
-proposal review authorization. The complete suite now contains 174 tests. The
+proposal review authorization. The complete suite now contains 202 tests. The
 historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.
@@ -237,6 +237,107 @@ ended at a tool or replan budget before synthesis. This is a retrospective
 baseline over existing generated artifacts, not a regenerated current-model
 run. Runtime performance, Worker throughput, and Memory ablation remain
 excluded from this first answer benchmark.
+
+The component-evaluation metric contract is documented in
+`docs/plans/031-component-evaluation-system.md`, and its shared implementation
+is complete for the 50-question Release 17 development set. It isolates each component with reviewed upstream
+inputs and deliberately keeps a small engineering scorecard: Router route
+accuracy; Planner task coverage, overlap, and out-of-scope rate; fixed-request
+retrieval target Recall@5/@12 and nDCG@5/@12; Researcher evidence coverage and
+precision; whole-question coverage, precision, and overlap for the merged
+Judge-supported Final Evidence; and Synthesizer answer coverage, groundedness,
+and claim-level citation correctness. Humans approve gold ResearchUnits,
+EvidenceUnits, AnswerUnits, retrieval qrels, and gold-sufficient Judge inputs;
+structured LLM judges may perform repeatable semantic mappings, with initial
+and ambiguous judgments reviewed by a human. Judge sufficiency classification,
+gap diagnosis, corrective-retrieval recovery, and end-to-end performance are
+outside this first component slice.
+
+Execution is staged rather than starting with all 50 questions. The first
+reviewed pilot fixes ten Router cases (`001`, `002`, `005`, `019`, `034`,
+`007`, `008`, `035`, `044`, and `046`) and evaluates Planner on the five
+reviewed decomposition cases. The set intentionally includes two frozen-v3.7
+over-decomposition disagreements and two under-decomposition disagreements.
+The versioned shared annotation models, metric functions, and the single
+`scripts/evaluate_components.py` entry point are implemented. The frozen Router
+aligns on 6/10 cases (accuracy and Macro-F1 0.60). Planner over 007, 008, 035,
+044, and 046 reports full unit coverage with no judged overlap or out-of-scope
+tasks. All ten annotations and five Planner judgments are reviewed, and both
+formal reports state `calibration_only=false`.
+
+The evidence-path metric slice is also implemented through the same runner.
+Its first reviewed baseline uses 001, 007, and 008 so the sample contains a
+single-task case, a multi-task case, and a cross-specification multi-passage
+chain. Three fixed ranked calls report Target Recall@5/@12 of 0.6667 and
+nDCG@5/@12 of 0.7925. Four fixed Researcher tasks report Evidence Coverage
+1.0 and Evidence Precision 0.675. Three whole-question Judge selections report
+Final Evidence Coverage 1.0, Precision 0.8, and Overlap 0.2 after exact
+cross-task provenance deduplication. Three fixed-evidence Synthesizer cases
+report Answer Coverage 0.9583, Groundedness 1.0, and Citation Correctness 1.0;
+question 007 is partial because one required identity relationship is implied
+rather than stated explicitly. All underlying units, qrels, evidence mappings,
+and claim/citation judgments are reviewed, and the four component summaries
+state `calibration_only=false`.
+
+Generated component reports are write-once unless a rerun produces identical
+bytes. Per-case reports include source-artifact hashes, schema/review status,
+fixed retrieval scope where relevant, and available runtime/judge metadata;
+summaries include annotation and judgment file hashes. The runner refuses to
+mix ranked-search metrics with clause-navigation calls.
+
+The full component annotation set now covers all 50 Release 17 development
+questions in `data/QA/component_evaluation_release17.jsonl`. Every record is
+reviewed and contains linked ResearchUnits, GoldResearchTasks, EvidenceUnits,
+and AnswerUnits. The set contains 32 single-task and 18 decomposition labels.
+The formal frozen-v3.7 Router baseline is not calibration-only and scores 0.90
+Route Accuracy and 0.8927 Macro-F1, with three over-decompositions and two
+under-decompositions.
+
+Planner semantic judgments are reviewed for all 18 decomposition questions in
+`data/QA/component_planner_release17_judgments.jsonl`. Manual audit tightened
+seven LLM-drafted partial mappings so an omitted required subcondition cannot
+receive full unit credit. The formal Planner baseline reports mean Task
+Coverage 0.8241, Full Task Coverage Rate 0.6111, Task Overlap Rate 0.0, and
+Out-of-Scope Task Rate 0.0. Both full reports record all inputs as reviewed and
+set `calibration_only=false`.
+
+The completed review is recorded in `docs/component_evaluation_review.md`.
+The project owner explicitly delegated the manual content audit to Codex, so
+every accepted record transparently identifies
+`project-owner-delegated:codex-manual-audit`; this is an internal engineering
+baseline rather than independent academic adjudication. The audit split 044's
+acceptance and refusal units, classified non-essential 007/T2 and secondary
+001 context as background, and set 017 to `single_task`. Fixed-route Planner
+artifacts propagate the actual annotation status, and the historical 017
+two-task artifact is excluded from the reviewed baseline.
+
+The four evidence-path baselines are now also complete over all reviewed
+GoldResearchTasks/questions. Researcher was rerun directly from 78 fixed
+GoldResearchTasks; every task produced evidence and at least one successful
+ranked call. Reviewed judgments are stored in
+`data/QA/component_retrieval_release17_judgments.jsonl`,
+`data/QA/component_researcher_release17_judgments.jsonl`,
+`data/QA/component_final_evidence_release17_judgments.jsonl`, and
+`data/QA/component_synthesizer_release17_judgments.jsonl`.
+
+Formal non-calibration results are Retriever Target Recall@5/@12 0.8761 and
+nDCG@5/@12 0.8738 across 78 calls; Researcher Evidence Coverage 0.9872 and
+Precision 0.6178 across 78 tasks; Judge Final Evidence Coverage 0.98,
+Precision 0.908, and Overlap 0.102 across 50 questions; and Synthesizer Answer
+Coverage 0.975, Groundedness 0.9937, and Citation Correctness 0.9567 across 50
+questions. All four reports have zero errors and complete reviewed counts.
+
+Judge candidate pools are explicitly gold-sufficient and contain runtime
+evidence plus exact targets. Synthesizer evaluation is independently isolated:
+it receives fixed approved gold evidence rather than the runtime Judge's
+selection. Task-bound duplicate evidence IDs remain eligible for citation;
+only Judge's whole-question Final Evidence metric deduplicates identical
+provenance.
+
+The component-evaluation foundation passes the canonical repository gate:
+structure and QA-data checks pass and all 202 tests pass. The formal full-set
+reports for Router, Planner, Retriever, Researcher, Judge, and Synthesizer have
+complete reviewed counts and were generated without proposed-input overrides.
 
 The historical generated runs, benchmark tensors, retrieval indexes, staging
 models, analysis outputs, and temporary caches have been removed. The workspace

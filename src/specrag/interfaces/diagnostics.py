@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -23,6 +22,14 @@ from specrag.orchestration.application import (
     build_routing_application,
 )
 from specrag.config import REPO_ROOT
+from specrag.interfaces.baseline_inputs import (
+    BaselineQuestion,
+    CuratedRouteLabel,
+    QUESTION_SET,
+    load_component_route_labels,
+    load_route_labels,
+    select_baseline_questions,
+)
 from specrag.models import ResearchBudget, ResearchRouteDecision
 from specrag.orchestration import ResearchState
 from specrag.prompts import (
@@ -31,85 +38,12 @@ from specrag.prompts import (
 )
 
 
-QUESTION_SET = REPO_ROOT / "data" / "QA" / "questions.jsonl"
 DEFAULT_RUN_ROOT = REPO_ROOT / "artifacts" / "runs"
 
 
-@dataclass(frozen=True)
-class BaselineQuestion:
-    """Only fields permitted to cross the QA-to-runtime boundary."""
-
-    question_id: str
-    question: str
-
-
-@dataclass(frozen=True)
-class CuratedRouteLabel:
-    difficulty: str
-
-    @property
-    def route(self) -> str:
-        """Derive the expected Router action from the reviewed label."""
-
-        return "single_task" if self.difficulty == "simple" else "decompose"
-
-
-def _load_questions(
-    question_set: Path = QUESTION_SET,
-) -> dict[str, BaselineQuestion]:
-    selected: dict[str, BaselineQuestion] = {}
-    for line_number, raw_line in enumerate(
-        question_set.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if not raw_line.strip():
-            continue
-        record = json.loads(raw_line)
-        question = BaselineQuestion(
-            question_id=str(record["id"]),
-            question=str(record["question"]),
-        )
-        if question.question_id in selected:
-            raise ValueError(f"duplicate question ID on line {line_number}")
-        selected[question.question_id] = question
-    return selected
-
-def _load_route_labels(
-    question_set: Path = QUESTION_SET,
-) -> dict[str, CuratedRouteLabel]:
-    labels: dict[str, CuratedRouteLabel] = {}
-    for raw_line in question_set.read_text(encoding="utf-8").splitlines():
-        if not raw_line.strip():
-            continue
-        record = json.loads(raw_line)
-        labels[str(record["id"])] = CuratedRouteLabel(
-            difficulty=str(record["difficulty"]),
-        )
-    return labels
-
-def select_baseline_questions(
-    *,
-    identifiers: tuple[str, ...],
-    select_all: bool,
-    limit: int | None = None,
-    question_set: Path = QUESTION_SET,
-) -> tuple[BaselineQuestion, ...]:
-    available = _load_questions(question_set)
-    if select_all:
-        questions = tuple(available.values())
-    else:
-        missing = tuple(identifier for identifier in identifiers if identifier not in available)
-        if missing:
-            raise ValueError(
-                "unknown question IDs: " + ", ".join(missing)
-            )
-        questions = tuple(available[identifier] for identifier in identifiers)
-    if limit is not None:
-        if limit < 1:
-            raise ValueError("limit must be positive")
-        questions = questions[:limit]
-    if not questions:
-        raise ValueError("no questions were selected")
-    return questions
+def _fixed_route_source(labels: dict[str, CuratedRouteLabel]) -> str:
+    sources = {label.source for label in labels.values()}
+    return next(iter(sources)) if len(sources) == 1 else "mixed_fixed_annotations"
 
 
 def _json_state(state: ResearchState) -> dict[str, object]:
@@ -214,7 +148,7 @@ def run_planning(
     application: PlanningApplication | None = None,
     route_labels: dict[str, CuratedRouteLabel] | None = None,
 ) -> int:
-    """Run Planner from reviewed labels, or Router when no labels are supplied."""
+    """Run Planner from fixed annotations, or Router when none are supplied."""
 
     app = application or build_planning_application()
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -233,19 +167,23 @@ def run_planning(
                     label = route_labels[question.question_id]
                 except KeyError as exc:
                     raise ValueError(
-                        "missing reviewed route label for " + question.question_id
+                        "missing fixed route annotation for " + question.question_id
                     ) from exc
                 route = ResearchRouteDecision(
                     route=label.route,
                     complexity=label.difficulty,
-                    rationale="Reviewed development label for Planner evaluation.",
+                    rationale=(
+                        "Reviewed development label for Planner evaluation."
+                        if label.review_status == "reviewed"
+                        else "Proposed component annotation for Planner calibration."
+                    ),
                 )
                 route, planning_response = app.run_with_route_receipt(
                     research_id=question.question_id,
                     question=question.question,
                     route=route,
                 )
-                route_source = "reviewed_label"
+                route_source = label.source
             plan = planning_response.output
             artifact = {
                 "schema_version": "specrag.planning-run/v3",
@@ -256,6 +194,15 @@ def run_planning(
                 "started_at": started.isoformat(),
                 "finished_at": datetime.now(UTC).isoformat(),
                 "route_source": route_source,
+                "route_annotation": (
+                    {
+                        "review_status": label.review_status,
+                        "reviewed_by": label.reviewed_by,
+                        "reviewed_at": label.reviewed_at,
+                    }
+                    if route_labels is not None
+                    else None
+                ),
                 "route": route.model_dump(mode="json"),
                 "planner": _planner_metadata(planning_response),
                 "plan": plan.model_dump(mode="json"),
@@ -291,7 +238,9 @@ def run_planning(
         {
             "schema_version": "specrag.planning-summary/v3",
             "route_source": (
-                "reviewed_label" if route_labels is not None else "live_router"
+                _fixed_route_source(route_labels)
+                if route_labels is not None
+                else "live_router"
             ),
             "planner_contract_version": PLANNER_PROMPT_VERSION,
             "questions": summaries,
@@ -407,7 +356,11 @@ def run_researcher_planning(
             route = ResearchRouteDecision(
                 route=label.route,
                 complexity=label.difficulty,
-                rationale="Reviewed development label for Researcher inspection.",
+                rationale=(
+                    "Reviewed development label for Researcher inspection."
+                    if label.review_status == "reviewed"
+                    else "Proposed component annotation for Researcher calibration."
+                ),
             )
             response = app.run_with_route(
                 research_id=question.question_id,
@@ -430,7 +383,12 @@ def run_researcher_planning(
                 },
                 "started_at": started.isoformat(),
                 "finished_at": datetime.now(UTC).isoformat(),
-                "route_source": "reviewed_label",
+                "route_source": label.source,
+                "route_annotation": {
+                    "review_status": label.review_status,
+                    "reviewed_by": label.reviewed_by,
+                    "reviewed_at": label.reviewed_at,
+                },
                 "route": route.model_dump(mode="json"),
                 "retrieval_scope": {"release": app.release},
                 "planner": _planner_metadata(planning),
@@ -506,6 +464,16 @@ def _parser() -> argparse.ArgumentParser:
         help="plan reviewed questions without running retrieval",
     )
     _add_question_selection(planning)
+    planning.add_argument(
+        "--route-annotations",
+        type=Path,
+        help="component annotation JSONL used instead of QA difficulty labels",
+    )
+    planning.add_argument(
+        "--allow-proposed-route-annotations",
+        action="store_true",
+        help="allow calibration planning from annotations not yet human-reviewed",
+    )
     researcher_planning = commands.add_parser(
         "research-plan", help="inspect Researcher calls without executing them"
     )
@@ -540,16 +508,24 @@ def main(argv: list[str] | None = None) -> int:
             return run_routing(
                 questions,
                 output_directory=output_directory,
-                labels=_load_route_labels(),
+                labels=load_route_labels(),
             )
         if args.command == "plan":
             output_directory = args.output_dir or (
                 DEFAULT_RUN_ROOT / "planning" / timestamp
             )
+            route_labels = (
+                load_component_route_labels(
+                    args.route_annotations,
+                    allow_proposed=args.allow_proposed_route_annotations,
+                )
+                if args.route_annotations is not None
+                else load_route_labels()
+            )
             return run_planning(
                 questions,
                 output_directory=output_directory,
-                route_labels=_load_route_labels(),
+                route_labels=route_labels,
             )
         if args.command == "research-plan":
             output_directory = args.output_dir or (
@@ -559,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
             return run_researcher_planning(
                 questions,
                 output_directory=output_directory,
-                route_labels=_load_route_labels(),
+                route_labels=load_route_labels(),
                 release=args.release,
             )
         if args.command != "baseline":

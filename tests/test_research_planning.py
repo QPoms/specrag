@@ -375,11 +375,25 @@ def test_simple_planning_artifact_records_deterministic_mode(
         (BaselineQuestion(question_id="Q1", question="One focused rule?"),),
         output_directory=tmp_path,
         application=application,
-        route_labels={"Q1": CuratedRouteLabel(difficulty="simple")},
+        route_labels={
+            "Q1": CuratedRouteLabel(
+                difficulty="simple",
+                review_status="proposed",
+            )
+        },
     )
 
     artifact = json.loads((tmp_path / "Q1.json").read_text(encoding="utf-8"))
     assert status == 0
+    assert artifact["route_source"] == "proposed_annotation"
+    assert artifact["route_annotation"] == {
+        "review_status": "proposed",
+        "reviewed_by": None,
+        "reviewed_at": None,
+    }
+    assert artifact["route"]["rationale"] == (
+        "Proposed component annotation for Planner calibration."
+    )
     assert artifact["planner"] == {
         "mode": "deterministic",
         "contract_version": PLANNER_PROMPT_VERSION,

@@ -1,11 +1,22 @@
 from pathlib import Path
 
-from scripts.check_structure import main as check_structure
+from scripts.check_structure import (
+    _contains_forbidden_fragment,
+    main as check_structure,
+)
 from specrag.config import load_config
 
 
 def test_repository_structure_contract() -> None:
     assert check_structure() == 0
+
+
+def test_legacy_import_check_uses_package_boundaries() -> None:
+    assert _contains_forbidden_fragment("from specrag.eval import run", "specrag.eval")
+    assert not _contains_forbidden_fragment(
+        "from specrag.evaluation import run",
+        "specrag.eval",
+    )
 
 
 def test_retrieval_configuration_is_domain_neutral() -> None:

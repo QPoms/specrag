@@ -3,9 +3,28 @@
 This directory contains the small, manually verified question set used to
 improve Specrag's end-to-end research behavior. It is not a formal benchmark.
 
-`questions.jsonl` is the only curated data file. Complete upstream snapshots
-may be downloaded into `telco-dpr/` and `mm-telcobench/`; both directories are
-local inputs ignored by Git.
+`questions.jsonl` is the curated development question set. The
+`component_*_pilot*.jsonl` files are the reviewed component-evaluation
+annotations and semantic judgments for the first internal baseline.
+`component_evaluation_release17.jsonl` is the reviewed 50-question component
+annotation set, including Router labels plus linked Research, task, Evidence,
+and Answer Units. `component_planner_release17_judgments.jsonl` contains the
+reviewed semantic mappings for all 18 decomposition cases. The reviewed full
+evidence-path judgments are `component_retrieval_release17_judgments.jsonl`,
+`component_researcher_release17_judgments.jsonl`,
+`component_final_evidence_release17_judgments.jsonl`, and
+`component_synthesizer_release17_judgments.jsonl`. The `*_pilot*.jsonl` files
+retain the smaller reviewed calibration slice and evidence-path pilot.
+Complete upstream snapshots may be downloaded into
+`telco-dpr/` and `mm-telcobench/`; both directories are local inputs ignored by
+Git.
+
+A component record may be promoted to `reviewed` only when it also records a
+non-empty `reviewed_by` value and a timezone-aware `reviewed_at` timestamp.
+This prevents a bare status-string change from silently creating formal gold.
+The first pilot review was performed by Codex under explicit project-owner
+delegation and records that provenance in `reviewed_by`; it is an internal
+engineering review, not independent domain-expert or academic adjudication.
 
 Each accepted question must be verified against Specrag's own highest Release
 17 specification version. External answers and passage identifiers are hints,
