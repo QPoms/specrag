@@ -48,6 +48,20 @@ from .component_models import (
     PlannerJudgmentDraft,
     ResearchUnit,
 )
+from .efficiency import (
+    EfficiencyEvaluation,
+    LLMCallEfficiency,
+    ToolCallEfficiency,
+    extract_efficiency,
+)
+from .end_to_end import (
+    TaskSuccessEvaluation,
+    TaskSuccessReviewDecision,
+    TaskSuccessSemanticDraft,
+    apply_task_success_review,
+    evaluate_task_success,
+    summarize_end_to_end,
+)
 
 __all__ = [
     "AnswerEvaluation",
@@ -55,6 +69,7 @@ __all__ = [
     "ComponentQuestionAnnotation",
     "ComponentUnitDraft",
     "EvidenceUnit",
+    "EfficiencyEvaluation",
     "FinalEvidenceEvaluation",
     "FinalEvidenceJudgmentDraft",
     "FinalEvidenceJudgment",
@@ -62,6 +77,7 @@ __all__ = [
     "PlannerEvaluation",
     "PlannerSemanticJudgment",
     "PlannerJudgmentDraft",
+    "LLMCallEfficiency",
     "ResearchUnit",
     "ResearcherEvaluation",
     "ResearcherQuestionJudgmentDraft",
@@ -75,7 +91,12 @@ __all__ = [
     "SynthesizerEvaluation",
     "SynthesizerJudgmentDraft",
     "SynthesizerJudgment",
+    "TaskSuccessEvaluation",
+    "TaskSuccessReviewDecision",
+    "TaskSuccessSemanticDraft",
     "TaskEvidenceJudgmentDraft",
+    "ToolCallEfficiency",
+    "apply_task_success_review",
     "evaluate_answer_artifact",
     "evaluate_final_evidence_artifact",
     "evaluate_planner_artifact",
@@ -83,9 +104,12 @@ __all__ = [
     "evaluate_retrieval_artifact",
     "evaluate_router_artifact",
     "evaluate_synthesizer_artifact",
+    "evaluate_task_success",
+    "extract_efficiency",
     "run_first_turn_evaluation",
     "summarize_answer_evaluations",
     "summarize_evaluations",
+    "summarize_end_to_end",
     "summarize_planner_evaluations",
     "summarize_router_evaluations",
 ]

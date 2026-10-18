@@ -195,7 +195,7 @@ hidden cross-owner/cross-workspace Run access, member-directory authorization,
 self-demotion/removal protection, asynchronous Run submission, queued Resume,
 linked Retry, attempt-aware terminal events, safe failure projection, worker
 execution, SSE isolation, evidence filtering, knowledge visibility, and
-proposal review authorization. The complete suite now contains 202 tests. The
+proposal review authorization. The complete suite now contains 204 tests. The
 historical 2026-10-13 quality batch remains 47/50; focused
 reruns, including 003, 044, and 050, are regression observations and are not
 combined into a 48/50 claim.
@@ -335,7 +335,7 @@ only Judge's whole-question Final Evidence metric deduplicates identical
 provenance.
 
 The component-evaluation foundation passes the canonical repository gate:
-structure and QA-data checks pass and all 202 tests pass. The formal full-set
+structure and QA-data checks pass and all 204 tests pass. The formal full-set
 reports for Router, Planner, Retriever, Researcher, Judge, and Synthesizer have
 complete reviewed counts and were generated without proposed-input overrides.
 
@@ -693,10 +693,13 @@ failure. The diagnostic artifact is stored under
 
 The LangGraph runtime lives under `specrag/orchestration/`.
 It defines one unified `ResearchState`, injected handlers for Router, Planner,
-Researcher, deterministic Source Validator, Sufficiency Judge, Re-planner, and
-Synthesizer nodes, a
-budget guard, conditional re-planning, an in-memory checkpointer, and thread
-resume helpers. Framework-independent research task, evidence, gap, tool-call,
+Researcher, deterministic Source Validator, Sufficiency Judge, gap recovery,
+and Synthesizer, plus an internal budget guard, an in-memory checkpointer, and
+thread resume helpers. Both simple and complex Router outcomes enter Planner;
+there is no direct Router-to-END runtime edge. The supported business-flow
+diagram folds the budget guard and gap-task reactivation into labeled Judge
+branches because neither is a separate reasoning or model stage.
+Framework-independent research task, evidence, gap, tool-call,
 budget, and stop-reason contracts live under `specrag/models/`. LangGraph
 1.2.14 is recorded in `pyproject.toml` and `uv.lock`. The repository-local
 Python 3.12 environment is reproducible with `uv sync --frozen`; a minimal
@@ -1184,3 +1187,41 @@ the TS 23.502 §4.2.2.2.2 Registration Request/Initial NAS identity mapping,
 and marked both T1 and T2 sufficient. This confirms that the earlier 041
 failure was caused by the former single-passage closure rule, not by missing
 retrieval evidence.
+
+The end-to-end and efficiency evaluation milestone is complete. Binary Task
+Success combines deterministic
+completion/citation/scope gates with a versioned semantic proposal and a
+mandatory manual decision over the four semantic gates. Reviewed-only
+aggregation reports Task Success Rate plus latency, total Token usage,
+per-LLM-call Token records and counts, and ordered tool-call details. Full
+workflow receipt capture includes Router, Planner, Researcher, Sufficiency
+Judge, and Synthesizer calls as well as failed logical calls; missing provider
+usage remains explicit instead of being counted as zero.
+
+Baseline Runs retain a reproducibility manifest containing the question-set
+hash, selected IDs, Git revision/dirty state, budget, exact Release 17 corpus
+documents and document hashes, retrieval index fingerprint, warm-cache
+condition, and sequential execution policy. After the original provider probes
+were blocked, a replacement key restored the frozen `gpt-5.6-sol` channel. The
+ten-question pilot completed at 7/10 (70.0%) Task Success with complete Token
+telemetry. The subsequent fresh 50-question formal run completed with 49 normal
+answers and one iteration-budget failure, and all 50 decisions were manually
+reviewed. The final baseline is 38/50 (76.0%) Task Success: 29/34 (85.3%) on
+simple questions and 9/16 (56.2%) on complex questions. Exact corpus compliance
+is checked per question: every cited
+evidence path, exact version, Release, and document hash must belong to the
+Run's frozen document snapshot. Evaluation batches freeze the expected
+question IDs and input hashes; aggregation refuses missing or extra cases, and
+resume refuses judgments whose source Run hash changed.
+
+Formal efficiency is 79.183 seconds mean and 191.969 seconds P95 latency,
+450 LLM calls, and 289 tool-call attempts. Token telemetry is exact for 49/50
+Runs and totals 2,652,796 Tokens for those Runs. A five-attempt Sufficiency
+Judge call in `r17-qa-046` lacks provider usage for four failed attempts, so the
+exact whole-batch Token total remains unavailable; the observed 2,761,525-Token
+lower bound is not misreported as an exact total. Manual audit corrected five
+over-permissive Judge proposals that omitted reviewed Answer Units. Full
+results, failed cases, and reproduction metadata are documented in
+`docs/end_to_end_evaluation.md`, with the metric contract and execution history
+in `docs/plans/032-end-to-end-efficiency-evaluation.md`. The canonical quality
+gate passes: structure check, 50-question QA dataset check, and all 219 tests.

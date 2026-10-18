@@ -31,6 +31,7 @@ from specrag.infrastructure.researcher_controller import (
 )
 from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
 from specrag.models import (
+    CorpusSourceDocument,
     ResearchBudget,
     ResearchPlan,
     ResearchRouteDecision,
@@ -115,6 +116,9 @@ class ResearchApplication:
 
     workflow: SingleResearchWorkflow
     release: int
+    corpus_scope: CorpusScope
+    corpus_documents: tuple[CorpusSourceDocument, ...]
+    retrieval_index_fingerprint: str
 
     def run(
         self,
@@ -447,6 +451,9 @@ def build_research_application(
             event_sink=event_sink,
         ),
         release=release,
+        corpus_scope=retriever.corpus_scope,
+        corpus_documents=retriever.documents,
+        retrieval_index_fingerprint=retriever.fingerprint,
     )
 
 

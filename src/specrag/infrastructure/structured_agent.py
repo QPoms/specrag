@@ -1,7 +1,6 @@
 """Isolated Codex CLI adapter for schema-constrained agents."""
 
 from __future__ import annotations
-
 from contextlib import nullcontext
 import hashlib
 import json
@@ -14,9 +13,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generic, Literal, Mapping, Sequence, TypeVar
-
-from pydantic import BaseModel, ConfigDict, Field
-
+from pydantic import BaseModel
 from .llm import (
     LLMApiMode,
     LLMCallReceipt,
@@ -24,32 +21,19 @@ from .llm import (
     OpenAIStructuredClient,
 )
 from .agent_errors import CodexAgentError
+from .receipt_capture import (
+    CodexAgentReceipt,
+    capture_agent_receipts,
+    record_agent_receipt as _record_agent_receipt,
+    record_failed_agent_call,
+)
 from ..config import AppConfig, load_config
 from ..models import (
     NativeFunctionCall,
     NativeFunctionCallOutput,
     NativeFunctionDefinition,
 )
-
-
 OutputT = TypeVar("OutputT", bound=BaseModel)
-class CodexAgentReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    agent_runtime: str = "codex_cli"
-    codex_version: str = Field(min_length=1)
-    model: str = Field(min_length=1)
-    reasoning_effort: str = Field(min_length=1)
-    purpose: str = Field(min_length=1)
-    prompt_version: str = Field(min_length=1)
-    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    latency_ms: int = Field(ge=0)
-    thread_id_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    sandbox: str = "read-only"
-    ephemeral: bool = True
 
 
 @dataclass(frozen=True)
@@ -57,14 +41,11 @@ class CodexAgentResponse(Generic[OutputT]):
     output: OutputT
     receipt: CodexAgentReceipt
 
-
 @dataclass(frozen=True)
 class CodexAgentToolResponse:
     calls: tuple[NativeFunctionCall, ...]
     replay_items: tuple[dict[str, Any], ...]
     receipt: CodexAgentReceipt
-
-
 def _canonical_json(value: Any) -> str:
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json")
@@ -74,7 +55,6 @@ def _canonical_json(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -376,7 +356,7 @@ class CodexStructuredAgent:
             completed.stdout
         )
         response_text = _canonical_json(output)
-        return CodexAgentResponse(
+        result = CodexAgentResponse(
             output=output,
             receipt=CodexAgentReceipt(
                 codex_version=_codex_version(self._executable),
@@ -398,6 +378,8 @@ class CodexStructuredAgent:
                 sandbox=self._sandbox,
             ),
         )
+        _record_agent_receipt(result.receipt)
+        return result
 
 
 class LLMApiStructuredAgent:
@@ -475,6 +457,8 @@ class LLMApiStructuredAgent:
             ),
             input_tokens=receipt.input_tokens,
             output_tokens=receipt.output_tokens,
+            attempt_count=receipt.attempt_count,
+            attempted_models=receipt.attempted_models,
             sandbox="api",
             ephemeral=True,
         )
@@ -504,6 +488,12 @@ class LLMApiStructuredAgent:
                 output_type=output_type,
             )
         except Exception as exc:  # noqa: BLE001 - keep provider details bounded
+            record_failed_agent_call(
+                model=self._model, reasoning_effort=self._reasoning_effort,
+                purpose=purpose, prompt_version=prompt_version,
+                request_sha256=_sha256(_canonical_json(input_payload)),
+                latency_ms=int((time.perf_counter() - started) * 1_000), error=exc,
+            )
             raise CodexAgentError(
                 f"LLM API structured call failed ({type(exc).__name__}: {exc})",
                 failure_kind=getattr(exc, "failure_kind", "unknown"),
@@ -512,10 +502,12 @@ class LLMApiStructuredAgent:
                 attempt_count=getattr(exc, "attempt_count", None),
             ) from None
 
-        return CodexAgentResponse(
+        result = CodexAgentResponse(
             output=response.output,
             receipt=self._receipt(response.receipt, started=started),
         )
+        _record_agent_receipt(result.receipt)
+        return result
 
     def call_tools(
         self,
@@ -542,6 +534,12 @@ class LLMApiStructuredAgent:
                 max_tool_calls=max_tool_calls,
             )
         except Exception as exc:  # noqa: BLE001 - keep provider details bounded
+            record_failed_agent_call(
+                model=self._model, reasoning_effort=self._reasoning_effort,
+                purpose=purpose, prompt_version=prompt_version,
+                request_sha256=_sha256(_canonical_json(input_payload)),
+                latency_ms=int((time.perf_counter() - started) * 1_000), error=exc,
+            )
             raise CodexAgentError(
                 f"LLM API native tool call failed ({type(exc).__name__}: {exc})",
                 failure_kind=getattr(exc, "failure_kind", "unknown"),
@@ -550,11 +548,13 @@ class LLMApiStructuredAgent:
                 attempt_count=getattr(exc, "attempt_count", None),
             ) from None
 
-        return CodexAgentToolResponse(
+        result = CodexAgentToolResponse(
             calls=response.calls,
             replay_items=response.replay_items,
             receipt=self._receipt(response.receipt, started=started),
         )
+        _record_agent_receipt(result.receipt)
+        return result
 
 
 def build_structured_agent(
@@ -595,5 +595,6 @@ __all__ = [
     "CodexStructuredAgent",
     "LLMApiStructuredAgent",
     "build_structured_agent",
+    "capture_agent_receipts",
     "resolve_codex_executable",
 ]

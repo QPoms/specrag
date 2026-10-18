@@ -22,10 +22,14 @@ from specrag.orchestration.application import (
     build_routing_application,
 )
 from specrag.config import REPO_ROOT
+from specrag.infrastructure.structured_agent import capture_agent_receipts
+from specrag.interfaces.baseline_metadata import (
+    benchmark_metadata,
+    retrieval_scope_metadata,
+)
 from specrag.interfaces.baseline_inputs import (
     BaselineQuestion,
     CuratedRouteLabel,
-    QUESTION_SET,
     load_component_route_labels,
     load_route_labels,
     select_baseline_questions,
@@ -77,28 +81,35 @@ def run_baseline(
     release: int = 17,
 ) -> int:
     app = application or build_research_application(release=release)
+    active_budget = budget or ResearchBudget()
+    scope_metadata = retrieval_scope_metadata(app)
     output_directory.mkdir(parents=True, exist_ok=True)
     summaries: list[dict[str, object]] = []
     for question in questions:
         thread_id = f"{question.question_id}-{uuid.uuid4().hex}"
         started = datetime.now(UTC)
+        receipts = []
         try:
-            state = app.run(
-                research_id=question.question_id,
-                question=question.question,
-                thread_id=thread_id,
-                budget=budget,
-            )
+            with capture_agent_receipts() as receipts:
+                state = app.run(
+                    research_id=question.question_id,
+                    question=question.question,
+                    thread_id=thread_id,
+                    budget=active_budget,
+                )
             artifact = {
                 "schema_version": "specrag.baseline-run/v1",
                 "question": {
                     "id": question.question_id,
                     "text": question.question,
                 },
-                "retrieval_scope": {"release": app.release},
+                "retrieval_scope": scope_metadata,
                 "started_at": started.isoformat(),
                 "finished_at": datetime.now(UTC).isoformat(),
                 "thread_id": thread_id,
+                "model_receipts": [
+                    item.model_dump(mode="json") for item in receipts
+                ],
                 "state": _json_state(state),
             }
             summary = {
@@ -116,10 +127,13 @@ def run_baseline(
                     "id": question.question_id,
                     "text": question.question,
                 },
-                "retrieval_scope": {"release": app.release},
+                "retrieval_scope": scope_metadata,
                 "started_at": started.isoformat(),
                 "finished_at": datetime.now(UTC).isoformat(),
                 "thread_id": thread_id,
+                "model_receipts": [
+                    item.model_dump(mode="json") for item in receipts
+                ],
                 "error": f"{type(exc).__name__}: {str(exc)[:1600]}",
             }
             summary = {
@@ -135,6 +149,7 @@ def run_baseline(
         output_directory / "summary.json",
         {
             "schema_version": "specrag.baseline-summary/v1",
+            "benchmark": benchmark_metadata(app, questions, active_budget),
             "questions": summaries,
         },
     )

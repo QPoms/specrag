@@ -121,6 +121,12 @@ user question or task
   against the curated QA targets and writes per-question results plus an
   aggregate report grouped by difficulty and reasoning scope. It does not call
   an LLM; the optional structured answer-quality rubric is reported separately.
+- `scripts/evaluate_end_to_end.py`: drafts, manually reviews, and summarizes
+  the binary complete-workflow Task Success decision while extracting latency,
+  total/per-call Token usage, LLM-call count, and ordered tool-call details
+  from the same Run artifacts. Missing Token telemetry remains `null`; a Run
+  containing retries is also conservatively marked incomplete because failed
+  attempts do not expose reliable usage.
 - `scripts/evaluate_components.py`: evaluates frozen component artifacts
   against versioned annotations and structured semantic judgments. It supports
   `router`, `planner`, `retriever`, `researcher`, `judge`, and `synthesizer`;
@@ -285,6 +291,42 @@ Generated runs and reports stay under ignored `artifacts/`; the checked-in
 inputs and `scripts/evaluate_components.py` reproduce the reports. Future
 optimization commits should record the changed prompt/model/corpus contract
 and report both the new score and its delta from this baseline.
+
+## End-to-end and efficiency evaluation
+
+The end-to-end baseline uses the same 50 answerable Release 17 questions but does not
+inject reviewed intermediate tasks or evidence. Its only quality aggregate is
+`Task Success Rate`: a Run must produce a normal answer, answer the core
+conclusion without a material error or unsupported conclusion, correctly cite
+support for the core conclusions, and comply with the requested corpus scope.
+Every decision is manually reviewed; failed and budget-exhausted Runs remain in
+the denominator.
+
+Execution is staged through the ten-question pilot `001`, `002`, `005`, `019`,
+`034`, `007`, `008`, `035`, `044`, and `046`, then all 50. The baseline command
+records the question-set hash, Git revision, budgets, exact corpus documents and
+hashes, index fingerprint, prompt/model receipts, and warm-cache condition.
+Each per-question Run also carries that exact document snapshot; Task Success
+rejects citations whose path, version, Release, or document hash is outside it.
+The evaluation commands are:
+
+```powershell
+uv run python scripts/evaluate_end_to_end.py draft RUN_DIR `
+  data/QA/questions.jsonl data/QA/component_evaluation_release17.jsonl EVAL_DIR
+uv run python scripts/evaluate_end_to_end.py review EVAL_DIR REVIEW_DECISIONS.jsonl
+uv run python scripts/evaluate_end_to_end.py summarize EVAL_DIR
+```
+
+The contract and current execution status are tracked in
+[`docs/plans/032-end-to-end-efficiency-evaluation.md`](docs/plans/032-end-to-end-efficiency-evaluation.md).
+The completed, manually reviewed formal baseline is **38/50 = 76.0% Task
+Success**. Mean/P95 latency is 79.183/191.969 seconds, with 450 LLM calls and
+289 tool-call attempts. Token telemetry is exact for 49/50 Runs; one retried
+logical call lacks usage for four failed provider attempts, so the exact batch
+Token total is intentionally `null` rather than understated. See
+[`docs/end_to_end_evaluation.md`](docs/end_to_end_evaluation.md) for the
+efficiency table, all failed cases, audit corrections, limitations, and
+reproducibility record.
 
 ## Data
 
