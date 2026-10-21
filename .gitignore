@@ -16,6 +16,12 @@ venv/
 .tmp/
 tmp/
 .pytest_tmp*/
+.pytest-tmp-*/
+.pytest_run_tmp*/
+.e2e_pytest_tmp*/
+.quality_gate_*/
+all-test-temp-unique-*/
+specrag.pytest-tmp-*/
 pytest-cache-files-*/
 .torch_cuda/
 .tmp_*.py
