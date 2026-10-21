@@ -17,6 +17,7 @@ ALLOWED_SOURCE_ENTRIES = {
     "agents",
     "cli.py",
     "config.py",
+    "context",
     "evaluation",
     "evidence",
     "infrastructure",
@@ -61,8 +62,9 @@ LINE_RATCHETS: dict[str, int] = {}
 
 ALLOWED_IMPORTS = {
     "models": {"models"},
+    "context": {"models", "context"},
     "access": {"models", "access"},
-    "infrastructure": {"config", "models", "prompts", "infrastructure"},
+    "infrastructure": {"config", "context", "models", "prompts", "infrastructure"},
     "retrieval": {"config", "models", "infrastructure", "retrieval"},
     "tools": {"config", "models", "infrastructure", "retrieval", "memory", "specfacts", "tools"},
     "evidence": {"config", "models", "infrastructure", "retrieval", "evidence"},
@@ -74,7 +76,7 @@ ALLOWED_IMPORTS = {
     },
     "orchestration": {
         "config", "models", "infrastructure", "retrieval", "tools",
-        "evidence", "memory", "specfacts", "access", "agents", "orchestration",
+        "context", "evidence", "memory", "specfacts", "access", "agents", "orchestration",
     },
     "evaluation": {
         "config", "models", "infrastructure", "retrieval", "tools",
@@ -82,7 +84,7 @@ ALLOWED_IMPORTS = {
     },
     "interfaces": {
         "config", "models", "access", "infrastructure", "retrieval", "tools",
-        "evidence", "memory", "specfacts", "agents", "orchestration",
+        "context", "evidence", "memory", "specfacts", "agents", "orchestration",
         "evaluation", "interfaces", "prompts",
     },
     "prompts": {"prompts"},

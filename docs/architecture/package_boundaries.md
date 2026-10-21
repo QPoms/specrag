@@ -1,6 +1,6 @@
 # Package boundaries
 
-Updated: 2026-10-14
+Updated: 2026-10-21
 
 ## Design rule
 
@@ -16,6 +16,8 @@ The active package responsibilities are:
   Core/Topic Memory, corpus-version lifecycle, proposal, maintenance, and
   transport contracts.
 - `access`: default-deny policy and local identity/session application service.
+- `context`: provider-independent Token budgeting, tool-result presentation,
+  message-history compaction policy, checkpoints, and reconstruction.
 - `retrieval`: public corpus/version discovery, non-destructive synchronization
   mechanics, indexing, search, fusion, reranking, and retrieval planning.
 - `tools`: small agent-callable capabilities and registry.
@@ -27,7 +29,8 @@ The active package responsibilities are:
 - `orchestration`: LangGraph state, graph scheduling, durable checkpoints,
   runtime controls, Run Harness, and event emission.
 - `infrastructure`: provider, vector-store, SQLite, identity, Run/event,
-  SpecFact, Memory, corpus-registry, and structured Memory-agent adapters.
+  SpecFact, Memory, corpus-registry, Context Harness persistence, and structured
+  model adapters.
 - `interfaces`: CLI and HTTP transport adapters, request authentication, error
   mapping, and application composition. Authorization decisions remain in
   `access`; business workflows remain in their owning packages.
@@ -45,6 +48,7 @@ src/specrag/
 ├── memory/            Core/Topic Memory, recall, proposals, maintenance
 ├── specfacts/         reviewed workspace-scoped specification facts
 ├── access/            local identity and default-deny authorization
+├── context/           request budgets, result paging, compaction policy
 ├── infrastructure/    external service and persistence adapters
 ├── evaluation/        offline evaluation only
 ├── prompts/           versioned model instructions without runtime logic
@@ -74,7 +78,8 @@ memory   → models, infrastructure
 ```
 
 - `infrastructure` cannot import retrieval, agents, tools, evidence, memory, or
-  orchestration.
+  orchestration. It may implement provider and persistence boundaries declared
+  by `context`.
 - `retrieval` cannot import agents, tools, evidence, memory, or orchestration.
 - `agents` coordinate existing retrieval and tool APIs; they do not implement
   vector search, reranking, or provider clients inline.
@@ -87,6 +92,12 @@ memory   → models, infrastructure
 - Checkpoint state is runtime state owned by `orchestration`. It is distinct
   from reviewed specification facts owned by `specfacts` and preferences or
   research context owned by `memory`.
+
+Context-compaction checkpoints are owned by `context`, not LangGraph. They
+rebuild an LLM request from a structured summary plus recent canonical
+messages. Full message and tool-result records remain durable; Evidence, Run
+state, corpus bindings, and Memory stay authoritative in their existing
+packages and are never reconstructed from a summary.
 
 ## Current module boundaries
 

@@ -11,18 +11,28 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Generic, Mapping, Protocol, Sequence, TypeVar
+from typing import Any, Mapping, Sequence
 
 from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel
 
 from specrag.config import AppConfig, load_config
+from specrag.context import ContextBudgetExceededError, ModelProfileResolver, TokenBudgetManager
 from specrag.models import (
+    ContextBudget,
+    ModelContextProfile,
     NativeFunctionCall,
     NativeFunctionCallOutput,
     NativeFunctionDefinition,
+)
+from .llm_budget import build_token_budget_manager
+from .llm_contracts import (
+    LLMApiMode,
+    LLMCallReceipt,
+    NativeToolLLMResponse,
+    OutputT,
+    StructuredLLMClient,
+    StructuredLLMResponse,
 )
 
 from .api_errors import (
@@ -31,83 +41,6 @@ from .api_errors import (
     classify_provider_error,
     is_retryable_provider_error,
 )
-
-
-OutputT = TypeVar("OutputT", bound=BaseModel)
-
-
-class LLMApiMode(str, Enum):
-    """Explicit API surface; fallback is a caller-owned experiment choice."""
-
-    RESPONSES = "responses"
-    CHAT_COMPLETIONS = "chat_completions"
-
-
-class LLMCallReceipt(BaseModel):
-    """Safe, reproducible metadata without prompts, endpoints, or secrets."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    model: str = Field(min_length=1, max_length=256)
-    api_mode: LLMApiMode
-    purpose: str = Field(min_length=1, max_length=256)
-    prompt_version: str = Field(min_length=1, max_length=256)
-    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    response_id_sha256: str = Field(
-        default="",
-        pattern=r"^(?:[0-9a-f]{64})?$",
-    )
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    latency_ms: int = Field(ge=0)
-    attempt_count: int = Field(default=1, ge=1)
-    attempted_models: tuple[str, ...] = Field(default_factory=tuple)
-
-    @model_validator(mode="after")
-    def _attempt_provenance(self) -> "LLMCallReceipt":
-        if any(
-            not model.strip() or model != model.strip()
-            for model in self.attempted_models
-        ):
-            raise ValueError("attempted model names must be non-blank and trimmed")
-        if self.attempted_models and (
-            len(self.attempted_models) != self.attempt_count
-            or self.attempted_models[-1] != self.model
-        ):
-            raise ValueError("LLM receipt attempt provenance is inconsistent")
-        return self
-
-
-@dataclass(frozen=True)
-class StructuredLLMResponse(Generic[OutputT]):
-    """One schema-validated response and its redacted call receipt."""
-
-    output: OutputT
-    receipt: LLMCallReceipt
-
-
-@dataclass(frozen=True)
-class NativeToolLLMResponse:
-    """One native function-call response plus ephemeral replay items."""
-
-    calls: tuple[NativeFunctionCall, ...]
-    replay_items: tuple[dict[str, Any], ...]
-    receipt: LLMCallReceipt
-
-
-class StructuredLLMClient(Protocol):
-    """Small dependency boundary suitable for fake and sandboxed clients."""
-
-    def parse(
-        self,
-        *,
-        purpose: str,
-        prompt_version: str,
-        instructions: str,
-        input_payload: BaseModel | Mapping[str, Any],
-        output_type: type[OutputT],
-    ) -> StructuredLLMResponse[OutputT]: ...
 
 
 def _canonical_json(value: Any) -> str:
@@ -183,6 +116,7 @@ class OpenAIStructuredClient:
     __slots__ = (
         "_api_mode",
         "_client",
+        "_budget_manager",
         "_fallback_models",
         "_max_output_tokens",
         "_max_retries",
@@ -207,6 +141,7 @@ class OpenAIStructuredClient:
         retry_initial_delay_seconds: float = 1.0,
         retry_max_delay_seconds: float = 15.0,
         client: Any | None = None,
+        budget_manager: TokenBudgetManager | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("OPENAI_API_KEY is required for SPEC LLM mapping")
@@ -231,6 +166,14 @@ class OpenAIStructuredClient:
         self._max_retries = max_retries
         self._retry_initial_delay_seconds = retry_initial_delay_seconds
         self._retry_max_delay_seconds = retry_max_delay_seconds
+        self._budget_manager = budget_manager or TokenBudgetManager(
+            ModelProfileResolver(ModelContextProfile(
+                model_id="default",
+                context_window_tokens=128_000,
+                max_input_tokens=128_000,
+                expected_output_tokens=max_output_tokens,
+            ))
+        )
         if client is None:
             kwargs: dict[str, Any] = {
                 "api_key": api_key,
@@ -272,7 +215,20 @@ class OpenAIStructuredClient:
                 config.llm.api_retry_initial_delay_seconds
             ),
             retry_max_delay_seconds=config.llm.api_retry_max_delay_seconds,
+            budget_manager=build_token_budget_manager(config),
         )
+
+    def _preflight(
+        self, model_id: str, components: Mapping[str, Any],
+    ) -> ContextBudget:
+        budget = self._budget_manager.inspect(
+            model_id,
+            components,
+            expected_output_tokens=self._max_output_tokens,
+        )
+        if not budget.fits:
+            raise ContextBudgetExceededError(budget)
+        return budget
 
     def parse(
         self,
@@ -300,8 +256,19 @@ class OpenAIStructuredClient:
         input_tokens: int | None = None
         output_tokens: int | None = None
         selected_model = self._model
+        selected_budget: ContextBudget | None = None
         models = (self._model, *self._fallback_models)
         for model_index, candidate_model in enumerate(models):
+            try:
+                candidate_budget = self._preflight(candidate_model, {
+                    "instructions": instructions,
+                    "input": input_json,
+                    "output_schema": schema_json,
+                })
+            except ContextBudgetExceededError:
+                if model_index + 1 < len(models):
+                    continue
+                raise
             for retry_index in range(self._max_retries + 1):
                 attempted_models.append(candidate_model)
                 try:
@@ -363,6 +330,7 @@ class OpenAIStructuredClient:
                         )
                     output = output_type.model_validate(parsed)
                     selected_model = candidate_model
+                    selected_budget = candidate_budget
                     break
                 except StructuredLLMError:
                     raise
@@ -419,6 +387,12 @@ class OpenAIStructuredClient:
             latency_ms=max(0, int((time.perf_counter() - started) * 1_000)),
             attempt_count=len(attempted_models),
             attempted_models=tuple(attempted_models),
+            estimated_input_tokens=(
+                selected_budget.estimated_input_tokens if selected_budget else None
+            ),
+            input_ceiling_tokens=(
+                selected_budget.input_ceiling_tokens if selected_budget else None
+            ),
         )
         return StructuredLLMResponse(output=output, receipt=receipt)
 
@@ -465,8 +439,19 @@ class OpenAIStructuredClient:
         input_tokens: int | None = None
         output_tokens: int | None = None
         models = (self._model, *self._fallback_models)
+        selected_budget: ContextBudget | None = None
 
         for model_index, candidate_model in enumerate(models):
+            try:
+                candidate_budget = self._preflight(candidate_model, {
+                    "instructions": instructions,
+                    "input": input_items,
+                    "tools": tool_payloads,
+                })
+            except ContextBudgetExceededError:
+                if model_index + 1 < len(models):
+                    continue
+                raise
             for retry_index in range(self._max_retries + 1):
                 attempted_models.append(candidate_model)
                 try:
@@ -518,6 +503,7 @@ class OpenAIStructuredClient:
                     input_tokens = getattr(usage, "input_tokens", None)
                     output_tokens = getattr(usage, "output_tokens", None)
                     selected_model = candidate_model
+                    selected_budget = candidate_budget
                     break
                 except StructuredLLMError:
                     raise
@@ -574,6 +560,12 @@ class OpenAIStructuredClient:
             latency_ms=max(0, int((time.perf_counter() - started) * 1_000)),
             attempt_count=len(attempted_models),
             attempted_models=tuple(attempted_models),
+            estimated_input_tokens=(
+                selected_budget.estimated_input_tokens if selected_budget else None
+            ),
+            input_ceiling_tokens=(
+                selected_budget.input_ceiling_tokens if selected_budget else None
+            ),
         )
         replay_items = tuple({
             "type": "function_call",
@@ -587,6 +579,7 @@ class OpenAIStructuredClient:
             receipt=receipt,
         )
 
+
 __all__ = [
     "LLMApiMode",
     "LLMCallReceipt",
@@ -596,5 +589,6 @@ __all__ = [
     "StructuredLLMClient",
     "StructuredLLMError",
     "StructuredLLMResponse",
+    "build_token_budget_manager",
     "classify_provider_error",
 ]

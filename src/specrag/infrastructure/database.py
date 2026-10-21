@@ -185,6 +185,53 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX run_jobs_claimable
             ON run_jobs(state, available_at, lease_expires_at, created_at);
     """),
+    (6, """
+        CREATE TABLE contexts (
+            context_id TEXT PRIMARY KEY,
+            workspace_id TEXT REFERENCES workspaces(workspace_id),
+            owner_user_id TEXT REFERENCES users(user_id),
+            run_id TEXT REFERENCES runs(run_id) ON DELETE SET NULL,
+            active_checkpoint_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (
+                (workspace_id IS NULL AND owner_user_id IS NULL)
+                OR (workspace_id IS NOT NULL AND owner_user_id IS NOT NULL)
+            )
+        );
+        CREATE INDEX contexts_scope ON contexts(workspace_id, owner_user_id, run_id);
+        CREATE TABLE context_messages (
+            message_id TEXT PRIMARY KEY,
+            context_id TEXT NOT NULL REFERENCES contexts(context_id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+            turn_id TEXT,
+            token_estimate INTEGER NOT NULL CHECK (token_estimate >= 0),
+            content_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(context_id, sequence)
+        );
+        CREATE TABLE context_tool_results (
+            tool_result_id TEXT PRIMARY KEY,
+            context_id TEXT NOT NULL REFERENCES contexts(context_id) ON DELETE CASCADE,
+            tool_call_id TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            token_estimate INTEGER NOT NULL CHECK (token_estimate >= 0),
+            content_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(context_id, tool_call_id)
+        );
+        CREATE TABLE compaction_checkpoints (
+            checkpoint_id TEXT PRIMARY KEY,
+            context_id TEXT NOT NULL REFERENCES contexts(context_id) ON DELETE CASCADE,
+            covers_through_message_id TEXT NOT NULL,
+            recent_start_message_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX compaction_checkpoints_context
+            ON compaction_checkpoints(context_id, created_at);
+    """),
 )
 
 

@@ -38,6 +38,19 @@ def classify_provider_error(exc: Exception) -> ProviderFailure:
     if not isinstance(status_code, int):
         status_code = None
     name = type(exc).__name__
+    code = getattr(exc, "code", None)
+    body = getattr(exc, "body", None)
+    if code is None and isinstance(body, dict):
+        error = body.get("error", body)
+        if isinstance(error, dict):
+            code = error.get("code")
+    if code in {
+        "context_length_exceeded",
+        "context_window_exceeded",
+        "maximum_context_length_exceeded",
+        "input_too_long",
+    } or name in {"ContextLengthExceededError", "ContextWindowExceededError"}:
+        return ProviderFailure("context_overflow", False, status_code)
     if status_code == 429 or name == "RateLimitError":
         return ProviderFailure("rate_limited", True, status_code)
     if status_code == 408 or name in {

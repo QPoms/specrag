@@ -7,9 +7,11 @@ import hashlib
 from pathlib import Path
 
 from specrag.access import LocalIdentityService
+from specrag.context import ContextHarness
 from specrag.config import REPO_ROOT
 from specrag.infrastructure import (
     DEFAULT_DATABASE_PATH,
+    SQLiteContextStore,
     SQLiteCorpusStore,
     SQLiteDatabase,
     SQLiteIdentityStore,
@@ -33,6 +35,7 @@ from specrag.models import (
 )
 from specrag.orchestration import RunHarness, SQLiteCheckpointManager
 from specrag.orchestration.application import build_research_application
+from specrag.infrastructure.llm_budget import build_token_budget_manager
 from specrag.specfacts import SpecFactService
 from specrag.retrieval.corpus import discover_source_documents
 from specrag.retrieval.corpus_sync import CorpusSyncService, active_snapshot
@@ -56,6 +59,7 @@ class WorkspaceServices:
     corpus_sync: CorpusSyncService
     runs: SQLiteRunStore
     run_queue: SQLiteRunQueue
+    context_harness: ContextHarness
     harness: RunHarness
 
     @classmethod
@@ -63,6 +67,7 @@ class WorkspaceServices:
         cls, database_path: Path = DEFAULT_DATABASE_PATH,
     ) -> "WorkspaceServices":
         database = SQLiteDatabase(database_path)
+        app_config = load_config()
         checkpoint = SQLiteCheckpointManager(database.path)
         identity = LocalIdentityService(SQLiteIdentityStore(database))
         memory = MemoryService(SQLiteMemoryStore(database))
@@ -74,6 +79,16 @@ class WorkspaceServices:
         corpus_store = SQLiteCorpusStore(database)
         runs = SQLiteRunStore(database)
         run_queue = SQLiteRunQueue(database)
+        context_harness = ContextHarness(
+            SQLiteContextStore(database),
+            build_token_budget_manager(app_config),
+            tool_result_soft_limit_tokens=(
+                app_config.llm.tool_result_soft_limit_tokens
+            ),
+            recent_history_tokens=(
+                app_config.llm.compaction_recent_history_tokens
+            ),
+        )
 
         def build_document(document) -> CorpusBuildResult:
             assert document.specification is not None and document.version is not None
@@ -219,6 +234,7 @@ class WorkspaceServices:
                 event_sink=event_sink,
                 research_context=research_context,
                 corpus_scope=corpus_scope,
+                context_harness=context_harness,
             )
 
         harness = RunHarness(
@@ -228,6 +244,12 @@ class WorkspaceServices:
             context_loader=load_snapshot,
             corpus_snapshot=corpus_snapshot,
             corpus_binding_writer=bind_corpus,
+            context_writer=lambda actor, run: context_harness.create_context(
+                run.run_id,
+                workspace_id=actor.workspace_id,
+                owner_user_id=actor.user_id,
+                run_id=run.run_id,
+            ),
         )
         return cls(
             database,
@@ -243,6 +265,7 @@ class WorkspaceServices:
             corpus_sync,
             runs,
             run_queue,
+            context_harness,
             harness,
         )
 

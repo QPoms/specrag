@@ -136,6 +136,7 @@ class AgentToolOutcome(_StrictModel):
     evidence_ids: tuple[str, ...] = ()
     new_evidence_ids: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    tool_result_id: str | None = None
 
 
 class AgentRetrievalTurn(_StrictModel):

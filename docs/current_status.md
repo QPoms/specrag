@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-17
+Updated: 2026-10-21
 
 ## Current state
 
@@ -136,9 +136,26 @@ receipts, and per-stage latency/token inspection. Events cover transitions,
 task dispatch, tool calls, evidence selection, source validation, Judge, Gap,
 replan, synthesis, resume, cancellation, and stop. The runtime state wire
 contract is now `research-state/v1.6`.
+The public `context` package now provides the first Context Harness slice.
+Every OpenAI-compatible structured request receives a conservative full-request
+Token estimate before transmission, with a configurable profile checked again
+for each fallback model. The input ceiling reserves the larger of expected
+output, 15 percent of the model window, and a 16K minimum on large windows.
+Receipts record both the estimate and selected-model ceiling.
+
+Researcher retrieval results are persisted in full under stable opaque result
+IDs while the controller receives only its existing bounded status/evidence
+view plus that result ID. `read_tool_result` exposes deterministic Token-bounded
+pages without changing the Evidence ledger. Canonical message history can be
+compacted into a validated structured LLM summary while retaining recent whole
+turns; SQLite stores the checkpoint and atomically advances one active pointer,
+without deleting original messages. Reconstruction uses the active summary and
+recent messages. Auto, manual, and explicit provider-overflow entry points are
+implemented, with one LLM-only overflow retry; Native/async/post-turn
+compaction, periodic deletion, and Memory integration remain out of scope.
 Outbound model API failures use a safe taxonomy covering transient, rate-limit,
 timeout, provider-unavailable, authentication/configuration, invalid-request,
-structured-output, and internal/unknown failures. The LLM adapter retains
+structured-output, explicit context-overflow, and internal/unknown failures. The LLM adapter retains
 bounded request-level retries; Harness persists only the failure kind,
 retryable flag, attempt count, and provider status code, and emits the same
 redacted metadata in the terminal event. Whole-Run automatic replay remains

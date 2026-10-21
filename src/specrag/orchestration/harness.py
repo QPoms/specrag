@@ -35,17 +35,15 @@ class RunStore(Protocol):
     def events(self, run_id: str) -> tuple[RunEvent, ...]: ...
 
 
-ApplicationFactory = Callable[
-    [int, Callable[[str], str | None], Callable[..., None], tuple[dict[str, object], ...]],
-    ResearchApplication,
-]
-ContextSnapshot = Callable[
-    [ActorContext, str, int], tuple[tuple[str, ...], tuple[str, ...], tuple[dict[str, object], ...]]
-]
+ApplicationFactory = Callable[[int, Callable[[str], str | None],
+    Callable[..., None], tuple[dict[str, object], ...]], ResearchApplication]
+ContextSnapshot = Callable[[ActorContext, str, int], tuple[
+    tuple[str, ...], tuple[str, ...], tuple[dict[str, object], ...]]]
 ContextLoader = Callable[[ActorContext, ResearchRun], tuple[dict[str, object], ...]]
 ProposalWriter = Callable[[ActorContext, ResearchRun, ResearchState], tuple[str, ...]]
 CorpusSnapshot = Callable[[int], tuple[CorpusVersionRef, ...]]
 CorpusBindingWriter = Callable[[ResearchRun], None]
+ContextWriter = Callable[[ActorContext, ResearchRun], None]
 @dataclass(frozen=True)
 class RunInspection:
     run: ResearchRun
@@ -68,6 +66,7 @@ class RunHarness:
         proposal_writer: ProposalWriter | None = None,
         corpus_snapshot: CorpusSnapshot | None = None,
         corpus_binding_writer: CorpusBindingWriter | None = None,
+        context_writer: ContextWriter | None = None,
     ) -> None:
         self.store = store
         self.application_factory = application_factory
@@ -77,7 +76,7 @@ class RunHarness:
         self.proposal_writer = proposal_writer
         self.corpus_snapshot = corpus_snapshot
         self.corpus_binding_writer = corpus_binding_writer
-
+        self.context_writer = context_writer
     def start(self, context: ActorContext, request: ResearchRequest) -> RunInspection:
         run = self._prepare(context, request)
         return self._execute(context, run, request=request, resume=False)
@@ -187,6 +186,8 @@ class RunHarness:
                 "memory_ids": tuple(sorted(set((*run.memory_ids, *memories)))),
             })
         self.store.put(run)
+        if self.context_writer is not None:
+            self.context_writer(context, run)
         if self.corpus_binding_writer is not None:
             self.corpus_binding_writer(run)
         self._event(run, "run_started", "run:start", payload={

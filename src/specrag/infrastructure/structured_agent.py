@@ -14,12 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generic, Literal, Mapping, Sequence, TypeVar
 from pydantic import BaseModel
-from .llm import (
-    LLMApiMode,
-    LLMCallReceipt,
-    NativeToolLLMResponse,
-    OpenAIStructuredClient,
-)
+from .llm import LLMApiMode, LLMCallReceipt, NativeToolLLMResponse, OpenAIStructuredClient
+from .llm_budget import build_token_budget_manager
 from .agent_errors import CodexAgentError
 from .receipt_capture import (
     CodexAgentReceipt,
@@ -34,13 +30,10 @@ from ..models import (
     NativeFunctionDefinition,
 )
 OutputT = TypeVar("OutputT", bound=BaseModel)
-
-
 @dataclass(frozen=True)
 class CodexAgentResponse(Generic[OutputT]):
     output: OutputT
     receipt: CodexAgentReceipt
-
 @dataclass(frozen=True)
 class CodexAgentToolResponse:
     calls: tuple[NativeFunctionCall, ...]
@@ -429,11 +422,13 @@ class LLMApiStructuredAgent:
             reasoning_effort=self._reasoning_effort,
             timeout_seconds=float(timeout_seconds),
             max_retries=settings.llm.api_max_retries,
-            fallback_models=(),
+            fallback_models=tuple(candidate for candidate in
+                settings.llm.api_fallback_models if candidate != selected_model),
             retry_initial_delay_seconds=(
                 settings.llm.api_retry_initial_delay_seconds
             ),
             retry_max_delay_seconds=settings.llm.api_retry_max_delay_seconds,
+            budget_manager=build_token_budget_manager(settings),
         )
 
     def _receipt(
@@ -457,6 +452,8 @@ class LLMApiStructuredAgent:
             ),
             input_tokens=receipt.input_tokens,
             output_tokens=receipt.output_tokens,
+            estimated_input_tokens=receipt.estimated_input_tokens,
+            input_ceiling_tokens=receipt.input_ceiling_tokens,
             attempt_count=receipt.attempt_count,
             attempted_models=receipt.attempted_models,
             sandbox="api",

@@ -9,6 +9,7 @@ from pathlib import Path
 from specrag.agents.models import ResearcherActionPlan
 from specrag.agents.planning import ResearcherPlanningService
 from specrag.agents.researcher import RegistryResearcherService
+from specrag.context import ContextHarness
 from specrag.config import AppConfig, REPO_ROOT, load_config
 from specrag.evidence import (
     EvidenceSufficiencyService,
@@ -370,6 +371,7 @@ def build_research_application(
     event_sink: object | None = None,
     research_context: tuple[dict[str, object], ...] = (),
     corpus_scope: CorpusScope | None = None,
+    context_harness: ContextHarness | None = None,
 ) -> ResearchApplication:
     """Wire existing retrieval, agent, evidence, and graph components."""
 
@@ -410,6 +412,13 @@ def build_research_application(
         max_evidence_per_question=12,
         stop_requested=stop_requested,
         research_context=research_context,
+        tool_result_sink=(
+            (lambda context_id, tool_call_id, content: context_harness.record_tool_result(
+                context_id, tool_call_id, content
+            ).tool_result_id)
+            if context_harness is not None
+            else None
+        ),
     )
 
     validation = SourceValidationService(

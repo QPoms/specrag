@@ -93,6 +93,19 @@ from .tool_calling import (
     NativeFunctionCallOutput,
     NativeFunctionDefinition,
 )
+from .context import (
+    CompactionCheckpoint,
+    CompactionSummary,
+    CompactionTrigger,
+    ContextBudget,
+    ContextMessage,
+    ContextMessageRole,
+    ContextRecord,
+    ModelContextProfile,
+    ReconstructedContext,
+    StoredToolResult,
+    ToolResultPage,
+)
 
 __all__ = [
     "CandidateEvidence",
@@ -176,4 +189,15 @@ __all__ = [
     "NativeFunctionCall",
     "NativeFunctionCallOutput",
     "NativeFunctionDefinition",
+    "CompactionCheckpoint",
+    "CompactionSummary",
+    "CompactionTrigger",
+    "ContextBudget",
+    "ContextMessage",
+    "ContextMessageRole",
+    "ContextRecord",
+    "ModelContextProfile",
+    "ReconstructedContext",
+    "StoredToolResult",
+    "ToolResultPage",
 ]

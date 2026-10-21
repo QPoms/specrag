@@ -119,6 +119,22 @@ class RetrievalCfg(BaseModel):
         return self
 
 
+class ModelContextProfileCfg(BaseModel):
+    context_window_tokens: int = 128_000
+    max_input_tokens: int = 128_000
+    expected_output_tokens: int = 8_000
+
+    @model_validator(mode="after")
+    def _positive_limits(self):
+        if min(
+            self.context_window_tokens,
+            self.max_input_tokens,
+            self.expected_output_tokens,
+        ) < 1:
+            raise ValueError("model context profile values must be positive")
+        return self
+
+
 class LlmCfg(BaseModel):
     temperature: float = 0.4
     max_retries: int = 3
@@ -131,6 +147,13 @@ class LlmCfg(BaseModel):
         "gpt-5.6-luna",
         "gpt-5.5",
     )
+    context_default_profile: ModelContextProfileCfg = ModelContextProfileCfg()
+    context_model_profiles: dict[str, ModelContextProfileCfg] = {}
+    context_safety_ratio: float = 0.15
+    context_large_window_threshold_tokens: int = 100_000
+    context_large_window_minimum_reserve_tokens: int = 16_000
+    tool_result_soft_limit_tokens: int = 4_000
+    compaction_recent_history_tokens: int = 15_000
 
     @model_validator(mode="after")
     def _retry_policy(self):
@@ -147,6 +170,18 @@ class LlmCfg(BaseModel):
             raise ValueError("LLM API fallback model names must be non-blank")
         if len(normalized) != len(set(normalized)):
             raise ValueError("LLM API fallback model names must be unique")
+        if not 0 < self.context_safety_ratio < 1:
+            raise ValueError("llm.context_safety_ratio must be between zero and one")
+        positive = (
+            self.context_large_window_threshold_tokens,
+            self.context_large_window_minimum_reserve_tokens,
+            self.tool_result_soft_limit_tokens,
+            self.compaction_recent_history_tokens,
+        )
+        if min(positive) < 1:
+            raise ValueError("LLM context limits must be positive")
+        if any(not name.strip() for name in self.context_model_profiles):
+            raise ValueError("LLM context profile model names must be non-blank")
         self.api_fallback_models = normalized
         return self
 

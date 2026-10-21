@@ -25,6 +25,8 @@ class CodexAgentReceipt(BaseModel):
     thread_id_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    estimated_input_tokens: int | None = Field(default=None, ge=0)
+    input_ceiling_tokens: int | None = Field(default=None, ge=0)
     attempt_count: int = Field(default=1, ge=1)
     attempted_models: tuple[str, ...] = ()
     outcome: Literal["completed", "failed"] = "completed"
@@ -79,6 +81,7 @@ def record_failed_agent_call(
 
     failure_kind = str(getattr(error, "failure_kind", "unknown"))
     attempt_count = max(1, int(getattr(error, "attempt_count", 1) or 1))
+    budget = getattr(error, "budget", None)
     record_agent_receipt(CodexAgentReceipt(
         agent_runtime="llm_api",
         codex_version="api",
@@ -93,6 +96,8 @@ def record_failed_agent_call(
         latency_ms=max(0, latency_ms),
         attempt_count=attempt_count,
         attempted_models=tuple(model for _ in range(attempt_count)),
+        estimated_input_tokens=getattr(budget, "estimated_input_tokens", None),
+        input_ceiling_tokens=getattr(budget, "input_ceiling_tokens", None),
         outcome="failed",
         failure_kind=failure_kind,
         sandbox="api",

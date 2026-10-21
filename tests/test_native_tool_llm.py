@@ -171,6 +171,9 @@ def test_native_call_rejects_response_without_function_calls() -> None:
         (SimpleNamespace(status_code=503), "provider_unavailable", True),
         (SimpleNamespace(status_code=401), "authentication_or_configuration", False),
         (SimpleNamespace(status_code=400), "invalid_request", False),
+        (SimpleNamespace(
+            status_code=400, code="context_length_exceeded"
+        ), "context_overflow", False),
         (SimpleNamespace(status_code=408), "timeout", True),
         (SimpleNamespace(status_code=None), "unknown", False),
     ],
@@ -197,6 +200,7 @@ def test_structured_failure_keeps_only_safe_retry_metadata() -> None:
 
 def test_failure_vocabulary_is_shared_and_accepts_model_refusal() -> None:
     assert "model_refusal" in RUN_FAILURE_KINDS
+    assert "context_overflow" in RUN_FAILURE_KINDS
     failure = StructuredLLMError(
         "refused",
         failure_kind="model_refusal",

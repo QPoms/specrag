@@ -30,3 +30,14 @@ llm:
     - gpt-5.6-terra
     - gpt-5.6-luna
     - gpt-5.5
+  # Conservative defaults apply to every model unless overridden by exact ID.
+  context_default_profile:
+    context_window_tokens: 128000
+    max_input_tokens: 128000
+    expected_output_tokens: 8000
+  context_model_profiles: {}
+  context_safety_ratio: 0.15
+  context_large_window_threshold_tokens: 100000
+  context_large_window_minimum_reserve_tokens: 16000
+  tool_result_soft_limit_tokens: 4000
+  compaction_recent_history_tokens: 15000

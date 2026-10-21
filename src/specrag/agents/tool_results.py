@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from specrag.models import ResearchTask
+from typing import Any
+
+from specrag.models import NativeFunctionCallOutput, ResearchTask
 from specrag.retrieval.planner import PlannedRetrievalHit
 from specrag.tools import RetrievalToolResult, ToolEvidence
+from .models import AgentRetrievalTurn, AgentToolOutcome
 
 
 def _evidence_score(evidence: ToolEvidence) -> float:
@@ -74,4 +77,52 @@ def planned_hits_from_tool(
     return tuple(hits)
 
 
-__all__ = ["planned_hits_from_tool"]
+def research_history(turns: list[AgentRetrievalTurn]) -> list[dict[str, Any]]:
+    return [{
+        "round": outcome.round_number,
+        "call_id": outcome.call.call_id,
+        "tool": outcome.call.tool,
+        "query_id": outcome.call.arguments.get("query_id", ""),
+        "status": outcome.status,
+        "new_evidence_ids": list(outcome.new_evidence_ids),
+        "errors": list(outcome.errors),
+    } for turn in turns for outcome in turn.outcomes]
+
+
+def native_tool_outputs(
+    proposal: Any,
+    outcomes: tuple[AgentToolOutcome, ...],
+    *,
+    control_errors: tuple[str, ...] = (),
+) -> tuple[NativeFunctionCallOutput, ...]:
+    outcome_by_id = {outcome.call.call_id: outcome for outcome in outcomes}
+    control_id = proposal.control_call.call_id if proposal.control_call is not None else None
+    outputs: list[NativeFunctionCallOutput] = []
+    for native_call in proposal.native_calls:
+        if native_call.call_id == control_id:
+            content = {
+                "status": "rejected" if control_errors else "completed",
+                "errors": list(control_errors),
+            }
+        elif (outcome := outcome_by_id.get(native_call.call_id)) is None:
+            content = {
+                "status": "rejected",
+                "errors": list(proposal.protocol_errors) or [
+                    "call was not recognized by the Researcher protocol"
+                ],
+            }
+        else:
+            content = {
+                "status": outcome.status,
+                "tool": outcome.call.tool,
+                "query_id": outcome.call.arguments.get("query_id", ""),
+                "evidence_ids": list(outcome.evidence_ids),
+                "new_evidence_ids": list(outcome.new_evidence_ids),
+                "errors": list(outcome.errors),
+                "tool_result_id": outcome.tool_result_id,
+            }
+        outputs.append(NativeFunctionCallOutput(call_id=native_call.call_id, output=content))
+    return tuple(outputs)
+
+
+__all__ = ["native_tool_outputs", "planned_hits_from_tool", "research_history"]

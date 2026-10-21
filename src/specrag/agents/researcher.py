@@ -28,7 +28,7 @@ from .models import AgentRetrievalCall, AgentRetrievalTurn, AgentToolOutcome, Ag
 from .planning import propose_researcher_turn
 from .policy import call_signature
 from .state import EvidenceLedger
-from .tool_results import planned_hits_from_tool
+from .tool_results import native_tool_outputs, planned_hits_from_tool, research_history
 
 @dataclass
 class RegistryResearcherService:
@@ -44,9 +44,10 @@ class RegistryResearcherService:
     hits_per_search: int = 8
     max_evidence_per_question: int = 28
     max_finalization_turns: int = 1
-    stop_requested: Callable[
-        [str], Literal["cancelled", "elapsed_time_budget"] | None
-    ] | None = None
+    stop_requested: Callable[[str], Literal[
+        "cancelled", "elapsed_time_budget"
+    ] | None] | None = None
+    tool_result_sink: Callable[[str, str, Any], str] | None = None
     def run(
         self,
         tasks: tuple[ResearchTask, ...],
@@ -79,9 +80,10 @@ class RegistryResearcherService:
             hits_per_search=self.hits_per_search,
             max_evidence_per_question=self.max_evidence_per_question,
             max_finalization_turns=self.max_finalization_turns,
-            stop_requested=(lambda: self.stop_requested(str(
-                (shared_context or {}).get("research_id", "")
-            ))) if self.stop_requested is not None else None,
+            stop_requested=(lambda: self.stop_requested(str((
+                shared_context or {}
+            ).get("research_id", "")))) if self.stop_requested is not None else None,
+            tool_result_sink=self.tool_result_sink,
         )
         return execution, {task.task_id: task.task_id for task in tasks}
 def build_retrieval_tool_request(
@@ -169,71 +171,6 @@ def _evidence_execution(
         corpus_versions=active_scope.versions,
         tasks=tuple(tasks),
     )
-def _history(turns: list[AgentRetrievalTurn]) -> list[dict[str, Any]]:
-    return [
-        {
-            "round": outcome.round_number,
-            "call_id": outcome.call.call_id,
-            "tool": outcome.call.tool,
-            "query_id": outcome.call.arguments.get("query_id", ""),
-            "status": outcome.status,
-            "new_evidence_ids": list(outcome.new_evidence_ids),
-            "errors": list(outcome.errors),
-        }
-        for turn in turns
-        for outcome in turn.outcomes
-    ]
-
-
-def _tool_outputs(
-    proposal: Any,
-    outcomes: tuple[AgentToolOutcome, ...],
-    *,
-    control_errors: tuple[str, ...] = (),
-) -> tuple[NativeFunctionCallOutput, ...]:
-    outcome_by_id = {outcome.call.call_id: outcome for outcome in outcomes}
-    control_id = (
-        proposal.control_call.call_id
-        if proposal.control_call is not None
-        else None
-    )
-    outputs: list[NativeFunctionCallOutput] = []
-    for native_call in proposal.native_calls:
-        if native_call.call_id == control_id:
-            outputs.append(NativeFunctionCallOutput(
-                call_id=native_call.call_id,
-                output={
-                    "status": "rejected" if control_errors else "completed",
-                    "errors": list(control_errors),
-                },
-            ))
-            continue
-        outcome = outcome_by_id.get(native_call.call_id)
-        if outcome is None:
-            outputs.append(NativeFunctionCallOutput(
-                call_id=native_call.call_id,
-                output={
-                    "status": "rejected",
-                    "errors": list(proposal.protocol_errors) or [
-                        "call was not recognized by the Researcher protocol"
-                    ],
-                },
-            ))
-            continue
-        outputs.append(NativeFunctionCallOutput(
-            call_id=native_call.call_id,
-            output={
-                "status": outcome.status,
-                "tool": outcome.call.tool,
-                "query_id": outcome.call.arguments.get("query_id", ""),
-                "evidence_ids": list(outcome.evidence_ids),
-                "new_evidence_ids": list(outcome.new_evidence_ids),
-                "errors": list(outcome.errors),
-            },
-        ))
-    return tuple(outputs)
-
-
 def _rejected_outcomes(
     proposal: Any,
     *,
@@ -270,9 +207,10 @@ def run_agentic_retrieval_loop(
     hits_per_search: int = 8,
     max_evidence_per_question: int = 28,
     max_finalization_turns: int = 1,
-    stop_requested: Callable[
-        [], Literal["cancelled", "elapsed_time_budget"] | None
-    ] | None = None,
+    stop_requested: Callable[[], Literal[
+        "cancelled", "elapsed_time_budget"
+    ] | None] | None = None,
+    tool_result_sink: Callable[[str, str, Any], str] | None = None,
 ) -> AgenticRetrievalExecution:
     """Let a model issue native calls to bounded local retrieval tools."""
 
@@ -343,7 +281,7 @@ def run_agentic_retrieval_loop(
                 total_action_limit=max_total_actions,
                 hits_per_search=hits_per_search,
                 max_evidence_per_question=max_evidence_per_question,
-                history=_history(turns),
+                history=research_history(turns),
                 prior_signatures=frozenset(signatures),
                 prior_response_items=prior_response_items,
                 prior_outputs=prior_outputs,
@@ -379,7 +317,7 @@ def run_agentic_retrieval_loop(
                 for error in validation.errors
             )
             prior_response_items = proposal.replay_items
-            prior_outputs = _tool_outputs(
+            prior_outputs = native_tool_outputs(
                 proposal,
                 outcomes,
                 control_errors=control_errors,
@@ -445,6 +383,12 @@ def run_agentic_retrieval_loop(
                     raise RuntimeError(
                         "tool result corpus scope differs from the active run"
                     )
+                tool_result_id = None
+                context_id = str((shared_context or {}).get("research_id", ""))
+                if tool_result_sink is not None and context_id:
+                    tool_result_id = tool_result_sink(
+                        context_id, call.call_id, result.model_dump(mode="json")
+                    )
                 planned_hits = planned_hits_from_tool(
                     result,
                     task=task_by_id[request.query_id],
@@ -461,6 +405,7 @@ def run_agentic_retrieval_loop(
                     evidence_ids=observed,
                     new_evidence_ids=added,
                     errors=result.errors,
+                    tool_result_id=tool_result_id,
                 )
             except Exception as exc:
                 outcome = AgentToolOutcome(
@@ -481,7 +426,7 @@ def run_agentic_retrieval_loop(
             outcomes=outcome_tuple,
         ))
         prior_response_items = proposal.replay_items
-        prior_outputs = _tool_outputs(proposal, outcome_tuple)
+        prior_outputs = native_tool_outputs(proposal, outcome_tuple)
         if stop_reason in {"cancelled", "elapsed_time_budget"}:
             break
         if search_used + expansion_used >= max_total_actions:
@@ -512,7 +457,7 @@ def run_agentic_retrieval_loop(
                 total_action_limit=max_total_actions,
                 hits_per_search=hits_per_search,
                 max_evidence_per_question=max_evidence_per_question,
-                history=_history(turns),
+                history=research_history(turns),
                 prior_signatures=frozenset(signatures),
                 prior_response_items=prior_response_items,
                 prior_outputs=prior_outputs,

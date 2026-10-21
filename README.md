@@ -82,6 +82,10 @@ user question or task
   untrusted controller-generated passage for retrieval; only returned source
   chunks can become evidence.
 - `src/specrag/models/`: framework-independent research state contracts.
+- `src/specrag/context/`: provider-independent model-aware request budgets,
+  durable full tool results with bounded pages, structured message-history
+  summaries, compaction checkpoints, and reconstruction. It does not replace
+  Evidence, Run state, corpus bindings, or Memory.
 - `src/specrag/access/`: default-deny workspace authorization plus local
   password and session services. Passwords use `scrypt`; the database stores
   only session-token digests. The local CLI keeps its bearer token in the
@@ -116,9 +120,12 @@ user question or task
   Researcher prompt to the structured-agent adapter behind a small decision
   interface.
 - `src/specrag/infrastructure/llm.py`: structured OpenAI-compatible client
-  with redacted receipts, retry policy, and Responses API native function-call
+  with redacted receipts, per-model Token preflight, retry policy, and Responses API native function-call
   transport. With `store=False`, only function calls and matched
   `function_call_output` items are replayed explicitly between rounds.
+- `src/specrag/infrastructure/context_store.py`: SQLite adapter for canonical
+  Context messages, complete tool results, and atomically activated compaction
+  checkpoints. Original history is retained after compaction.
 - `scripts/evaluate_first_turn.py`: executes frozen Researcher first-turn
   artifacts without another model call and reports strict annotated-source
   recall for offline inspection.

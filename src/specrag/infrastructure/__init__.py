@@ -8,6 +8,8 @@ from .memory_agents import StructuredMemoryConsolidator, StructuredMemoryExtract
 from .domain_stores import InMemoryMemoryStore, InMemoryRunStore, InMemorySpecFactStore
 from .database import DEFAULT_DATABASE_PATH, SQLiteDatabase
 from .corpus_store import SQLiteCorpusStore
+from .context_store import SQLiteContextStore
+from .context_summary import StructuredContextSummarizer
 from .threegpp import ThreeGppArchiveProvider, ThreeGppSourceMaterializer
 from .identity_store import SQLiteIdentityStore
 from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
@@ -31,6 +33,8 @@ __all__ = [
     "DEFAULT_DATABASE_PATH",
     "SQLiteDatabase",
     "SQLiteCorpusStore",
+    "SQLiteContextStore",
+    "StructuredContextSummarizer",
     "ThreeGppArchiveProvider",
     "ThreeGppSourceMaterializer",
     "SQLiteIdentityStore",

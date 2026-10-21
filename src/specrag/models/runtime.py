@@ -37,6 +37,7 @@ RunFailureKind = Literal[
     "invalid_request",
     "structured_output",
     "model_refusal",
+    "context_overflow",
     "internal_error",
     "unknown",
 ]
@@ -53,6 +54,7 @@ RUN_FAILURE_KINDS: frozenset[str] = frozenset({
     "invalid_request",
     "structured_output",
     "model_refusal",
+    "context_overflow",
     "internal_error",
     "unknown",
 })
@@ -61,9 +63,9 @@ RUN_FAILURE_KINDS: frozenset[str] = frozenset({
 class ResearchRun(_StrictModel):
     schema_version: Literal[
         "research-run/v1", "research-run/v1.1", "research-run/v1.2",
-        "research-run/v1.3", "research-run/v1.4",
+        "research-run/v1.3", "research-run/v1.4", "research-run/v1.5",
     ] = (
-        "research-run/v1.4"
+        "research-run/v1.5"
     )
     run_id: str = Field(pattern=r"^RUN-[0-9A-F]{32}$")
     thread_id: str = Field(pattern=r"^THREAD-[0-9A-F]{32}$")
