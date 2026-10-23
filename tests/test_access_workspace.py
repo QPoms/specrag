@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from specrag.access import AuthorizationError, LocalIdentityService
+from specrag.access import AccessPolicy, AuthorizationError, LocalIdentityService
+from specrag.models import ActorContext
 from specrag.infrastructure import SQLiteDatabase, SQLiteIdentityStore
 
 
@@ -75,3 +76,58 @@ def test_expired_session_and_cross_workspace_default_deny(tmp_path) -> None:
             service.context(bob_token, workspace_a.workspace_id)
     finally:
         database.close()
+
+
+def test_private_conversation_and_result_content_remain_owner_only() -> None:
+    policy = AccessPolicy()
+    now = datetime.now(UTC)
+    owner = ActorContext(
+        user_id="alice",
+        workspace_id="workspace-a",
+        role="member",
+        session_id="session-a",
+        authenticated_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    admin = ActorContext(
+        user_id="admin",
+        workspace_id="workspace-a",
+        role="admin",
+        session_id="session-admin",
+        authenticated_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+
+    for permission in (
+        "conversation.read",
+        "conversation.write",
+        "conversation.events.read",
+        "result.read",
+        "run.content.read",
+    ):
+        policy.require(
+            owner,
+            permission,
+            workspace_id="workspace-a",
+            owner_user_id="alice",
+        )
+        with pytest.raises(AuthorizationError):
+            policy.require(
+                admin,
+                permission,
+                workspace_id="workspace-a",
+                owner_user_id="alice",
+            )
+
+    policy.require(
+        admin,
+        "run.metadata.read",
+        workspace_id="workspace-a",
+        owner_user_id="alice",
+    )
+    policy.require(
+        admin,
+        "run.lifecycle.manage",
+        workspace_id="workspace-a",
+        owner_user_id="alice",
+    )

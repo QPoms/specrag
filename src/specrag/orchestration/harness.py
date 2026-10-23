@@ -2,59 +2,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
 from uuid import uuid4
 
 from specrag.access import AccessPolicy
 from specrag.models import (
     ActorContext,
-    CorpusVersionRef,
+    ResearchInputSnapshot,
+    ResearchOutcome,
     ResearchRequest,
     ResearchRun,
-    RunEvent,
+    SpecificationScope,
 )
 
 from .application import ResearchApplication, RuntimeStopped
 from .failure import failure_metadata
-from .lifecycle import reset_for_resume, resume_attempt, retry_request
+from .lifecycle import reset_for_resume, retry_request
+from .outcomes import build_research_outcome
+from .run_contracts import (
+    ApplicationFactory,
+    ContextLoader,
+    ContextSnapshot,
+    ContextWriter,
+    CorpusBindingWriter,
+    CorpusSnapshot,
+    ProposalWriter,
+    ResultLookup,
+    RunInspection,
+    RunStore,
+)
+from .run_events import RunEventRecorder
+from .run_access import RunAccessMixin
 from .state import ResearchState
 
 
-class RunStore(Protocol):
-    def put(self, run: ResearchRun) -> None: ...
-    def get(self, run_id: str) -> ResearchRun | None: ...
-    def list_runs(
-        self, workspace_id: str, *, owner_user_id: str | None, limit: int,
-    ) -> tuple[ResearchRun, ...]: ...
-    def list_active_runs(self) -> tuple[ResearchRun, ...]: ...
-    def is_cancel_requested(self, run_id: str) -> bool: ...
-    def append_event(self, event: RunEvent) -> RunEvent: ...
-    def events(self, run_id: str) -> tuple[RunEvent, ...]: ...
-
-
-ApplicationFactory = Callable[[int, Callable[[str], str | None],
-    Callable[..., None], tuple[dict[str, object], ...]], ResearchApplication]
-ContextSnapshot = Callable[[ActorContext, str, int], tuple[
-    tuple[str, ...], tuple[str, ...], tuple[dict[str, object], ...]]]
-ContextLoader = Callable[[ActorContext, ResearchRun], tuple[dict[str, object], ...]]
-ProposalWriter = Callable[[ActorContext, ResearchRun, ResearchState], tuple[str, ...]]
-CorpusSnapshot = Callable[[int], tuple[CorpusVersionRef, ...]]
-CorpusBindingWriter = Callable[[ResearchRun], None]
-ContextWriter = Callable[[ActorContext, ResearchRun], None]
-@dataclass(frozen=True)
-class RunInspection:
-    run: ResearchRun
-    events: tuple[RunEvent, ...]
-    checkpoint: dict[str, Any] | None
-    stage_latency_ms: dict[str, float]
-    input_tokens: int
-    output_tokens: int
-
-
-class RunHarness:
+class RunHarness(RunAccessMixin):
     def __init__(
         self,
         store: RunStore,
@@ -67,6 +49,7 @@ class RunHarness:
         corpus_snapshot: CorpusSnapshot | None = None,
         corpus_binding_writer: CorpusBindingWriter | None = None,
         context_writer: ContextWriter | None = None,
+        result_lookup: ResultLookup | None = None,
     ) -> None:
         self.store = store
         self.application_factory = application_factory
@@ -77,6 +60,8 @@ class RunHarness:
         self.corpus_snapshot = corpus_snapshot
         self.corpus_binding_writer = corpus_binding_writer
         self.context_writer = context_writer
+        self.result_lookup = result_lookup
+        self.event_recorder = RunEventRecorder(store)
     def start(self, context: ActorContext, request: ResearchRequest) -> RunInspection:
         run = self._prepare(context, request)
         return self._execute(context, run, request=request, resume=False)
@@ -105,39 +90,10 @@ class RunHarness:
             context, run, request=self._request_from_run(run), resume=False
         )
 
-    def status(self, context: ActorContext, run_id: str) -> ResearchRun:
-        """Return an authorized Run without resolving a graph checkpoint."""
-
-        return self._authorized_run(context, run_id, "run.read")
-
-    def list_runs(
-        self, context: ActorContext, *, limit: int = 50,
-    ) -> tuple[ResearchRun, ...]:
-        """List only Runs visible to the current workspace actor."""
-
-        self.policy.require(
-            context,
-            "run.read",
-            workspace_id=context.workspace_id,
-            owner_user_id=context.user_id,
-        )
-        owner_user_id = None if context.role == "admin" else context.user_id
-        return self.store.list_runs(
-            context.workspace_id,
-            owner_user_id=owner_user_id,
-            limit=limit,
-        )
-
     def recoverable_runs(self) -> tuple[ResearchRun, ...]:
         """Return persisted Runs that require trusted Worker recovery."""
 
         return self.store.list_active_runs()
-
-    def events(self, context: ActorContext, run_id: str) -> tuple[RunEvent, ...]:
-        """Return durable events after authorizing the owning Run."""
-
-        self._authorized_run(context, run_id, "run.read")
-        return self.store.events(run_id)
 
     def _prepare(
         self,
@@ -147,6 +103,38 @@ class RunHarness:
         retry_of_run_id: str | None = None,
     ) -> ResearchRun:
         self.policy.require(context, "research.create", workspace_id=context.workspace_id)
+        requested_scope = request.requested_scope or SpecificationScope(
+            policy="highest_version_within_release",
+            release=request.release,
+        )
+        input_snapshot = ResearchInputSnapshot(
+            question=request.question,
+            objective=request.objective or request.question,
+            conditions=request.conditions,
+            requested_scope=requested_scope,
+            prior_results=request.prior_results,
+            answer_language=request.answer_language,
+            detail_level=request.detail_level,
+        )
+        if (
+            request.conversation_id is not None
+            and request.submission_operation_key is not None
+        ):
+            existing = self.store.get_by_submission(
+                request.conversation_id, request.submission_operation_key
+            )
+            if existing is not None:
+                if (
+                    existing.input_snapshot != input_snapshot
+                    or existing.origin_message_id != request.origin_message_id
+                    or existing.origin_turn_id != request.origin_turn_id
+                    or existing.submitted_user_sequence
+                    != request.submitted_user_sequence
+                ):
+                    raise ValueError(
+                        "submission operation key was reused with different input"
+                    )
+                return existing
         now = datetime.now(timezone.utc)
         run = ResearchRun(
             run_id="RUN-" + uuid4().hex.upper(),
@@ -161,14 +149,20 @@ class RunHarness:
             memory_ids=request.configuration_memory_ids,
             development_question_id=request.development_question_id,
             retry_of_run_id=retry_of_run_id,
+            conversation_id=request.conversation_id,
+            origin_message_id=request.origin_message_id,
+            origin_turn_id=request.origin_turn_id,
+            submitted_user_sequence=request.submitted_user_sequence,
+            submission_operation_key=request.submission_operation_key,
+            input_snapshot=input_snapshot,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.elapsed_time_seconds),
         )
         if self.corpus_snapshot is not None:
-            versions = self.corpus_snapshot(request.release)
+            versions = self.corpus_snapshot(requested_scope)
             if not versions:
                 raise ValueError(
-                    f"no active specification versions for Release {request.release}"
+                    "no active specification versions satisfy the requested scope"
                 )
             run = run.model_copy(update={
                 "corpus_version_policy": (
@@ -176,6 +170,17 @@ class RunHarness:
                 ),
                 "corpus_release": None,
                 "corpus_versions": versions,
+            })
+        elif requested_scope.versions:
+            run = run.model_copy(update={
+                "corpus_version_policy": requested_scope.policy,
+                "corpus_release": None,
+                "corpus_versions": requested_scope.versions,
+            })
+        else:
+            run = run.model_copy(update={
+                "corpus_version_policy": requested_scope.policy,
+                "corpus_release": requested_scope.release,
             })
         if self.context_snapshot is not None:
             facts, memories, _ = self.context_snapshot(
@@ -190,7 +195,7 @@ class RunHarness:
             self.context_writer(context, run)
         if self.corpus_binding_writer is not None:
             self.corpus_binding_writer(run)
-        self._event(run, "run_started", "run:start", payload={
+        self.event_recorder.append(run, "run_started", "run:start", payload={
             "release": run.release,
             "corpus_version_policy": run.corpus_version_policy,
             "corpus_versions": [
@@ -208,6 +213,7 @@ class RunHarness:
             stage_latency_ms={},
             input_tokens=0,
             output_tokens=0,
+            result_id=(self.result_lookup(run.run_id) if self.result_lookup else None),
         )
 
     @staticmethod
@@ -219,6 +225,16 @@ class RunHarness:
             )
         return ResearchRequest(
             question=run.question,
+            objective=(
+                run.input_snapshot.objective if run.input_snapshot else run.question
+            ),
+            conditions=(run.input_snapshot.conditions if run.input_snapshot else ()),
+            requested_scope=(
+                run.input_snapshot.requested_scope if run.input_snapshot else None
+            ),
+            prior_results=(
+                run.input_snapshot.prior_results if run.input_snapshot else ()
+            ),
             release=run.release,
             answer_language=run.answer_language,
             detail_level=run.detail_level,
@@ -226,6 +242,11 @@ class RunHarness:
             budget=run.budget,
             elapsed_time_seconds=remaining,
             development_question_id=run.development_question_id,
+            conversation_id=run.conversation_id,
+            origin_message_id=run.origin_message_id,
+            origin_turn_id=run.origin_turn_id,
+            submitted_user_sequence=run.submitted_user_sequence,
+            submission_operation_key=run.submission_operation_key,
         )
 
     def _finish_cancelled(self, run: ResearchRun) -> RunInspection:
@@ -236,14 +257,13 @@ class RunHarness:
             "started_at": run.started_at or now,
             "finished_at": now,
         })
-        self.store.put(terminal)
-        attempt = resume_attempt(self.store.events(terminal.run_id))
-        self._event(
+        event = self.event_recorder.build(
             terminal,
             "run_stopped",
-            f"run:stopped:cancelled:attempt:{attempt}",
+            f"run:stopped:cancelled:attempt:{terminal.run_attempt}",
             payload={"reason": "cancelled"},
         )
+        self.store.finalize(terminal, event, None)
         return RunInspection(
             run=terminal,
             events=self.store.events(terminal.run_id),
@@ -251,6 +271,9 @@ class RunHarness:
             stage_latency_ms={},
             input_tokens=0,
             output_tokens=0,
+            result_id=(
+                self.result_lookup(terminal.run_id) if self.result_lookup else None
+            ),
         )
 
     def queue_resume(
@@ -260,7 +283,7 @@ class RunHarness:
         *,
         elapsed_time_seconds: int = 900,
     ) -> RunInspection:
-        run = self._authorized_run(context, run_id, "run.resume")
+        run = self._authorized_run(context, run_id, "run.content.read")
         resumed_before = any(
             event.event_type == "resumed" for event in self.store.events(run_id)
         )
@@ -275,8 +298,8 @@ class RunHarness:
             run, elapsed_time_seconds=elapsed_time_seconds
         )
         self.store.put(queued)
-        attempt = resume_attempt(self.store.events(run_id)) + 1
-        self._event(
+        attempt = run.run_attempt + 1
+        self.event_recorder.append(
             queued,
             "resumed",
             f"run:resume:{attempt}",
@@ -287,7 +310,7 @@ class RunHarness:
     def execute_resume(
         self, context: ActorContext, run_id: str,
     ) -> RunInspection:
-        run = self._authorized_run(context, run_id, "run.resume")
+        run = self._authorized_run(context, run_id, "run.content.read")
         if run.status in {"completed", "failed", "cancelled", "timed_out"}:
             return self.inspect(context, run_id)
         if run.status == "running":
@@ -307,7 +330,7 @@ class RunHarness:
         *,
         elapsed_time_seconds: int = 900,
     ) -> RunInspection:
-        run = self._authorized_run(context, run_id, "run.resume")
+        run = self._authorized_run(context, run_id, "run.content.read")
         if run.cancel_requested_at is not None and run.status in {"queued", "running"}:
             return self._finish_cancelled(run)
         if run.status == "completed":
@@ -319,9 +342,11 @@ class RunHarness:
             return self.execute_resume(context, run_id)
         if run.status == "queued":
             return self.execute_resume(context, run_id)
-        attempt = resume_attempt(self.store.events(run_id)) + 1
-        self._event(run, "resumed", f"run:resume:{attempt}")
-        return self._execute(context, run, request=None, resume=True)
+        attempt = run.run_attempt + 1
+        resumed = run.model_copy(update={"run_attempt": attempt})
+        self.store.put(resumed)
+        self.event_recorder.append(resumed, "resumed", f"run:resume:{attempt}")
+        return self._execute(context, resumed, request=None, resume=True)
 
     def retry(
         self,
@@ -330,7 +355,7 @@ class RunHarness:
         *,
         elapsed_time_seconds: int = 900,
     ) -> RunInspection:
-        source = self._authorized_run(context, run_id, "run.read")
+        source = self._authorized_run(context, run_id, "run.content.read")
         if source.status not in {"completed", "failed", "cancelled", "timed_out"}:
             raise ValueError("only terminal Runs can be retried")
         request = retry_request(
@@ -340,7 +365,7 @@ class RunHarness:
         return self._queued_inspection(run)
 
     def inspect(self, context: ActorContext, run_id: str) -> RunInspection:
-        run = self._authorized_run(context, run_id, "run.read")
+        run = self._authorized_run(context, run_id, "run.content.read")
         events = self.store.events(run_id)
         checkpoint = None
         try:
@@ -359,16 +384,24 @@ class RunHarness:
                 )
             input_tokens += int(event.payload.get("input_tokens", 0))
             output_tokens += int(event.payload.get("output_tokens", 0))
-        return RunInspection(run, events, checkpoint, latency, input_tokens, output_tokens)
+        return RunInspection(
+            run,
+            events,
+            checkpoint,
+            latency,
+            input_tokens,
+            output_tokens,
+            self.result_lookup(run_id) if self.result_lookup else None,
+        )
 
     def cancel(self, context: ActorContext, run_id: str) -> ResearchRun:
-        run = self._authorized_run(context, run_id, "run.cancel")
+        run = self._authorized_run(context, run_id, "run.lifecycle.manage")
         if run.status in {"completed", "failed", "cancelled", "timed_out"}:
             return run
         now = datetime.now(timezone.utc)
         updated = run.model_copy(update={"cancel_requested_at": now})
         self.store.put(updated)
-        self._event(updated, "cancel_requested", "run:cancel")
+        self.event_recorder.append(updated, "cancel_requested", "run:cancel")
         return updated
 
     def _execute(
@@ -414,12 +447,10 @@ class RunHarness:
                 "finished_at": datetime.now(timezone.utc),
                 **failure,
             })
-            self.store.put(terminal)
-            attempt = resume_attempt(self.store.events(terminal.run_id))
-            self._event(
+            event = self.event_recorder.build(
                 terminal,
                 "run_stopped",
-                f"run:stopped:failed:attempt:{attempt}",
+                f"run:stopped:failed:attempt:{terminal.run_attempt}",
                 payload={
                     "reason": "failed",
                     "failure_kind": terminal.failure_kind,
@@ -428,13 +459,15 @@ class RunHarness:
                     "status_code": terminal.failure_status_code,
                 },
             )
+            self.store.finalize(terminal, event, None)
             raise
         else:
             reason = state.get("stop_reason") or "completed"
             status = (
                 "cancelled" if reason == "cancelled" else
                 "timed_out" if reason == "elapsed_time_budget" else
-                "completed" if reason == "completed" else "failed"
+                "failed" if reason == "unrecoverable_error" else
+                "completed"
             )
             terminal = active.model_copy(update={
                 "status": status,
@@ -444,7 +477,11 @@ class RunHarness:
                 } else "failed",
                 "finished_at": datetime.now(timezone.utc),
             })
-            if status == "completed" and self.proposal_writer is not None:
+            if (
+                status == "completed"
+                and state.get("synthesis") is not None
+                and self.proposal_writer is not None
+            ):
                 proposal_ids = self.proposal_writer(context, terminal, state)
                 terminal = terminal.model_copy(update={
                     "specfact_proposal_ids": tuple(sorted(set(proposal_ids)))
@@ -453,14 +490,17 @@ class RunHarness:
                     thread_id=terminal.thread_id,
                     update={"specfact_proposal_ids": terminal.specfact_proposal_ids},
                 )
-        self.store.put(terminal)
-        attempt = resume_attempt(self.store.events(terminal.run_id))
-        self._event(
+        outcome = (
+            build_research_outcome(terminal, state)
+            if terminal.status == "completed" else None
+        )
+        event = self.event_recorder.build(
             terminal,
             "run_stopped",
-            f"run:stopped:{terminal.status}:attempt:{attempt}",
+            f"run:stopped:{terminal.status}:attempt:{terminal.run_attempt}",
             payload={"reason": terminal.stop_reason},
         )
+        self.store.finalize(terminal, event, outcome)
         return self.inspect(context, terminal.run_id)
 
     def _application(self, context: ActorContext, run: ResearchRun) -> ResearchApplication:
@@ -474,13 +514,32 @@ class RunHarness:
             "release": run.release,
             "answer_language": run.answer_language,
             "detail_level": run.detail_level,
+            "objective": (
+                run.input_snapshot.objective if run.input_snapshot else run.question
+            ),
+            "conditions": list(
+                run.input_snapshot.conditions if run.input_snapshot else ()
+            ),
+            "requested_scope": (
+                run.input_snapshot.requested_scope.model_dump(mode="json")
+                if run.input_snapshot else None
+            ),
+            "prior_results": [
+                item.model_dump(mode="json")
+                for item in (
+                    run.input_snapshot.prior_results if run.input_snapshot else ()
+                )
+            ],
             "corpus_version_policy": run.corpus_version_policy,
             "corpus_versions": [
                 item.model_dump(mode="json") for item in run.corpus_versions
             ],
         })
         return self.application_factory(
-            run.release, self._stop_requested, self._node_event(run), research_context
+            run.release,
+            self._stop_requested,
+            self.event_recorder.node_sink(run),
+            research_context,
         )
 
     def _stop_requested(self, run_id: str) -> str | None:
@@ -492,109 +551,5 @@ class RunHarness:
         if run.deadline_at is not None and datetime.now(timezone.utc) >= run.deadline_at:
             return "elapsed_time_budget"
         return None
-
-    def _node_event(self, run: ResearchRun) -> Callable[..., None]:
-        def emit(name: str, state: ResearchState, update: dict[str, object], latency_ms: float) -> None:
-            event_type = {
-                "researcher": "task_dispatched",
-                "source_validator": "source_validated",
-                "sufficiency_judge": "judge_completed",
-                "replanner": "replanned",
-                "synthesizer": "synthesized",
-            }.get(name, "node_transition")
-            operation_key = (
-                f"node:{name}:iteration:{state['iteration']}:"
-                f"calls:{len(state['tool_calls'])}:gaps:{len(state['gaps'])}"
-            )
-            old_receipts = len(state.get("model_receipts", ()))
-            new_receipts = tuple(update.get("model_receipts", ()))[old_receipts:]
-            for receipt in new_receipts:
-                self._event(
-                    run,
-                    "model_receipt",
-                    f"receipt:{receipt.get('response_sha256', '')}",
-                    stage=name,
-                    payload={
-                        "model": receipt.get("model"),
-                        "purpose": receipt.get("purpose"),
-                        "prompt_version": receipt.get("prompt_version"),
-                        "request_sha256": receipt.get("request_sha256"),
-                        "response_sha256": receipt.get("response_sha256"),
-                        "latency_ms": receipt.get("latency_ms", 0),
-                        "input_tokens": receipt.get("input_tokens") or 0,
-                        "output_tokens": receipt.get("output_tokens") or 0,
-                    },
-                )
-            old_calls = len(state.get("tool_calls", ()))
-            for call in tuple(update.get("tool_calls", ()))[old_calls:]:
-                self._event(
-                    run, "tool_call", f"tool:{call.call_id}",
-                    stage="researcher", task_id=call.task_id,
-                    payload={
-                        "tool_name": call.tool_name,
-                        "status": call.status,
-                        "evidence_ids": list(call.evidence_ids),
-                    },
-                )
-            old_selections = len(state.get("researcher_evidence_selections", ()))
-            for selection in tuple(update.get("researcher_evidence_selections", ()))[old_selections:]:
-                self._event(
-                    run, "evidence_selected", f"selection:{selection.selection_id}",
-                    stage="researcher", task_id=selection.task_id,
-                    payload={"evidence_ids": list(selection.retained_evidence_ids)},
-                )
-            old_gaps = {gap.gap_id for gap in state.get("gaps", ())}
-            for gap in update.get("gaps", ()):
-                if gap.gap_id not in old_gaps:
-                    self._event(
-                        run, "gap_created", f"gap:{gap.gap_id}",
-                        stage="sufficiency_judge", task_id=gap.task_id,
-                        payload={"kind": gap.kind, "description": gap.description},
-                    )
-            self._event(run, event_type, operation_key, stage=name, payload={
-                "latency_ms": round(latency_ms, 3),
-                "tool_calls": len(update.get("tool_calls", ())),
-                "evidence": len(update.get("candidate_evidence", ())),
-                "stop_reason": update.get("stop_reason"),
-            })
-        return emit
-
-    def _event(
-        self,
-        run: ResearchRun,
-        event_type: str,
-        operation_key: str,
-        *,
-        stage: str | None = None,
-        task_id: str | None = None,
-        payload: dict[str, object] | None = None,
-    ) -> RunEvent:
-        sequence = len(self.store.events(run.run_id)) + 1
-        event = RunEvent(
-            event_id="EVT-" + uuid4().hex.upper(),
-            run_id=run.run_id,
-            workspace_id=run.workspace_id,
-            sequence=sequence,
-            event_type=event_type,
-            occurred_at=datetime.now(timezone.utc),
-            stage=stage,
-            task_id=task_id,
-            operation_key=operation_key,
-            payload=payload or {},
-        )
-        return self.store.append_event(event)
-
-    def _authorized_run(
-        self, context: ActorContext, run_id: str, permission: str,
-    ) -> ResearchRun:
-        run = self.store.get(run_id)
-        if run is None:
-            raise KeyError(f"unknown run: {run_id}")
-        self.policy.require(
-            context, permission, workspace_id=run.workspace_id,
-            owner_user_id=run.owner_user_id,
-        )
-        return run
-
 
 __all__ = ["RunHarness", "RunInspection", "RunStore"]

@@ -1,16 +1,34 @@
 # Current project status
 
-Updated: 2026-10-21
+Updated: 2026-10-23
 
 ## Current state
 
-The current internship-project scope is frozen around the local 3GPP research
-workspace: authenticated multi-user API, durable Run/Worker lifecycle,
-evidence-backed answers, reviewed Memory/SpecFacts, and the browser client.
+The implemented product is now a conversation-centered local 3GPP research
+workspace with an authenticated multi-user API, durable Run/Worker lifecycle,
+evidence-backed answers, reviewed Memory/SpecFacts, Context Harness, bounded
+Conversation Agent, internal Streamable HTTP MCP research service, independent
+Research Results, and a Conversation-first browser client. The design is
+described in `docs/plans/035-conversation-centered-research-platform.md`.
+Owner-private Conversation CRUD,
+canonical Context Harness messages, transactional user-message/Turn/job/event
+writes, a serialized Turn lease queue, cursor-based Conversation SSE, restart
+recovery, archive/unarchive behavior, frozen Run inputs, atomic terminal
+Outcome/outbox publication, independently persisted Research Results, and
+authorized Result readback, completion reconciliation, Conversation research
+links, conditional automatic presentation Turn scheduling, Agent execution,
+and reconnectable browser projection are supported through the authenticated
+API. The existing Run research API, CLI, and linked Run views remain supported.
+
+The detailed design baseline is recorded in
+`docs/architecture/conversation_research_platform.md`, with separate Mermaid
+component, synchronous/asynchronous, completion, state, and data-model diagrams.
+All eight implementation stages are active in the runtime.
+
 No new corpus provider, private-document upload, external broker, production
-deployment layer, or automatic whole-Run replay is part of the supported
-workflow. Remaining work is hardening, documentation, reproducibility, and
-answer evaluation rather than another product slice.
+deployment layer, or automatic whole-Run replay is part of the planned first
+conversation slices. Answer evaluation and hardening continue as regression
+work rather than being displaced by a parallel research implementation.
 
 The first specification-version synchronization slice is implemented as an
 explicit, dormant-by-default maintenance capability. SQLite now records every
@@ -43,7 +61,8 @@ start. Once the active registry completely covers a Release, it is the source
 of that snapshot; until then the existing highest-local-version behavior is
 used. Resume reconstructs retrieval from the stored exact binding, so an active
 pointer change cannot mix versions inside a Run. The Run wire contract is now
-`research-run/v1.1`, while persisted `research-run/v1` payloads remain readable.
+`research-run/v1.6`, while persisted `research-run/v1` through `v1.5` payloads
+remain readable.
 
 The multi-user local workspace milestone is implemented. The former
 `ValidatedKnowledge` and `ValidatedMemoryService` implementation has been
@@ -238,7 +257,62 @@ citation validity 1.0 for both answers. The same run also completed the local
 Chroma embedding cache at 27,858 chunks, so later Runs over this unchanged
 corpus snapshot reuse the populated vector cache.
 
-The next active milestone is answer evaluation only. The deterministic offline
+The conversation-centered platform milestone is complete, and all eight stages
+of plan 035 are implemented. Strict Conversation/Result contracts and owner-private access rules
+now back migrations 7-8, the Conversation store/service, atomic message and
+Turn queue writes, ordered events, Context Harness reconstruction/compaction,
+frozen Run input and exact corpus snapshots, attempt-aware Outcome/outbox
+finalization, deterministic Research Result materialization, authorized Result
+HTTP readback, and Result IDs in Run inspection. Normal iteration/tool/replan
+budget and evidence-insufficiency stops are completed research attempts with
+explicit Result evidence state; abnormal failure, cancellation, and timeout
+remain separate Run terminal states. Focused tests cover restart, real v6
+migration, concurrent sequence allocation, operation-key replay, stale
+revisions, archive behavior, compaction retention, terminal replay, Result
+revision chains, exact provenance copying, and administrator isolation; the
+full stage-3 gate was 266 passing tests. Migration 9 now adds durable completion
+receipts and Conversation research links. The Lifecycle Worker serializes Run
+attempt completion, atomically publishes Results and link/Event projections,
+retries the Run-completed-before-link race, applies user-message, active-Turn,
+membership, and one-presentation-at-a-time guards, and queues at most one
+idempotent automatic Result Turn. A new user message skips older pending or
+queued presentations in the same transaction. Conversation detail readback now
+includes Turns and research links, while SSE supplies the ordered changes.
+Embedded and standalone Worker modes process both Run and lifecycle queues.
+Race, replay, concurrent Result, abnormal completion, and cancellation tests
+brought the stage-4 gate to 271 passing tests. The official MCP Python SDK now
+backs a loopback-only Streamable HTTP `specrag-mcp` service. Its three tools
+start research, read authorized Run status, and read a durable Result. Tool
+schemas contain semantic research inputs and resource IDs only; short-lived
+HMAC service delegation supplies actor and Conversation-origin context outside
+model arguments, and the MCP process re-checks current identity and Workspace
+membership. Submission is idempotent by trusted operation key and observes one
+Run for at most ten seconds, returning either its Result, abnormal terminal
+status, or accepted queued/running state without resubmission. The stage-5 gate
+was 275 passing tests. Migration 10 and the bounded Conversation Agent are now
+active. The Agent uses native tool calling with explicit final-response control,
+bounded model steps/tool calls/research submissions/elapsed time, Context
+Harness history, advisory Memory, and authorized historical Results. MCP calls
+are durably audited before execution and complete tool payloads remain stored
+for readback. The backend Turn Worker owns serialized execution and validates
+Result ownership and citation membership transactionally before publishing an
+assistant message. Direct ordinary conversation creates no Research Run. The
+stage-6 gate was 281 passing tests. The browser now opens on a private
+Conversation list and persistent thread, supports create/archive/restore and
+continued multi-turn messaging, renders source attribution plus inline
+Turn/tool/Run/Result state, and opens linked historical Runs. Conversation SSE
+resumes from its last event cursor, ignores duplicates, refreshes the database
+projection on changes, and corrects cursor gaps after reconnect. The production
+Vite build and 281-test backend gate passed on 2026-10-23. Stage 8 added
+end-to-end synchronous and asynchronous Conversation acceptance, durable active
+scope revisions, condition-change Result dependencies, owner-private Run
+content plus administrator-safe lifecycle metadata, per-user Turn concurrency,
+bounded MCP inputs/timeouts, and pre-audit strict argument validation. A new
+deterministic Conversation evaluation covers direct/research routing,
+unsupported normative answers, condition preservation, Result selection,
+citation fidelity, context carry-over, and compaction recovery. The canonical
+quality gate passes with 288 tests and the Vite production build passes. The
+deterministic offline
 runner `scripts/evaluate_answers.py` aligns final-answer citations and evidence
 to the curated QA targets and reports citation validity, citation relevance,
 supported-claim rate, target recall, and all-target coverage by difficulty and

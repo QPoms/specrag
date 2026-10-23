@@ -24,6 +24,30 @@ from .parallel import (
 from .checkpointing import SQLiteCheckpointManager
 from .harness import RunHarness, RunInspection, RunStore
 from .worker import RunJob, RunQueue, RunWorker
+from .conversations import (
+    AcceptedConversationMessage,
+    ConversationService,
+    ConversationSnapshot,
+    ConversationStore,
+)
+from .completion import (
+    CompletionJob,
+    CompletionLifecycleStore,
+    CompletionQueue,
+    ResearchLifecycleWorker,
+)
+from .results import ResearchResultService
+from .research_tools import (
+    ConversationScopeWriter,
+    ResearchLinkWriter,
+    ResearchToolService,
+)
+from .conversation_tools import (
+    ConversationAgentAuditStore,
+    MCPConversationToolExecutor,
+    ResearchMCPClient,
+)
+from .conversation_worker import ConversationTurnWorker
 
 __all__ = [
     "ResearchNodeHandlers",
@@ -49,4 +73,20 @@ __all__ = [
     "RunQueue",
     "RunWorker",
     "SQLiteCheckpointManager",
+    "AcceptedConversationMessage",
+    "ConversationService",
+    "CompletionJob",
+    "CompletionLifecycleStore",
+    "CompletionQueue",
+    "ResearchLifecycleWorker",
+    "ConversationSnapshot",
+    "ConversationStore",
+    "ResearchResultService",
+    "ResearchLinkWriter",
+    "ConversationScopeWriter",
+    "ResearchToolService",
+    "ConversationAgentAuditStore",
+    "MCPConversationToolExecutor",
+    "ResearchMCPClient",
+    "ConversationTurnWorker",
 ]

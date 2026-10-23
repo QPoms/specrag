@@ -1,0 +1,25 @@
+sequenceDiagram
+    autonumber
+    participant W as Run Worker
+    participant D as SQLite
+    participant L as Lifecycle Worker
+    participant V as Result Validator
+    participant T as Turn Queue
+    participant F as Frontend
+
+    W->>D: atomic terminal Run plus outcome plus completion job
+    D-->>L: lease completion job
+    L->>V: validate and materialize Result from outcome
+    V-->>L: immutable Result or no publishable Result
+    L->>D: revalidate scope and commit Result task state and events
+    alt no newer user message and no active Turn
+        L->>D: compare and set active Turn plus auto reply operation key
+        D->>T: enqueue new internal presentation Turn
+        L->>D: append auto_reply_queued event
+    else no newer user message but a Turn is active
+        L->>D: keep presentation pending for terminal Turn rescheduling
+    else newer user message or invalid scope
+        L->>D: append auto_reply_skipped event with safe reason
+    end
+    D-->>F: ordered Conversation events from sequence cursor
+    Note over D,L: Replayed completion jobs converge on one Result and at most one presentation Turn.

@@ -8,7 +8,12 @@ import pytest
 from specrag.access import AuthorizationError
 from specrag.infrastructure import InMemoryRunStore
 from specrag.infrastructure.structured_agent import CodexAgentError
-from specrag.models import ActorContext, CorpusVersionRef, ResearchRequest
+from specrag.models import (
+    ActorContext,
+    CorpusVersionRef,
+    ResearchRequest,
+    SpecificationScope,
+)
 from specrag.orchestration import RunHarness
 
 
@@ -89,7 +94,7 @@ def _api_failure_factory(release, control, event_sink, research_context):
     return _ApiFailureApplication(control)
 
 
-def test_run_access_is_owner_scoped_with_admin_override() -> None:
+def test_run_content_is_owner_private_and_admin_gets_metadata_only() -> None:
     store = InMemoryRunStore()
     harness = RunHarness(store, _factory)
     result = harness.start(_context(), ResearchRequest(question="question"))
@@ -98,7 +103,12 @@ def test_run_access_is_owner_scoped_with_admin_override() -> None:
         harness.inspect(_context("bob"), run_id)
     with pytest.raises(AuthorizationError):
         harness.inspect(_context("alice", "WB"), run_id)
-    assert harness.inspect(_context("admin", role="admin"), run_id).run == result.run
+    admin = _context("admin", role="admin")
+    with pytest.raises(AuthorizationError):
+        harness.inspect(admin, run_id)
+    assert harness.metadata_status(admin, run_id) == result.run
+    assert harness.list_runs(admin) == ()
+    assert harness.list_run_metadata(admin) == (result.run,)
 
 
 def test_cancel_is_checked_before_runtime_execution() -> None:
@@ -147,7 +157,7 @@ def test_run_freezes_exact_corpus_versions_at_start() -> None:
         CorpusVersionRef(specification="24.501", version="17.17.0"),
         CorpusVersionRef(specification="33.501", version="17.12.0"),
     )]
-    harness = RunHarness(store, _factory, corpus_snapshot=lambda _release: snapshots[0])
+    harness = RunHarness(store, _factory, corpus_snapshot=lambda _scope: snapshots[0])
 
     result = harness.start(_context(), ResearchRequest(question="question"))
     snapshots[0] = (
@@ -160,6 +170,72 @@ def test_run_freezes_exact_corpus_versions_at_start() -> None:
     assert [item.version for item in persisted.corpus_versions] == [
         "17.17.0", "17.12.0"
     ]
+
+
+def test_conversation_submission_freezes_input_and_is_idempotent() -> None:
+    store = InMemoryRunStore()
+    bound = CorpusVersionRef(specification="24.501", version="17.9.0")
+    harness = RunHarness(store, _factory, corpus_snapshot=lambda _scope: (bound,))
+    request = ResearchRequest(
+        question="When shall the UE register?",
+        objective="Determine the normative registration trigger.",
+        conditions=("UE is in 5GMM-DEREGISTERED",),
+        requested_scope=SpecificationScope(
+            policy="exact_version", versions=(bound,)
+        ),
+        conversation_id="CONV-" + "A" * 32,
+        origin_message_id="MESSAGE-1",
+        origin_turn_id="TURN-" + "B" * 32,
+        submitted_user_sequence=4,
+        submission_operation_key="turn-B:research-1",
+    )
+
+    first = harness.submit(_context(), request)
+    replay = harness.submit(_context(), request)
+
+    assert replay.run.run_id == first.run.run_id
+    assert first.run.input_snapshot is not None
+    assert first.run.input_snapshot.objective == request.objective
+    assert first.run.input_snapshot.conditions == request.conditions
+    assert first.run.corpus_versions == (bound,)
+    assert len(store._runs) == 1
+    assert len(store.events(first.run.run_id)) == 1
+
+    with pytest.raises(ValueError, match="different input"):
+        harness.submit(
+            _context(),
+            request.model_copy(update={"conditions": ("UE is registered",)}),
+        )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "iteration_budget",
+        "tool_budget",
+        "replan_budget",
+        "insufficient_evidence",
+    ],
+)
+def test_normal_research_stops_publish_outcome_and_completion_job(reason) -> None:
+    class StateApplication(_Application):
+        def run(self, **kwargs):
+            return {"stop_reason": reason}
+
+    def factory(release, control, event_sink, research_context):
+        return StateApplication(control)
+
+    store = InMemoryRunStore()
+    result = RunHarness(store, factory).start(
+        _context(), ResearchRequest(question="question")
+    )
+
+    assert result.run.status == "completed"
+    assert result.run.stop_reason == reason
+    outcome = store.get_outcome(result.run.run_id, 0)
+    assert outcome is not None
+    assert outcome.stop_reason == reason
+    assert (result.run.run_id, 0) in store._completion_jobs
 
 
 def test_elapsed_deadline_stops_resume() -> None:
@@ -241,6 +317,9 @@ def test_terminal_run_can_queue_resume_only_with_checkpoint() -> None:
     assert [event.event_type for event in duplicate.events].count("resumed") == 1
     resumed = harness.execute_resume(_context(), failed.run_id)
     assert resumed.run.status == "completed"
+    assert resumed.run.run_attempt == 1
+    assert store.get_outcome(resumed.run.run_id, 0) is not None
+    assert store.get_outcome(resumed.run.run_id, 1) is not None
 
 
 def test_retry_creates_new_linked_run_with_fresh_lifecycle() -> None:

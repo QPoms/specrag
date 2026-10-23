@@ -12,12 +12,14 @@ from .sufficiency import (
     TaskSufficiencyAssessor,
 )
 from .synthesis import EvidenceSynthesisGenerator, EvidenceSynthesisService
+from .results import ResearchResultMaterializer
 
 __all__ = [
     "EvidenceSufficiencyBatch",
     "EvidenceSufficiencyService",
     "EvidenceSynthesisGenerator",
     "EvidenceSynthesisService",
+    "ResearchResultMaterializer",
     "SourceEvidenceValidator",
     "SourceValidationBatch",
     "SourceValidationService",

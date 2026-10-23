@@ -12,6 +12,7 @@ dependencies = [
     "tokenizers>=0.22.1,<0.23",
     "langgraph>=1.2.14,<2",
     "langgraph-checkpoint-sqlite>=3.1,<4",
+    "mcp>=2.2,<3",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pyyaml>=6.0",
@@ -22,6 +23,7 @@ dependencies = [
 specrag = "specrag.cli:main"
 specrag-api = "specrag.interfaces.api:main"
 specrag-worker = "specrag.interfaces.worker:main"
+specrag-mcp = "specrag.interfaces.mcp:main"
 
 [project.optional-dependencies]
 dev = [

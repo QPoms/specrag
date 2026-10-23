@@ -290,7 +290,7 @@ class MemoryService:
     ) -> tuple[MemoryEntry, ...]:
         self.policy.require(
             context,
-            "run.resume",
+            "run.content.read",
             workspace_id=run.workspace_id,
             owner_user_id=run.owner_user_id,
         )

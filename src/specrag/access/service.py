@@ -152,6 +152,35 @@ class LocalIdentityService:
             expires_at=expires_at,
         )
 
+    def delegated_context(
+        self,
+        *,
+        user_id: str,
+        workspace_id: str,
+        delegation_id: str,
+        authenticated_at: datetime,
+        expires_at: datetime,
+    ) -> ActorContext:
+        """Re-check current identity and membership for a verified delegation."""
+
+        user = self.store.user_by_id(user_id)
+        membership = self.store.membership(workspace_id, user_id)
+        if (
+            user is None
+            or user.status != "active"
+            or membership is None
+            or expires_at <= datetime.now(timezone.utc)
+        ):
+            raise AuthorizationError("access denied")
+        return ActorContext(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=membership.role,
+            session_id="DELEGATION-" + delegation_id,
+            authenticated_at=authenticated_at,
+            expires_at=expires_at,
+        )
+
     def add_user(
         self, context: ActorContext, username: str, password: str, role: str,
     ) -> Membership:

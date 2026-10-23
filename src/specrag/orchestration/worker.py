@@ -130,8 +130,9 @@ class RunWorker:
         self, context: ActorContext, request: ResearchRequest,
     ) -> RunInspection:
         inspection = self.harness.submit(context, request)
-        self.queue.enqueue(inspection.run.run_id, "execute")
-        self._wake.set()
+        if inspection.run.status == "queued":
+            self.queue.enqueue(inspection.run.run_id, "execute")
+            self._wake.set()
         return inspection
 
     def resume(
@@ -168,11 +169,13 @@ class RunWorker:
 
     def _run(self) -> None:
         while not self._stopping.is_set():
-            if not self._run_one():
+            if not self.process_one():
                 self._wake.wait(self.poll_seconds)
                 self._wake.clear()
 
-    def _run_one(self) -> bool:
+    def process_one(self) -> bool:
+        """Execute at most one leased job for deterministic embedding/tests."""
+
         claimed = self.queue.claim(
             self.worker_id, lease_seconds=self.lease_seconds
         )

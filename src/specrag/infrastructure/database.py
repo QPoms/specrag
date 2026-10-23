@@ -232,6 +232,226 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX compaction_checkpoints_context
             ON compaction_checkpoints(context_id, created_at);
     """),
+    (7, """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            owner_user_id TEXT NOT NULL REFERENCES users(user_id),
+            context_id TEXT NOT NULL UNIQUE REFERENCES contexts(context_id),
+            status TEXT NOT NULL CHECK (status IN ('active', 'archived')),
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            last_message_sequence INTEGER NOT NULL CHECK (last_message_sequence >= 0),
+            last_user_message_sequence INTEGER NOT NULL CHECK (last_user_message_sequence >= 0),
+            last_event_sequence INTEGER NOT NULL CHECK (last_event_sequence >= 0),
+            active_turn_id TEXT,
+            active_scope_revision_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            CHECK (last_user_message_sequence <= last_message_sequence)
+        );
+        CREATE INDEX conversations_owner_status
+            ON conversations(workspace_id, owner_user_id, status, updated_at);
+        CREATE TABLE conversation_scope_revisions (
+            scope_revision_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id)
+                ON DELETE CASCADE,
+            revision INTEGER NOT NULL CHECK (revision >= 1),
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(conversation_id, revision)
+        );
+        CREATE TABLE conversation_turns (
+            turn_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id)
+                ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK (
+                status IN ('queued', 'running', 'completed', 'failed', 'cancelled')
+            ),
+            operation_key TEXT NOT NULL,
+            request_sha256 TEXT NOT NULL,
+            trigger_message_id TEXT,
+            trigger_result_id TEXT,
+            trigger_run_id TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(conversation_id, operation_key)
+        );
+        CREATE INDEX conversation_turns_status
+            ON conversation_turns(conversation_id, status, created_at);
+        CREATE TABLE conversation_events (
+            event_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id)
+                ON DELETE CASCADE,
+            workspace_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            event_type TEXT NOT NULL,
+            operation_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            UNIQUE(conversation_id, sequence),
+            UNIQUE(conversation_id, operation_key)
+        );
+        CREATE INDEX conversation_events_cursor
+            ON conversation_events(conversation_id, sequence);
+        CREATE TABLE conversation_turn_jobs (
+            turn_id TEXT PRIMARY KEY REFERENCES conversation_turns(turn_id)
+                ON DELETE CASCADE,
+            state TEXT NOT NULL CHECK (state IN ('queued', 'leased')),
+            available_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (
+                (state = 'queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
+                OR
+                (state = 'leased' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+            )
+        );
+        CREATE INDEX conversation_turn_jobs_claimable
+            ON conversation_turn_jobs(
+                state, available_at, lease_expires_at, created_at
+            );
+    """),
+    (8, """
+        ALTER TABLE runs ADD COLUMN conversation_id TEXT
+            REFERENCES conversations(conversation_id);
+        ALTER TABLE runs ADD COLUMN origin_message_id TEXT;
+        ALTER TABLE runs ADD COLUMN origin_turn_id TEXT;
+        ALTER TABLE runs ADD COLUMN submitted_user_sequence INTEGER;
+        ALTER TABLE runs ADD COLUMN submission_operation_key TEXT;
+        ALTER TABLE runs ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE runs ADD COLUMN input_snapshot_json TEXT;
+        CREATE INDEX runs_conversation
+            ON runs(conversation_id, submitted_user_sequence, run_id);
+        CREATE UNIQUE INDEX runs_conversation_submission
+            ON runs(conversation_id, submission_operation_key)
+            WHERE conversation_id IS NOT NULL
+              AND submission_operation_key IS NOT NULL;
+        CREATE TABLE run_outcomes (
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            run_attempt INTEGER NOT NULL CHECK (run_attempt >= 0),
+            content_sha256 TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, run_attempt)
+        );
+        CREATE TABLE run_completion_jobs (
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            run_attempt INTEGER NOT NULL CHECK (run_attempt >= 0),
+            state TEXT NOT NULL CHECK (state IN ('queued', 'leased')),
+            available_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, run_attempt),
+            CHECK (
+                (state = 'queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
+                OR
+                (state = 'leased' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+            )
+        );
+        CREATE INDEX run_completion_jobs_claimable
+            ON run_completion_jobs(
+                state, available_at, lease_expires_at, created_at
+            );
+        CREATE TABLE research_results (
+            result_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            run_attempt INTEGER NOT NULL CHECK (run_attempt >= 0),
+            revision INTEGER NOT NULL CHECK (revision >= 1),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            owner_user_id TEXT NOT NULL REFERENCES users(user_id),
+            conversation_id TEXT REFERENCES conversations(conversation_id),
+            publication_kind TEXT NOT NULL CHECK (
+                publication_kind IN ('final', 'validated_partial')
+            ),
+            evidence_status TEXT NOT NULL CHECK (
+                evidence_status IN ('sufficient', 'partial', 'insufficient', 'conflict')
+            ),
+            content_sha256 TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, run_attempt)
+        );
+        CREATE INDEX research_results_scope
+            ON research_results(
+                workspace_id, owner_user_id, conversation_id, created_at
+            );
+    """),
+    (9, """
+        CREATE TABLE run_completion_receipts (
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            run_attempt INTEGER NOT NULL CHECK (run_attempt >= 0),
+            completed_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, run_attempt)
+        );
+        CREATE TABLE conversation_research_links (
+            link_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id)
+                ON DELETE CASCADE,
+            origin_message_id TEXT NOT NULL,
+            origin_turn_id TEXT NOT NULL REFERENCES conversation_turns(turn_id),
+            tool_call_id TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id) ON DELETE CASCADE,
+            submitted_user_sequence INTEGER NOT NULL
+                CHECK (submitted_user_sequence >= 1),
+            task_status TEXT NOT NULL CHECK (
+                task_status IN (
+                    'queued', 'running', 'completed', 'failed',
+                    'cancelled', 'timed_out'
+                )
+            ),
+            latest_result_id TEXT REFERENCES research_results(result_id),
+            presentation_status TEXT CHECK (
+                presentation_status IS NULL OR presentation_status IN (
+                    'pending', 'queued', 'presented', 'skipped'
+                )
+            ),
+            status_reason TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            presented_at TEXT
+        );
+        CREATE INDEX conversation_research_links_conversation
+            ON conversation_research_links(
+                conversation_id, submitted_user_sequence, created_at
+            );
+        CREATE INDEX conversation_research_links_presentation
+            ON conversation_research_links(
+                conversation_id, presentation_status, updated_at
+            );
+    """),
+    (10, """
+        CREATE TABLE conversation_tool_calls (
+            call_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id)
+                ON DELETE CASCADE,
+            turn_id TEXT NOT NULL REFERENCES conversation_turns(turn_id)
+                ON DELETE CASCADE,
+            tool_name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('proposed', 'running', 'completed', 'failed')
+            ),
+            operation_key TEXT NOT NULL,
+            arguments_sha256 TEXT NOT NULL,
+            tool_result_id TEXT REFERENCES context_tool_results(tool_result_id),
+            run_id TEXT REFERENCES runs(run_id),
+            result_id TEXT REFERENCES research_results(result_id),
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(conversation_id, operation_key)
+        );
+        CREATE INDEX conversation_tool_calls_turn
+            ON conversation_tool_calls(turn_id, created_at, call_id);
+    """),
 )
 
 

@@ -8,6 +8,7 @@ from specrag.models import (
     MemoryProposal,
     MemoryTopic,
     ResearchRun,
+    ResearchOutcome,
     RunEvent,
     SpecFact,
     SpecFactProposal,
@@ -18,12 +19,23 @@ class InMemoryRunStore:
     def __init__(self) -> None:
         self._runs: dict[str, ResearchRun] = {}
         self._events: dict[str, list[RunEvent]] = {}
+        self._outcomes: dict[tuple[str, int], ResearchOutcome] = {}
+        self._completion_jobs: set[tuple[str, int]] = set()
 
     def put(self, run: ResearchRun) -> None:
         self._runs[run.run_id] = run
 
     def get(self, run_id: str) -> ResearchRun | None:
         return self._runs.get(run_id)
+
+    def get_by_submission(
+        self, conversation_id: str, operation_key: str,
+    ) -> ResearchRun | None:
+        return next((
+            run for run in self._runs.values()
+            if run.conversation_id == conversation_id
+            and run.submission_operation_key == operation_key
+        ), None)
 
     def list_runs(
         self, workspace_id: str, *, owner_user_id: str | None, limit: int,
@@ -63,6 +75,28 @@ class InMemoryRunStore:
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
         return tuple(self._events.get(run_id, ()))
+
+    def finalize(
+        self,
+        run: ResearchRun,
+        event: RunEvent,
+        outcome: ResearchOutcome | None,
+    ) -> RunEvent:
+        self.put(run)
+        stored = self.append_event(event)
+        key = (run.run_id, run.run_attempt)
+        if outcome is not None:
+            existing = self._outcomes.get(key)
+            if existing is not None and existing != outcome:
+                raise ValueError("Run attempt Outcome content conflict")
+            self._outcomes[key] = outcome
+        self._completion_jobs.add(key)
+        return stored
+
+    def get_outcome(
+        self, run_id: str, run_attempt: int,
+    ) -> ResearchOutcome | None:
+        return self._outcomes.get((run_id, run_attempt))
 
 
 class InMemorySpecFactStore:

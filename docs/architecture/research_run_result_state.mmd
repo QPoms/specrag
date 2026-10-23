@@ -1,0 +1,13 @@
+flowchart TD
+    Q[Run queued] -->|worker lease| R[Run running]
+    R -->|workflow returns normally| C[Run completed]
+    R -->|provider or internal exception| F[Run failed]
+    R -->|deadline reached| T[Run timed out]
+    R -->|cancellation observed| X[Run cancelled]
+    C -->|all required propositions supported| S[Result sufficient]
+    C -->|some propositions supported| P[Result partial]
+    C -->|no sufficient conclusion| I[Result insufficient]
+    C -->|material conflict unresolved| K[Result conflict]
+    F -.->|only explicitly validated stage output| VP[Result validated partial]
+    T -.->|only explicitly validated stage output| VP
+    X -.->|only explicitly validated stage output| VP

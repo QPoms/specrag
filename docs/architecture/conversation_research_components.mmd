@@ -1,0 +1,21 @@
+flowchart TD
+    Client[Browser research desk]
+    API[HTTP API]
+    Lifecycle[Conversation lifecycle coordinator]
+    Agent[Conversation Agent]
+    MCP[Internal Streamable HTTP MCP server]
+    Research[Research application and RunHarness]
+    Worker[Research Worker and Workflow]
+    Store[(SQLite domain stores and durable queues)]
+
+    Client -->|commands and SSE cursor| API
+    API -->|authorized conversation command| Lifecycle
+    Lifecycle -->|persist messages events and jobs| Store
+    Store -.->|leased Agent Turn job| Agent
+    Agent -->|research tools over Streamable HTTP| MCP
+    MCP -->|authorized submit status or result| Research
+    Research -->|persist Run and enqueue job| Store
+    Store -.->|leased Run job| Worker
+    Worker -->|execute through RunHarness| Research
+    Research -->|atomic terminal Run outcome and completion job| Store
+    Store -.->|leased completion job| Lifecycle

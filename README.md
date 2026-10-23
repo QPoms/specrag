@@ -86,6 +86,23 @@ user question or task
   durable full tool results with bounded pages, structured message-history
   summaries, compaction checkpoints, and reconstruction. It does not replace
   Evidence, Run state, corpus bindings, or Memory.
+- `src/specrag/infrastructure/conversation_store.py` and
+  `conversation_queue.py`: migration-backed private Conversation persistence,
+  atomic canonical-message/Turn/event commits, and a per-Conversation leased
+  Turn queue. Context messages remain the single durable message history.
+- `src/specrag/infrastructure/result_store.py`: immutable, attempt-aware
+  Research Result persistence. Terminal Run state, its Outcome, and one
+  completion-outbox job are committed atomically before a Result is
+  materialized; Result readback never depends on a LangGraph checkpoint.
+- `src/specrag/infrastructure/conversation_lifecycle_store.py` and
+  `completion_queue.py`: the backend-owned completion coordinator boundary.
+  Persistent receipts make outbox acknowledgment replay-safe; atomic
+  reconciliation links Run/Result state into ordered Conversation Events and
+  conditionally queues one automatic Result-presentation Turn.
+- `src/specrag/interfaces/mcp.py`: an internal, loopback-only Streamable HTTP
+  MCP server and standard MCP client wrapper. Its three research tools delegate
+  to the existing Run Worker, lifecycle coordinator, and Result service; no
+  retrieval or evidence logic is implemented in the transport.
 - `src/specrag/access/`: default-deny workspace authorization plus local
   password and session services. Passwords use `scrypt`; the database stores
   only session-token digests. The local CLI keeps its bearer token in the
@@ -418,7 +435,8 @@ specrag-api
 requests pass it as `Authorization: Bearer <token>`; the API never accepts a
 client-supplied trusted user ID, role, or session ID. The current slice exposes
 login/logout, workspace listing/creation and context, member administration,
-authorized Run inspection/cancellation, Memory/SpecFact dashboards, and
+owner-private Conversation CRUD/message/event recovery, authorized Run
+inspection/cancellation, Memory/SpecFact dashboards, and
 proposal review under `/api/v1`. Admins can also list the workspace directory,
 add members, change other members' roles, and remove other memberships; the
 service rejects self-demotion and self-removal. User Core responses are owner-private;
@@ -444,6 +462,76 @@ run `specrag-api --worker-mode external` beside a separate `specrag-worker`
 process against the same database. A broker such as Redis remains a later
 scale-out option.
 
+Persistent Conversations are available under
+`/api/v1/workspaces/{workspace}/conversations`. Creating a user message returns
+HTTP 202 with its queued Conversation Turn. The message body is written to the
+existing `context_messages` table in the same transaction as the Turn, durable
+Turn job, aggregate watermarks, and ordered Conversation Events. Message
+submission requires an operation key and supports an expected revision;
+identical replay returns the original receipt, while stale or conflicting input
+returns `conversation_conflict`. The Conversation event endpoint supports both
+`since` and `Last-Event-ID` for SSE catch-up. Conversations and their message
+bodies remain private to their creator; Workspace administrator status alone
+does not grant read access. The same rule applies to Run questions, Events,
+checkpoints, Results, and evidence. Operators use the content-free
+`/run-metadata` and `/runs/{run_id}/metadata` projections and may cancel a Run
+without receiving private research content.
+
+Every newly submitted Research Run freezes its semantic question, objective,
+conditions, requested specification scope, historical Result references, and
+Conversation origin. Exact corpus versions are bound before execution. Normal
+budget or evidence-insufficiency stops retain `completed` execution status and
+publish an attempt-scoped Outcome; failures, cancellation, and timeout remain
+execution failures. The backend can deterministically materialize the Outcome
+as an immutable Research Result with sufficient, partial, insufficient, or
+conflict evidence status. Results are owner-private and available from
+`/api/v1/workspaces/{workspace}/research-results/{result_id}` and the matching
+Conversation Result collection. Run inspection exposes the latest `result_id`.
+The Lifecycle Worker consumes the completion outbox in embedded and standalone
+Worker modes. It defers presentation while the originating Turn is active,
+skips it after a newer user message or authorization loss, and prevents two
+concurrent Results from creating competing automatic Turns. Conversation detail
+responses include current Turn, audited tool-call, and research-link projections
+so reconnecting clients can combine the database snapshot with SSE catch-up. A
+bounded Conversation Agent and leased Turn Worker now assemble Context Harness
+history, the most recently confirmed research scope, advisory Memory, and
+authorized Results. Every submitted research request records an immutable
+scope revision; condition changes create a new Run and retain the prior Result
+hash relationship. Ordinary dialogue is answered
+without a Run; specification-backed judgments use the MCP research tools or an
+applicable stored Result. Assistant source attribution and citations are
+validated transactionally before publication.
+
+The internal MCP facade is available as `specrag-mcp`. Configure the same
+high-entropy service secret in the issuing application and MCP process through
+`SPECRAG_MCP_DELEGATION_SECRET`, then start it on its loopback default:
+
+```text
+specrag-mcp --database .local/state/specrag.sqlite3
+```
+
+It exposes the Streamable HTTP endpoint at `http://127.0.0.1:8766/mcp` and
+starts the existing Run and Lifecycle Workers for the local deployment. The
+server rejects non-loopback bind addresses in this first release. Its
+`start_research`, `get_research_status`, and `get_research_result` tools never
+accept model-supplied identity, Workspace, or role fields. Instead, the backend
+issues a short-lived signed delegation containing the authorized Conversation
+origin and idempotency key; the MCP server verifies it and re-checks current
+membership before invoking application services. `start_research` waits no more
+than ten seconds for the same durable Run and never converts a wait timeout into
+a second submission or a shorter research budget. MCP calls have a bounded
+client timeout, research inputs cap text/list sizes, and tool arguments are
+strictly validated before their private audit record is written. Conversation
+jobs serialize per Conversation and default to at most two active Turns per
+Workspace user. Archiving is the supported retention action; automatic hard
+deletion remains deliberately deferred.
+
+`specrag.evaluation.conversation` provides deterministic Conversation trace
+checks for direct-versus-research routing, unsupported normative responses,
+condition preservation, Result selection, citation fidelity, context carry-over,
+and compaction recovery. These checks complement the existing answer/evidence
+benchmarks; they do not treat tool invocation alone as evidence validation.
+
 HTTP failures retain the standard `detail` field and include a stable
 machine-readable `code`; request-shape failures use `validation_error`.
 The supported scope is intentionally frozen at this local 3GPP workspace
@@ -453,15 +541,19 @@ providers, production deployment, and automatic whole-Run replay are deferred.
 The first browser client lives under `frontend/`. It is a local React +
 TypeScript + Vite application: the browser stores only the server-issued
 session token in `sessionStorage`, calls the API for workspace membership and
-context, and never opens the SQLite state directly. It currently provides the
-login screen, workspace switcher, research desk, async Run submit entry point,
-an authenticated browser-side SSE reader for live Run stages, and a responsive
-Memory/SpecFact management surface. The admin-only People & Permissions panel
+context, and never opens the SQLite state directly. Its primary research desk
+is a persistent Conversation list and thread with ordinary dialogue,
+multi-turn specification research, inline Turn/tool/Run/Result state, source
+attribution, archive/restore, and cursor-based SSE reconnect recovery. The
+legacy direct Run entry and linked Run/evidence views remain available. It also
+provides a responsive Memory/SpecFact management surface. The admin-only People & Permissions panel
 adds local members, edits roles, confirms removal, and explains each role;
 non-admin clients do not request the member directory. Start
 the API in one terminal and the frontend in another:
 
 ```text
+set SPECRAG_MCP_DELEGATION_SECRET=<at-least-32-byte-shared-secret>
+specrag-mcp
 specrag-api
 cd frontend
 npm install

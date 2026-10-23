@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from specrag.models import RunFailureResponse, RunInspectionResponse
+from specrag.models import (
+    ResearchRun,
+    RunFailureResponse,
+    RunInspectionResponse,
+    RunMetadataResponse,
+)
 from specrag.orchestration import RunInspection
 
 
@@ -74,10 +79,32 @@ def inspection_response(value: RunInspection) -> RunInspectionResponse:
         input_tokens=value.input_tokens,
         output_tokens=value.output_tokens,
         checkpoint_available=value.checkpoint is not None,
+        result_id=value.result_id,
         answer=answer,
         evidence_ids=cited_ids,
         evidence=evidence,
         failure=failure,
+    )
+
+
+def metadata_response(run: ResearchRun) -> RunMetadataResponse:
+    """Remove all research content before returning lifecycle state."""
+
+    return RunMetadataResponse(
+        run_id=run.run_id,
+        workspace_id=run.workspace_id,
+        owner_user_id=run.owner_user_id,
+        status=run.status,
+        stop_reason=run.stop_reason,
+        failure_kind=run.failure_kind,
+        failure_retryable=run.failure_retryable,
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        deadline_at=run.deadline_at,
+        cancel_requested_at=run.cancel_requested_at,
+        retry_of_run_id=run.retry_of_run_id,
+        run_attempt=run.run_attempt,
     )
 
 
@@ -108,4 +135,4 @@ def _failure(value: RunInspection) -> RunFailureResponse | None:
     )
 
 
-__all__ = ["inspection_response"]
+__all__ = ["inspection_response", "metadata_response"]

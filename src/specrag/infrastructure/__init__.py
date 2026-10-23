@@ -9,11 +9,21 @@ from .domain_stores import InMemoryMemoryStore, InMemoryRunStore, InMemorySpecFa
 from .database import DEFAULT_DATABASE_PATH, SQLiteDatabase
 from .corpus_store import SQLiteCorpusStore
 from .context_store import SQLiteContextStore
+from .conversation_store import SQLiteConversationStore
+from .conversation_scope_store import SQLiteConversationScopeStore
+from .conversation_queue import SQLiteConversationTurnQueue
+from .conversation_agent_store import SQLiteConversationAgentStore
+from .completion_queue import SQLiteRunCompletionQueue
+from .conversation_lifecycle_store import (
+    ResearchLinkPending,
+    SQLiteConversationLifecycleStore,
+)
 from .context_summary import StructuredContextSummarizer
 from .threegpp import ThreeGppArchiveProvider, ThreeGppSourceMaterializer
 from .identity_store import SQLiteIdentityStore
 from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
 from .run_queue import SQLiteRunQueue
+from .result_store import SQLiteResearchResultStore
 from .research_planning import (
     RouteGoalAssessment,
     StructuredPlanResponse,
@@ -34,12 +44,20 @@ __all__ = [
     "SQLiteDatabase",
     "SQLiteCorpusStore",
     "SQLiteContextStore",
+    "SQLiteConversationStore",
+    "SQLiteConversationScopeStore",
+    "SQLiteConversationTurnQueue",
+    "SQLiteConversationAgentStore",
+    "SQLiteRunCompletionQueue",
+    "SQLiteConversationLifecycleStore",
+    "ResearchLinkPending",
     "StructuredContextSummarizer",
     "ThreeGppArchiveProvider",
     "ThreeGppSourceMaterializer",
     "SQLiteIdentityStore",
     "SQLiteRunStore",
     "SQLiteRunQueue",
+    "SQLiteResearchResultStore",
     "SQLiteSpecFactStore",
     "SQLiteMemoryStore",
     "RouteGoalAssessment",

@@ -30,6 +30,7 @@ from specrag.models import (
     RunCreateRequest,
     RunBudgetRequest,
     RunInspectionResponse,
+    RunMetadataResponse,
     RunRestartRequest,
     ReviewDecisionRequest,
     SessionResponse,
@@ -43,13 +44,17 @@ from specrag.models import (
 )
 
 from .workspace_services import WorkspaceServices
-from .api_inspection import inspection_response
+from .api_inspection import inspection_response, metadata_response
 from .api_errors import error as _error
 from .api_errors import forbidden as _forbidden
 from .api_errors import install_error_handlers
 from .api_errors import run_not_found as _run_not_found
 from .api_errors import unauthenticated as _unauthenticated
-from specrag.orchestration import RunWorker
+from .conversation_api import install_conversation_routes
+from .result_api import install_result_routes
+from .run_metadata_api import install_run_metadata_routes
+from .conversation_runtime import ApplicationWorkers
+from specrag.orchestration import ConversationTurnWorker, ResearchLifecycleWorker, RunWorker
 
 
 def _services(request: Request) -> WorkspaceServices:
@@ -94,28 +99,30 @@ Context = Annotated[ActorContext, Depends(_workspace_context)]
 def create_app(
     services: WorkspaceServices | None = None,
     worker: RunWorker | None = None,
-    *,
+    lifecycle_worker: ResearchLifecycleWorker | None = None,
+    conversation_worker: ConversationTurnWorker | None = None, *,
     worker_mode: str = "embedded",
 ) -> FastAPI:
     if worker_mode not in {"embedded", "external"}:
         raise ValueError("worker_mode must be 'embedded' or 'external'")
     owns_services = services is None
-    owns_worker = worker is None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.services = services or WorkspaceServices.create()
-        app.state.worker = worker or RunWorker(
-            app.state.services.harness,
-            app.state.services.run_queue,
+        runtime = ApplicationWorkers.create(
+            app.state.services, worker, lifecycle_worker, conversation_worker
         )
+        app.state.worker = runtime.run
+        app.state.lifecycle_worker = runtime.lifecycle
+        app.state.conversation_worker = runtime.conversation
         if worker_mode == "embedded":
-            app.state.worker.start()
+            runtime.start()
         try:
             yield
         finally:
-            if owns_worker and worker_mode == "embedded":
-                app.state.worker.stop()
+            if worker_mode == "embedded":
+                runtime.stop()
             if owns_services:
                 app.state.services.close()
 
@@ -201,6 +208,10 @@ def create_app(
             role=context.role,
             session_expires_at=context.expires_at,
         )
+
+    install_conversation_routes(app)
+    install_result_routes(app)
+    install_run_metadata_routes(app)
 
     @app.get(
         "/api/v1/workspaces/{workspace}/members",
@@ -413,7 +424,6 @@ def create_app(
         except AuthorizationError as exc:
             raise _forbidden() from exc
 
-
     @app.get(
         "/api/v1/workspaces/{workspace}/runs/{run_id}",
         response_model=RunInspectionResponse,
@@ -428,13 +438,13 @@ def create_app(
 
     @app.post(
         "/api/v1/workspaces/{workspace}/runs/{run_id}/cancel",
-        response_model=ResearchRun,
+        response_model=RunMetadataResponse,
     )
     def cancel_run(
         run_id: str, context: Context, services: Services,
-    ) -> ResearchRun:
+    ) -> RunMetadataResponse:
         try:
-            return services.harness.cancel(context, run_id)
+            return metadata_response(services.harness.cancel(context, run_id))
         except (AuthorizationError, KeyError) as exc:
             raise _run_not_found() from exc
 

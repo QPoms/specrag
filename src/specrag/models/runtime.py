@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .corpus import CorpusVersionRef
 from .research import ResearchBudget
+from .results import PriorResultRef, ResearchInputSnapshot, SpecificationScope
 
 
 class _StrictModel(BaseModel):
@@ -64,8 +65,9 @@ class ResearchRun(_StrictModel):
     schema_version: Literal[
         "research-run/v1", "research-run/v1.1", "research-run/v1.2",
         "research-run/v1.3", "research-run/v1.4", "research-run/v1.5",
+        "research-run/v1.6",
     ] = (
-        "research-run/v1.5"
+        "research-run/v1.6"
     )
     run_id: str = Field(pattern=r"^RUN-[0-9A-F]{32}$")
     thread_id: str = Field(pattern=r"^THREAD-[0-9A-F]{32}$")
@@ -104,6 +106,19 @@ class ResearchRun(_StrictModel):
     ] | None = None
     corpus_release: int | None = Field(default=None, ge=1)
     corpus_versions: tuple[CorpusVersionRef, ...] = ()
+    run_attempt: int = Field(default=0, ge=0)
+    conversation_id: str | None = Field(
+        default=None, pattern=r"^CONV-[0-9A-F]{32}$"
+    )
+    origin_message_id: str | None = None
+    origin_turn_id: str | None = Field(
+        default=None, pattern=r"^TURN-[0-9A-F]{32}$"
+    )
+    submitted_user_sequence: int | None = Field(default=None, ge=1)
+    submission_operation_key: str | None = Field(
+        default=None, min_length=1, max_length=300
+    )
+    input_snapshot: ResearchInputSnapshot | None = None
 
     @model_validator(mode="after")
     def _coherent_lifecycle(self) -> "ResearchRun":
@@ -144,11 +159,32 @@ class ResearchRun(_StrictModel):
             if len({item.specification for item in ordered}) != len(ordered):
                 raise ValueError("Run corpus binding selects a specification twice")
             object.__setattr__(self, "corpus_versions", ordered)
+        linkage = (
+            self.origin_message_id,
+            self.origin_turn_id,
+            self.submitted_user_sequence,
+            self.submission_operation_key,
+        )
+        if self.conversation_id is None and any(item is not None for item in linkage):
+            raise ValueError("Conversation Run linkage requires a Conversation")
+        if self.conversation_id is not None and any(item is None for item in linkage):
+            raise ValueError("Conversation Run linkage is incomplete")
+        if self.input_snapshot is not None:
+            if self.input_snapshot.question != self.question:
+                raise ValueError("Run question differs from its input snapshot")
+            if self.input_snapshot.answer_language != self.answer_language:
+                raise ValueError("Run answer language differs from its input snapshot")
+            if self.input_snapshot.detail_level != self.detail_level:
+                raise ValueError("Run detail level differs from its input snapshot")
         return self
 
 
 class ResearchRequest(_StrictModel):
     question: str = Field(min_length=1)
+    objective: str | None = Field(default=None, min_length=1)
+    conditions: tuple[str, ...] = ()
+    requested_scope: SpecificationScope | None = None
+    prior_results: tuple[PriorResultRef, ...] = ()
     release: int = Field(default=17, ge=1)
     answer_language: str = Field(default="English", min_length=1)
     detail_level: str = Field(default="standard", min_length=1)
@@ -156,6 +192,43 @@ class ResearchRequest(_StrictModel):
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
     elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
     development_question_id: str | None = None
+    conversation_id: str | None = Field(
+        default=None, pattern=r"^CONV-[0-9A-F]{32}$"
+    )
+    origin_message_id: str | None = None
+    origin_turn_id: str | None = Field(
+        default=None, pattern=r"^TURN-[0-9A-F]{32}$"
+    )
+    submitted_user_sequence: int | None = Field(default=None, ge=1)
+    submission_operation_key: str | None = Field(
+        default=None, min_length=1, max_length=300
+    )
+
+    @model_validator(mode="after")
+    def _coherent_snapshot(self) -> "ResearchRequest":
+        if len(self.conditions) != len(set(self.conditions)):
+            raise ValueError("research conditions must be unique")
+        if len(self.prior_results) != len(
+            {item.result_id for item in self.prior_results}
+        ):
+            raise ValueError("prior Result IDs must be unique")
+        linkage = (
+            self.origin_message_id,
+            self.origin_turn_id,
+            self.submitted_user_sequence,
+            self.submission_operation_key,
+        )
+        if self.conversation_id is None and any(item is not None for item in linkage):
+            raise ValueError("Conversation request linkage requires a Conversation")
+        if self.conversation_id is not None and any(item is None for item in linkage):
+            raise ValueError("Conversation request linkage is incomplete")
+        if (
+            self.requested_scope is not None
+            and self.requested_scope.policy == "highest_version_within_release"
+            and self.requested_scope.release != self.release
+        ):
+            raise ValueError("request Release differs from requested scope")
+        return self
 
 
 class RunEvent(_StrictModel):

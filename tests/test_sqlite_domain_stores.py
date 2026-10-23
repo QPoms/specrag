@@ -41,7 +41,7 @@ def test_sqlite_enables_foreign_keys_wal_and_records_schema_versions(tmp_path) -
         versions = database.connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in versions] == [1, 2, 3, 4, 5, 6]
+        assert [row[0] for row in versions] == list(range(1, 11))
     finally:
         database.close()
 

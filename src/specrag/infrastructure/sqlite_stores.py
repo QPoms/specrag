@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 
 from specrag.models import (
@@ -11,6 +12,7 @@ from specrag.models import (
     MemoryProposal,
     MemoryTopic,
     ResearchRun,
+    ResearchOutcome,
     RunEvent,
     SpecFact,
     SpecFactProposal,
@@ -20,7 +22,16 @@ from .database import SQLiteDatabase
 
 
 def _json(model) -> str:
-    return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)
+    return json.dumps(
+        model.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _sha256(payload: str) -> str:
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class SQLiteRunStore:
@@ -31,18 +42,42 @@ class SQLiteRunStore:
         with self.database.connection:
             self.database.connection.execute(
                 "INSERT INTO runs(run_id, thread_id, workspace_id, owner_user_id, status, "
-                "cancel_requested_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "cancel_requested_at, payload_json, conversation_id, origin_message_id, "
+                "origin_turn_id, submitted_user_sequence, submission_operation_key, "
+                "run_attempt, input_snapshot_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status=excluded.status, "
-                "cancel_requested_at=excluded.cancel_requested_at, payload_json=excluded.payload_json",
+                "cancel_requested_at=excluded.cancel_requested_at, "
+                "conversation_id=excluded.conversation_id, "
+                "origin_message_id=excluded.origin_message_id, "
+                "origin_turn_id=excluded.origin_turn_id, "
+                "submitted_user_sequence=excluded.submitted_user_sequence, "
+                "submission_operation_key=excluded.submission_operation_key, "
+                "run_attempt=excluded.run_attempt, "
+                "input_snapshot_json=excluded.input_snapshot_json, "
+                "payload_json=excluded.payload_json",
                 (run.run_id, run.thread_id, run.workspace_id, run.owner_user_id,
                  run.status,
                  run.cancel_requested_at.isoformat() if run.cancel_requested_at else None,
-                 _json(run)),
+                 _json(run), run.conversation_id, run.origin_message_id,
+                 run.origin_turn_id, run.submitted_user_sequence,
+                 run.submission_operation_key, run.run_attempt,
+                 _json(run.input_snapshot) if run.input_snapshot else None),
             )
 
     def get(self, run_id: str) -> ResearchRun | None:
         row = self.database.connection.execute(
             "SELECT payload_json FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return ResearchRun.model_validate_json(row[0]) if row else None
+
+    def get_by_submission(
+        self, conversation_id: str, operation_key: str,
+    ) -> ResearchRun | None:
+        row = self.database.connection.execute(
+            "SELECT payload_json FROM runs WHERE conversation_id=? "
+            "AND submission_operation_key=?",
+            (conversation_id, operation_key),
         ).fetchone()
         return ResearchRun.model_validate_json(row[0]) if row else None
 
@@ -96,6 +131,123 @@ class SQLiteRunStore:
             if row is None:
                 raise
             return RunEvent.model_validate_json(row[0])
+
+    def finalize(
+        self,
+        run: ResearchRun,
+        event: RunEvent,
+        outcome: ResearchOutcome | None,
+    ) -> RunEvent:
+        """Atomically publish one terminal attempt and its completion outbox."""
+
+        if run.status not in {"completed", "failed", "cancelled", "timed_out"}:
+            raise ValueError("only a terminal Run can be finalized")
+        if event.event_type != "run_stopped" or event.run_id != run.run_id:
+            raise ValueError("terminal Run requires its run_stopped event")
+        if outcome is not None and (
+            outcome.run_id != run.run_id or outcome.run_attempt != run.run_attempt
+        ):
+            raise ValueError("Research Outcome does not match the Run attempt")
+        connection = self.database.connection
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            updated = connection.execute(
+                "UPDATE runs SET status=?, cancel_requested_at=?, "
+                "conversation_id=?, origin_message_id=?, origin_turn_id=?, "
+                "submitted_user_sequence=?, submission_operation_key=?, run_attempt=?, "
+                "input_snapshot_json=?, payload_json=? WHERE run_id=?",
+                (
+                    run.status,
+                    run.cancel_requested_at.isoformat()
+                    if run.cancel_requested_at else None,
+                    run.conversation_id,
+                    run.origin_message_id,
+                    run.origin_turn_id,
+                    run.submitted_user_sequence,
+                    run.submission_operation_key,
+                    run.run_attempt,
+                    _json(run.input_snapshot) if run.input_snapshot else None,
+                    _json(run),
+                    run.run_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise KeyError(run.run_id)
+            try:
+                connection.execute(
+                    "INSERT INTO run_events(event_id, run_id, workspace_id, sequence, "
+                    "operation_key, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        event.event_id,
+                        event.run_id,
+                        event.workspace_id,
+                        event.sequence,
+                        event.operation_key,
+                        _json(event),
+                    ),
+                )
+                stored_event = event
+            except sqlite3.IntegrityError:
+                row = connection.execute(
+                    "SELECT payload_json FROM run_events WHERE run_id=? "
+                    "AND operation_key=?",
+                    (event.run_id, event.operation_key),
+                ).fetchone()
+                if row is None:
+                    raise
+                stored_event = RunEvent.model_validate_json(row[0])
+            if outcome is not None:
+                payload = _json(outcome)
+                digest = _sha256(payload)
+                connection.execute(
+                    "INSERT OR IGNORE INTO run_outcomes(run_id, run_attempt, "
+                    "content_sha256, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        outcome.run_id,
+                        outcome.run_attempt,
+                        digest,
+                        payload,
+                        outcome.created_at.isoformat(),
+                    ),
+                )
+                existing = connection.execute(
+                    "SELECT content_sha256 FROM run_outcomes WHERE run_id=? "
+                    "AND run_attempt=?",
+                    (outcome.run_id, outcome.run_attempt),
+                ).fetchone()
+                if existing is None or existing[0] != digest:
+                    raise ValueError("Run attempt Outcome content conflict")
+            now = event.occurred_at.isoformat()
+            connection.execute(
+                "INSERT OR IGNORE INTO run_completion_jobs(run_id, run_attempt, "
+                "state, available_at, lease_owner, lease_expires_at, attempts, "
+                "created_at, updated_at) SELECT ?, ?, 'queued', ?, NULL, NULL, 0, ?, ? "
+                "WHERE NOT EXISTS (SELECT 1 FROM run_completion_receipts "
+                "WHERE run_id=? AND run_attempt=?)",
+                (
+                    run.run_id,
+                    run.run_attempt,
+                    now,
+                    now,
+                    now,
+                    run.run_id,
+                    run.run_attempt,
+                ),
+            )
+            connection.commit()
+            return stored_event
+        except BaseException:
+            connection.rollback()
+            raise
+
+    def get_outcome(
+        self, run_id: str, run_attempt: int,
+    ) -> ResearchOutcome | None:
+        row = self.database.connection.execute(
+            "SELECT payload_json FROM run_outcomes WHERE run_id=? AND run_attempt=?",
+            (run_id, run_attempt),
+        ).fetchone()
+        return ResearchOutcome.model_validate_json(row[0]) if row else None
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
         rows = self.database.connection.execute(

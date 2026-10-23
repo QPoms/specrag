@@ -26,6 +26,7 @@ from .retrieval import (
     retrieval_tool_capabilities,
     retrieval_tool_definitions,
 )
+from .research import conversation_research_tool_definitions
 
 __all__ = [
     "RetrievalTool",
@@ -50,4 +51,5 @@ __all__ = [
     "RerankArguments",
     "SemanticSearchArguments",
     "parse_retrieval_tool_arguments",
+    "conversation_research_tool_definitions",
 ]

@@ -1,0 +1,44 @@
+sequenceDiagram
+    autonumber
+    participant U as User client
+    participant A as HTTP API
+    participant T as Turn Worker
+    participant C as Conversation Agent
+    participant M as MCP Server
+    participant R as Research Service
+    participant W as Run Worker
+    participant L as Lifecycle Worker
+    participant D as SQLite
+
+    U->>A: POST message with operation key and expected revision
+    A->>D: append user message event and Turn job atomically
+    A-->>U: 202 Accepted with message and Turn IDs
+    D-->>T: lease Turn job
+    T->>C: invoke with reconstructed context
+    C->>M: start_research(question conditions scope result refs)
+    M->>R: submit under trusted delegated ActorContext
+    R->>D: create one queued Run and Run job
+    par durable research and result publication
+        D-->>W: lease same Run job
+        W->>R: execute through RunHarness
+        R->>D: finalize Run outcome and completion job atomically
+        D-->>L: lease completion job
+        L->>D: publish Result link and events atomically
+    and bounded MCP observation
+        loop until Result terminal Run or 10 second deadline
+            M->>D: observe same Run and Result
+        end
+    end
+    alt Result available within 10 seconds
+        M-->>C: completed with Run and Result
+        C->>D: append cited assistant reply and Turn completion
+        D-->>U: Conversation events over SSE
+    else Run still queued or running
+        M-->>C: accepted with Run ID and status
+        C->>D: append submission acknowledgement and complete Turn
+        D-->>U: Conversation events over SSE
+    else Run reached abnormal terminal state
+        M-->>C: terminal status with safe failure projection
+        C->>D: append failure status and recovery actions
+        D-->>U: Conversation events over SSE
+    end

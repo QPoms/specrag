@@ -62,12 +62,20 @@ from .end_to_end import (
     evaluate_task_success,
     summarize_end_to_end,
 )
+from .conversation import (
+    ConversationEvaluation,
+    ConversationEvaluationCase,
+    evaluate_conversation_case,
+    summarize_conversation_evaluations,
+)
 
 __all__ = [
     "AnswerEvaluation",
     "AnswerUnit",
     "ComponentQuestionAnnotation",
     "ComponentUnitDraft",
+    "ConversationEvaluation",
+    "ConversationEvaluationCase",
     "EvidenceUnit",
     "EfficiencyEvaluation",
     "FinalEvidenceEvaluation",
@@ -98,6 +106,7 @@ __all__ = [
     "ToolCallEfficiency",
     "apply_task_success_review",
     "evaluate_answer_artifact",
+    "evaluate_conversation_case",
     "evaluate_final_evidence_artifact",
     "evaluate_planner_artifact",
     "evaluate_researcher_artifact",
@@ -108,6 +117,7 @@ __all__ = [
     "extract_efficiency",
     "run_first_turn_evaluation",
     "summarize_answer_evaluations",
+    "summarize_conversation_evaluations",
     "summarize_evaluations",
     "summarize_end_to_end",
     "summarize_planner_evaluations",

@@ -9,9 +9,15 @@ from specrag.models.access import ActorContext
 
 Permission = Literal[
     "research.create",
-    "run.read",
-    "run.cancel",
-    "run.resume",
+    "run.metadata.read",
+    "run.content.read",
+    "run.lifecycle.manage",
+    "conversation.create",
+    "conversation.read",
+    "conversation.write",
+    "conversation.archive",
+    "conversation.events.read",
+    "result.read",
     "memory.user.manage",
     "memory.project.read",
     "memory.project.propose",
@@ -32,9 +38,15 @@ class AccessPolicy:
     _ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
         "member": frozenset({
             "research.create",
-            "run.read",
-            "run.cancel",
-            "run.resume",
+            "run.metadata.read",
+            "run.content.read",
+            "run.lifecycle.manage",
+            "conversation.create",
+            "conversation.read",
+            "conversation.write",
+            "conversation.archive",
+            "conversation.events.read",
+            "result.read",
             "memory.user.manage",
             "memory.project.read",
             "memory.project.propose",
@@ -43,9 +55,15 @@ class AccessPolicy:
         }),
         "reviewer": frozenset({
             "research.create",
-            "run.read",
-            "run.cancel",
-            "run.resume",
+            "run.metadata.read",
+            "run.content.read",
+            "run.lifecycle.manage",
+            "conversation.create",
+            "conversation.read",
+            "conversation.write",
+            "conversation.archive",
+            "conversation.events.read",
+            "result.read",
             "memory.user.manage",
             "memory.project.read",
             "memory.project.propose",
@@ -57,9 +75,15 @@ class AccessPolicy:
         }),
         "admin": frozenset({
             "research.create",
-            "run.read",
-            "run.cancel",
-            "run.resume",
+            "run.metadata.read",
+            "run.content.read",
+            "run.lifecycle.manage",
+            "conversation.create",
+            "conversation.read",
+            "conversation.write",
+            "conversation.archive",
+            "conversation.events.read",
+            "result.read",
             "memory.user.manage",
             "memory.project.read",
             "memory.project.propose",
@@ -87,8 +111,22 @@ class AccessPolicy:
         if permission == "memory.user.manage" and owner_user_id is not None:
             if context.user_id != owner_user_id:
                 raise AuthorizationError("access denied")
-        run_owner_scoped = permission in {"run.read", "run.cancel", "run.resume"}
-        if run_owner_scoped and owner_user_id is not None:
+        private_content = permission in {
+            "conversation.read",
+            "conversation.write",
+            "conversation.archive",
+            "conversation.events.read",
+            "result.read",
+            "run.content.read",
+        }
+        if private_content and owner_user_id is not None:
+            if context.user_id != owner_user_id:
+                raise AuthorizationError("access denied")
+        lifecycle_scoped = permission in {
+            "run.metadata.read",
+            "run.lifecycle.manage",
+        }
+        if lifecycle_scoped and owner_user_id is not None:
             if context.role != "admin" and context.user_id != owner_user_id:
                 raise AuthorizationError("access denied")
 

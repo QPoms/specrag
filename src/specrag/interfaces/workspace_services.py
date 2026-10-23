@@ -12,10 +12,17 @@ from specrag.config import REPO_ROOT
 from specrag.infrastructure import (
     DEFAULT_DATABASE_PATH,
     SQLiteContextStore,
+    SQLiteConversationLifecycleStore,
+    SQLiteConversationAgentStore,
+    SQLiteConversationStore,
+    SQLiteConversationScopeStore,
+    SQLiteConversationTurnQueue,
     SQLiteCorpusStore,
     SQLiteDatabase,
     SQLiteIdentityStore,
     SQLiteRunStore,
+    SQLiteRunCompletionQueue,
+    SQLiteResearchResultStore,
     SQLiteRunQueue,
     SQLiteSpecFactStore,
     SQLiteMemoryStore,
@@ -32,8 +39,14 @@ from specrag.models import (
     CorpusBuildResult,
     CorpusVersionRef,
     ResearchRun,
+    SpecificationScope,
 )
-from specrag.orchestration import RunHarness, SQLiteCheckpointManager
+from specrag.orchestration import (
+    ConversationService,
+    ResearchResultService,
+    RunHarness,
+    SQLiteCheckpointManager,
+)
 from specrag.orchestration.application import build_research_application
 from specrag.infrastructure.llm_budget import build_token_budget_manager
 from specrag.specfacts import SpecFactService
@@ -60,6 +73,15 @@ class WorkspaceServices:
     runs: SQLiteRunStore
     run_queue: SQLiteRunQueue
     context_harness: ContextHarness
+    conversation_store: SQLiteConversationStore
+    conversation_scope_store: SQLiteConversationScopeStore
+    conversation_turn_queue: SQLiteConversationTurnQueue
+    conversation_lifecycle_store: SQLiteConversationLifecycleStore
+    conversation_agent_store: SQLiteConversationAgentStore
+    completion_queue: SQLiteRunCompletionQueue
+    conversations: ConversationService
+    result_store: SQLiteResearchResultStore
+    research_results: ResearchResultService
     harness: RunHarness
 
     @classmethod
@@ -88,6 +110,22 @@ class WorkspaceServices:
             recent_history_tokens=(
                 app_config.llm.compaction_recent_history_tokens
             ),
+        )
+        conversation_store = SQLiteConversationStore(database)
+        conversation_scope_store = SQLiteConversationScopeStore(database)
+        conversation_turn_queue = SQLiteConversationTurnQueue(database)
+        conversation_lifecycle_store = SQLiteConversationLifecycleStore(database)
+        conversation_agent_store = SQLiteConversationAgentStore(database)
+        completion_queue = SQLiteRunCompletionQueue(database)
+        conversations = ConversationService(
+            conversation_store,
+            context_harness,
+        )
+        result_store = SQLiteResearchResultStore(database)
+        research_results = ResearchResultService(
+            runs,
+            result_store,
+            conversation_store,
         )
 
         def build_document(document) -> CorpusBuildResult:
@@ -173,27 +211,40 @@ class WorkspaceServices:
             } for fact_id in run.specfact_ids if (item := facts_by_id.get(fact_id)))
             return (*fact_context, *memory_context)
 
-        def corpus_snapshot(release: int) -> tuple[CorpusVersionRef, ...]:
-            active = active_snapshot(corpus_store, release)
-            cfg = load_config().retrieval.model_copy(update={
-                "version_policy": "highest_version_within_release",
-                "target_release": release,
-            })
+        def corpus_snapshot(
+            requested: SpecificationScope,
+        ) -> tuple[CorpusVersionRef, ...]:
+            cfg = load_config().retrieval
+            retrieval_scope = CorpusScope(
+                version_policy=requested.policy,
+                release=requested.release,
+                versions=tuple(
+                    SpecificationVersion(
+                        specification=item.specification,
+                        version=item.version,
+                        release=item.release,
+                    )
+                    for item in requested.versions
+                ),
+            )
             selected = tuple(
                 CorpusVersionRef(
                     specification=document.specification,
                     version=document.version,
                     release=document.release,
                 )
-                for document in discover_source_documents(cfg)
+                for document in discover_source_documents(cfg, retrieval_scope)
                 if document.specification is not None and document.version is not None
             )
-            if (
-                active
-                and {item.specification for item in active}
-                == {item.specification for item in selected}
-            ):
-                return active
+            if requested.policy == "highest_version_within_release":
+                assert requested.release is not None
+                active = active_snapshot(corpus_store, requested.release)
+                if (
+                    active
+                    and {item.specification for item in active}
+                    == {item.specification for item in selected}
+                ):
+                    return active
             return selected
 
         def bind_corpus(run: ResearchRun) -> None:
@@ -250,6 +301,11 @@ class WorkspaceServices:
                 owner_user_id=actor.user_id,
                 run_id=run.run_id,
             ),
+            result_lookup=lambda run_id: (
+                result.result_id
+                if (result := result_store.latest_for_run(run_id)) is not None
+                else None
+            ),
         )
         return cls(
             database,
@@ -266,6 +322,15 @@ class WorkspaceServices:
             runs,
             run_queue,
             context_harness,
+            conversation_store,
+            conversation_scope_store,
+            conversation_turn_queue,
+            conversation_lifecycle_store,
+            conversation_agent_store,
+            completion_queue,
+            conversations,
+            result_store,
+            research_results,
             harness,
         )
 

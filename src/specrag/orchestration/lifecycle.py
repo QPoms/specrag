@@ -26,6 +26,7 @@ def reset_for_resume(
         "finished_at": None,
         "deadline_at": now + timedelta(seconds=elapsed_time_seconds),
         "cancel_requested_at": None,
+        "run_attempt": run.run_attempt + 1,
     })
 
 
@@ -34,6 +35,16 @@ def retry_request(
 ) -> ResearchRequest:
     return ResearchRequest(
         question=run.question,
+        objective=(
+            run.input_snapshot.objective if run.input_snapshot else run.question
+        ),
+        conditions=(run.input_snapshot.conditions if run.input_snapshot else ()),
+        requested_scope=(
+            run.input_snapshot.requested_scope if run.input_snapshot else None
+        ),
+        prior_results=(
+            run.input_snapshot.prior_results if run.input_snapshot else ()
+        ),
         release=run.release,
         answer_language=run.answer_language,
         detail_level=run.detail_level,

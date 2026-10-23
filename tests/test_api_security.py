@@ -278,7 +278,7 @@ def test_api_hides_cross_workspace_and_cross_owner_runs() -> None:
             ).status_code == 200
             assert client.get(
                 path, headers=_authorization(dave_token)
-            ).status_code == 200
+            ).status_code == 404
 
             alice_runs = client.get(
                 f"/api/v1/workspaces/{workspace_a}/runs",
@@ -293,8 +293,22 @@ def test_api_hides_cross_workspace_and_cross_owner_runs() -> None:
                 headers=_authorization(carol_token),
             )
             assert [item["run_id"] for item in alice_runs.json()] == [run.run_id]
-            assert [item["run_id"] for item in admin_runs.json()] == [run.run_id]
+            assert admin_runs.json() == []
             assert member_runs.json() == []
+
+            admin_metadata = client.get(
+                f"/api/v1/workspaces/{workspace_a}/run-metadata",
+                headers=_authorization(dave_token),
+            )
+            assert admin_metadata.status_code == 200
+            assert [item["run_id"] for item in admin_metadata.json()] == [run.run_id]
+            assert "question" not in admin_metadata.json()[0]
+            assert "input_snapshot" not in admin_metadata.json()[0]
+            single_metadata = client.get(
+                f"{path}/metadata", headers=_authorization(dave_token)
+            )
+            assert single_metadata.status_code == 200
+            assert single_metadata.json() == admin_metadata.json()[0]
 
             denied = client.get(path, headers=_authorization(carol_token))
             unknown = client.get(
@@ -312,6 +326,9 @@ def test_api_hides_cross_workspace_and_cross_owner_runs() -> None:
             )
             assert denied_events.status_code == unknown_events.status_code == 404
             assert denied_events.json() == unknown_events.json()
+            assert client.get(
+                f"{path}/events", headers=_authorization(dave_token)
+            ).status_code == 404
 
             cross_workspace = client.get(
                 f"/api/v1/workspaces/{workspace_b}/runs/{run.run_id}",
@@ -323,6 +340,7 @@ def test_api_hides_cross_workspace_and_cross_owner_runs() -> None:
             )
             assert cancelled.status_code == 200
             assert cancelled.json()["cancel_requested_at"] is not None
+            assert "question" not in cancelled.json()
     finally:
         _close(services, database_path)
 

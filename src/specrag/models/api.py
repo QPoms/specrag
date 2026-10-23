@@ -8,9 +8,17 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .access import Membership, User, Workspace
+from .context import ContextMessage
+from .conversation import (
+    Conversation,
+    ConversationEvent,
+    ConversationResearchLink,
+    ConversationToolCall,
+    ConversationTurn,
+)
 from .memory import MemoryEntry, MemoryProposal, MemoryTopic
 from .research import CandidateEvidence, ResearchBudget
-from .runtime import ResearchRun, RunEvent, RunFailureKind
+from .runtime import ResearchRun, RunEvent, RunFailureKind, RunStatus, RunStopReason
 from .specfacts import SpecFact, SpecFactProposal
 
 
@@ -38,6 +46,41 @@ class SessionResponse(_StrictTransport):
 
 class WorkspaceCreateRequest(_StrictTransport):
     name: str = Field(min_length=1, max_length=200)
+
+
+class ConversationCreateRequest(_StrictTransport):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ConversationMessageCreateRequest(_StrictTransport):
+    text: str = Field(min_length=1, max_length=20000)
+    operation_key: str = Field(min_length=1, max_length=200)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ConversationStatusRequest(_StrictTransport):
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ConversationDetailResponse(_StrictTransport):
+    conversation: Conversation
+    messages: tuple[ContextMessage, ...] = ()
+    turns: tuple[ConversationTurn, ...] = ()
+    tool_calls: tuple[ConversationToolCall, ...] = ()
+    research_links: tuple[ConversationResearchLink, ...] = ()
+    event_cursor: int = Field(ge=0)
+
+
+class ConversationMessageAcceptedResponse(_StrictTransport):
+    message: ContextMessage
+    turn: ConversationTurn
+    conversation_revision: int = Field(ge=0)
+    event_cursor: int = Field(ge=1)
+
+
+class ConversationStatusResponse(_StrictTransport):
+    conversation: Conversation
+    event_cursor: int = Field(ge=1)
 
 
 class RunCreateRequest(_StrictTransport):
@@ -100,10 +143,34 @@ class RunInspectionResponse(_StrictTransport):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     checkpoint_available: bool
+    result_id: str | None = Field(
+        default=None, pattern=r"^RESULT-[0-9A-F]{32}$"
+    )
     answer: str | None = None
     evidence_ids: tuple[str, ...] = ()
     evidence: tuple[CandidateEvidence, ...] = ()
     failure: "RunFailureResponse | None" = None
+
+
+class RunMetadataResponse(_StrictTransport):
+    """Content-free Run lifecycle projection safe for workspace operators."""
+
+    run_id: str = Field(pattern=r"^RUN-[0-9A-F]{32}$")
+    workspace_id: str = Field(min_length=1)
+    owner_user_id: str = Field(min_length=1)
+    status: RunStatus
+    stop_reason: RunStopReason | None = None
+    failure_kind: RunFailureKind | None = None
+    failure_retryable: bool | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    deadline_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    retry_of_run_id: str | None = Field(
+        default=None, pattern=r"^RUN-[0-9A-F]{32}$"
+    )
+    run_attempt: int = Field(default=0, ge=0)
 
 
 class RunFailureResponse(_StrictTransport):
@@ -146,6 +213,12 @@ class LogoutResponse(_StrictTransport):
 
 __all__ = [
     "ApiErrorResponse",
+    "ConversationCreateRequest",
+    "ConversationDetailResponse",
+    "ConversationMessageAcceptedResponse",
+    "ConversationMessageCreateRequest",
+    "ConversationStatusRequest",
+    "ConversationStatusResponse",
     "LoginRequest",
     "LogoutResponse",
     "MemberCreateRequest",
@@ -155,6 +228,7 @@ __all__ = [
     "MemoryTopicResponse",
     "ReviewDecisionRequest",
     "RunInspectionResponse",
+    "RunMetadataResponse",
     "RunFailureResponse",
     "RunCreateRequest",
     "RunBudgetRequest",

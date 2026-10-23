@@ -201,8 +201,9 @@ def test_run_snapshot_preserves_historical_user_and_project_revisions() -> None:
         now=NOW,
     )
     memory.retract(_context(), private.memory_id, now=NOW + timedelta(minutes=1))
-    admin = _context("admin", role="admin")
-    assert memory.snapshot_for_run(admin, _run(private.memory_id, shared.memory_id)) == tuple(
+    assert memory.snapshot_for_run(
+        _context(), _run(private.memory_id, shared.memory_id)
+    ) == tuple(
         sorted((private.model_copy(update={"status": "retracted", "updated_at": NOW + timedelta(minutes=1)}), shared), key=lambda item: item.memory_id)
     )
     with pytest.raises(AuthorizationError):

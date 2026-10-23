@@ -102,6 +102,118 @@ export type RunEvent = {
   payload?: Record<string, unknown>;
 };
 
+export type Conversation = {
+  conversation_id: string;
+  workspace_id: string;
+  owner_user_id: string;
+  context_id: string;
+  status: "active" | "archived";
+  title: string | null;
+  revision: number;
+  last_message_sequence: number;
+  last_user_message_sequence: number;
+  active_turn_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationMessageContent = {
+  text: string;
+  source_kind: "direct_conversation" | "research_result" | "historical_result_readback" | null;
+  research_result_ids: string[];
+  run_ids: string[];
+  citations: string[];
+  status_kind: Run["status"] | null;
+};
+
+export type ConversationMessage = {
+  message_id: string;
+  context_id: string;
+  sequence: number;
+  role: "system" | "user" | "assistant" | "tool";
+  content: ConversationMessageContent | Record<string, unknown>;
+  token_estimate: number;
+  created_at: string;
+  turn_id: string | null;
+};
+
+export type ConversationTurn = {
+  turn_id: string;
+  conversation_id: string;
+  trigger: "user_message" | "research_result_ready";
+  trigger_message_id: string | null;
+  trigger_result_id: string | null;
+  trigger_run_id: string | null;
+  submitted_user_sequence: number;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  reply_message_id: string | null;
+  stop_reason: string | null;
+  failure_kind: string | null;
+  failure_message: string | null;
+  created_at: string;
+};
+
+export type ConversationToolCall = {
+  call_id: string;
+  turn_id: string;
+  tool_name: string;
+  status: "proposed" | "running" | "completed" | "failed";
+  run_id: string | null;
+  result_id: string | null;
+  safe_error: string | null;
+  created_at: string;
+};
+
+export type ConversationResearchLink = {
+  link_id: string;
+  origin_message_id: string;
+  origin_turn_id: string;
+  tool_call_id: string;
+  run_id: string;
+  submitted_user_sequence: number;
+  task_status: Run["status"];
+  latest_result_id: string | null;
+  presentation_status: "pending" | "queued" | "presented" | "skipped" | null;
+  status_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationEvent = {
+  event_id: string;
+  conversation_id: string;
+  sequence: number;
+  event_type: string;
+  occurred_at: string;
+  message_id: string | null;
+  turn_id: string | null;
+  call_id: string | null;
+  run_id: string | null;
+  result_id: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type ConversationDetail = {
+  conversation: Conversation;
+  messages: ConversationMessage[];
+  turns: ConversationTurn[];
+  tool_calls: ConversationToolCall[];
+  research_links: ConversationResearchLink[];
+  event_cursor: number;
+};
+
+export type AcceptedConversationMessage = {
+  message: ConversationMessage;
+  turn: ConversationTurn;
+  conversation_revision: number;
+  event_cursor: number;
+};
+
+export type ConversationStatusResponse = {
+  conversation: Conversation;
+  event_cursor: number;
+};
+
 export type MemoryEntry = {
   memory_id: string;
   scope: "user" | "workspace";
@@ -320,6 +432,50 @@ export class SpecRagApi {
     );
   }
 
+  conversations(workspaceId: string, limit = 100): Promise<Conversation[]> {
+    return this.request<Conversation[]>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations?limit=${limit}`,
+    );
+  }
+
+  createConversation(workspaceId: string, title?: string): Promise<ConversationDetail> {
+    return this.request<ConversationDetail>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+      { method: "POST", body: { title: title?.trim() || null } },
+    );
+  }
+
+  conversation(workspaceId: string, conversationId: string): Promise<ConversationDetail> {
+    return this.request<ConversationDetail>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  }
+
+  appendConversationMessage(
+    workspaceId: string,
+    conversationId: string,
+    text: string,
+    operationKey: string,
+    expectedRevision: number,
+  ): Promise<AcceptedConversationMessage> {
+    return this.request<AcceptedConversationMessage>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { method: "POST", body: { text, operation_key: operationKey, expected_revision: expectedRevision } },
+    );
+  }
+
+  setConversationArchived(
+    workspaceId: string,
+    conversationId: string,
+    archived: boolean,
+    expectedRevision: number,
+  ): Promise<ConversationStatusResponse> {
+    return this.request<ConversationStatusResponse>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/${archived ? "archive" : "unarchive"}`,
+      { method: "POST", body: { expected_revision: expectedRevision } },
+    );
+  }
+
   submitRun(workspaceId: string, question: string, release: number): Promise<RunInspection> {
     return this.request<RunInspection>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/runs`, {
       method: "POST",
@@ -434,6 +590,46 @@ export class SpecRagApi {
           } catch {
             // Ignore a malformed event rather than breaking the active stream.
           }
+        }
+        if (chunk.done) break;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  async streamConversationEvents(
+    workspaceId: string,
+    conversationId: string,
+    since: number,
+    onEvent: (event: ConversationEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!this.token) throw new ApiError(401, "authentication required", "authentication_required");
+    const path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/events?since=${since}&wait_seconds=30`;
+    const response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${this.token}`,
+        "Last-Event-ID": String(since),
+      },
+      signal,
+    });
+    if (!response.ok) throw new ApiError(response.status, `Conversation stream failed (${response.status})`);
+    if (!response.body) throw new Error("Conversation stream has no response body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        buffer += decoder.decode(chunk.value ?? new Uint8Array(), { stream: !chunk.done });
+        const records = buffer.split("\n\n");
+        buffer = records.pop() ?? "";
+        for (const record of records) {
+          const data = record.split("\n").find((line) => line.startsWith("data:"));
+          if (!data) continue;
+          try { onEvent(JSON.parse(data.slice(5).trim()) as ConversationEvent); } catch { /* ignore malformed event */ }
         }
         if (chunk.done) break;
       }

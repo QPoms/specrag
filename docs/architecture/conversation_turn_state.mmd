@@ -1,0 +1,11 @@
+stateDiagram-v2
+    [*] --> queued: durable job created
+    queued --> running: worker claims lease
+    running --> completed: assistant output committed
+    running --> failed: safe terminal failure committed
+    running --> cancelled: conversation archived or cancellation requested
+    running --> queued: lease expires before terminal commit
+    queued --> cancelled: cancelled before claim
+    completed --> [*]
+    failed --> [*]
+    cancelled --> [*]
