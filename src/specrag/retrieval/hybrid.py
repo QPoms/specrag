@@ -7,6 +7,7 @@ their single-responsibility modules and are composed here.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from ..config import AppConfig, RetrievalCfg, load_config
@@ -50,6 +51,7 @@ class HybridMarkdownRetriever:
         cfg: RetrievalCfg,
         *,
         corpus_scope: CorpusScope | None = None,
+        allow_index_build: bool = True,
     ):
         self.cfg = cfg
         self.corpus_scope = corpus_scope or corpus_scope_from_config(cfg)
@@ -61,6 +63,11 @@ class HybridMarkdownRetriever:
         )
         index_root = repository_path(cfg.index_dir, "retrieval index directory")
         snapshot = index_root / self.fingerprint
+        if not snapshot.is_dir():
+            compatible = self._compatible_snapshot(index_root)
+            if compatible is not None:
+                snapshot, compatible_manifest = compatible
+                self.fingerprint = compatible_manifest.index_fingerprint
         self.index_manifest_path = relative_repository_path(snapshot / "manifest.json")
         chunks_path = snapshot / "chunks.jsonl"
         manifest_path = snapshot / "manifest.json"
@@ -78,6 +85,10 @@ class HybridMarkdownRetriever:
                     cached_chunks = loaded_chunks
             except (OSError, ValueError):
                 cached_chunks = None
+        if cached_chunks is None and not allow_index_build:
+            raise RuntimeError(
+                "retrieval index is not ready: chunk snapshot is missing"
+            )
         self.chunks = cached_chunks or chunk_source_documents(self.documents, cfg)
         manifest = RetrievalIndexManifest(
             index_fingerprint=self.fingerprint,
@@ -107,9 +118,35 @@ class HybridMarkdownRetriever:
                 embedding_model=cfg.embedding_model,
                 document_text=searchable_text,
                 retain_extra=True,
+                add_missing=allow_index_build,
             )
         except Exception as exc:
             self.vector_error = f"{type(exc).__name__}: {exc}"
+            if not allow_index_build:
+                raise RuntimeError(
+                    f"retrieval index is not ready: {self.vector_error}"
+                ) from exc
+
+    def _compatible_snapshot(
+        self, index_root: Path,
+    ) -> tuple[Path, RetrievalIndexManifest] | None:
+        for manifest_path in sorted(index_root.glob("*/manifest.json")):
+            try:
+                manifest = RetrievalIndexManifest.model_validate_json(
+                    manifest_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                continue
+            if (
+                manifest.embedding_model == self.cfg.embedding_model
+                and manifest.chunk_characters == self.cfg.chunk_characters
+                and manifest.chunk_overlap_characters
+                == self.cfg.chunk_overlap_characters
+                and manifest.documents == self.documents
+                and (manifest_path.parent / "chunks.jsonl").is_file()
+            ):
+                return manifest_path.parent, manifest
+        return None
 
     def _dense(
         self,

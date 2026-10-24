@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Role, SpecRagApi, WorkspaceMember } from "./api";
+import { zhDateOnly, zhLabel } from "./locale";
 
 type Props = {
   api: SpecRagApi;
@@ -9,9 +10,9 @@ type Props = {
 };
 
 const roleCopy: Record<Role, string> = {
-  member: "Runs research, reads shared knowledge, and proposes new facts.",
-  reviewer: "Also reviews knowledge and manages Project and Topic Memory.",
-  admin: "Also manages members and can inspect every Run in the workspace.",
+  member: "执行研究、读取共享知识并提交新的事实建议。",
+  reviewer: "还可审核知识，并管理项目记忆和主题记忆。",
+  admin: "还可管理成员，并查看工作空间中的全部研究任务。",
 };
 
 export function MemberPanel({ api, workspaceId, currentUserId, role }: Props) {
@@ -27,7 +28,7 @@ export function MemberPanel({ api, workspaceId, currentUserId, role }: Props) {
     try {
       setMembers(await api.members(workspaceId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load members");
+      setError(err instanceof Error ? err.message : "无法加载成员列表");
     } finally {
       setLoading(false);
     }
@@ -49,7 +50,7 @@ export function MemberPanel({ api, workspaceId, currentUserId, role }: Props) {
 
   if (role !== "admin") return <section className="member-panel member-locked" id="members">
     <div className="member-lock-mark">◇</div>
-    <div><p className="eyebrow">Workspace administration</p><h2>Member management is admin-only</h2><p>Your <strong>{role}</strong> role can use research and shared knowledge without receiving the workspace account directory.</p></div>
+    <div><p className="eyebrow">工作空间管理</p><h2>仅管理员可以管理成员</h2><p>你当前的<strong>{zhLabel(role)}</strong>角色可以使用研究和共享知识，但无权查看工作空间账户目录。</p></div>
   </section>;
 
   async function mutate(action: () => Promise<unknown>, message: string) {
@@ -60,23 +61,23 @@ export function MemberPanel({ api, workspaceId, currentUserId, role }: Props) {
       setNotice(message);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Membership update failed");
+      setError(err instanceof Error ? err.message : "成员信息更新失败");
       throw err;
     }
   }
 
   return <section className="member-panel" id="members">
     <div className="member-heading">
-      <div><p className="eyebrow">Workspace administration</p><h2>People &amp; permissions</h2><p>Keep access intentional. Roles affect research visibility, knowledge review, and workspace administration.</p></div>
-      <div className="member-total"><strong>{members.length.toString().padStart(2, "0")}</strong><span>members</span></div>
+      <div><p className="eyebrow">工作空间管理</p><h2>成员与权限</h2><p>谨慎授予访问权限。角色会影响研究可见性、知识审核和工作空间管理。</p></div>
+      <div className="member-total"><strong>{members.length.toString().padStart(2, "0")}</strong><span>位成员</span></div>
     </div>
-    <div className="role-summary">{(["member", "reviewer", "admin"] as Role[]).map((item) => <div key={item}><span>{item}</span><strong>{counts[item]}</strong><small>{roleCopy[item]}</small></div>)}</div>
+    <div className="role-summary">{(["member", "reviewer", "admin"] as Role[]).map((item) => <div key={item}><span>{zhLabel(item)}</span><strong>{counts[item]}</strong><small>{roleCopy[item]}</small></div>)}</div>
     {notice && <div className="member-notice success">{notice}</div>}
     {error && <div className="member-notice error" role="alert">{error}</div>}
     <div className="member-layout">
       <div className="member-directory">
-        <div className="member-subheading"><div><h3>Workspace directory</h3><p>Roles take effect on the next authorized request.</p></div><button className="quiet-button" onClick={() => void load()} disabled={loading}>Refresh</button></div>
-        {loading && members.length === 0 ? <div className="member-loading"><span className="loader" /> Loading members…</div>
+        <div className="member-subheading"><div><h3>工作空间成员目录</h3><p>角色变更将在下一次授权请求时生效。</p></div><button className="quiet-button" onClick={() => void load()} disabled={loading}>刷新</button></div>
+        {loading && members.length === 0 ? <div className="member-loading"><span className="loader" /> 正在加载成员…</div>
           : <div className="member-list">{members.map((item) => <MemberRow
             key={item.user.user_id}
             item={item}
@@ -84,13 +85,13 @@ export function MemberPanel({ api, workspaceId, currentUserId, role }: Props) {
             onRole={async (nextRole) => {
               await mutate(
                 () => api.setMemberRole(workspaceId, item.user.username, nextRole),
-                `${item.user.username} is now ${nextRole}.`,
+                `${item.user.username} 现在是${zhLabel(nextRole)}。`,
               );
             }}
             onRemove={async () => {
               await mutate(
                 () => api.removeMember(workspaceId, item.user.username),
-                `${item.user.username} was removed from this workspace.`,
+                `已将 ${item.user.username} 移出此工作空间。`,
               );
             }}
           />)}</div>}
@@ -98,7 +99,7 @@ export function MemberPanel({ api, workspaceId, currentUserId, role }: Props) {
       <AddMemberForm onAdd={async (username, password, nextRole) => {
         await mutate(
           () => api.addMember(workspaceId, username, password, nextRole),
-          `${username} can now access this workspace.`,
+          `${username} 现在可以访问此工作空间。`,
         );
       }} />
     </div>
@@ -128,11 +129,11 @@ function MemberRow({ item, isCurrent, onRole, onRemove }: {
 
   return <article className="member-row">
     <span className="member-avatar">{initials}</span>
-    <div className="member-identity"><strong>{item.user.username}{isCurrent && <em>You</em>}</strong><small>Joined {formatDate(item.membership.created_at)} · {item.user.status}</small></div>
-    <label className="role-select"><span className="sr-only">Role for {item.user.username}</span><select value={item.membership.role} disabled={busy || isCurrent} onChange={(event) => void changeRole(event.target.value as Role)}><option value="member">Member</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></label>
-    {isCurrent ? <span className="self-protected">Protected</span> : confirming
-      ? <div className="remove-confirm"><button onClick={() => void remove()} disabled={busy}>Remove</button><button onClick={() => setConfirming(false)} disabled={busy}>Keep</button></div>
-      : <button className="remove-member" onClick={() => setConfirming(true)} aria-label={`Remove ${item.user.username}`}>×</button>}
+    <div className="member-identity"><strong>{item.user.username}{isCurrent && <em>你</em>}</strong><small>加入于 {formatDate(item.membership.created_at)} · {zhLabel(item.user.status)}</small></div>
+    <label className="role-select"><span className="sr-only">{item.user.username} 的角色</span><select value={item.membership.role} disabled={busy || isCurrent} onChange={(event) => void changeRole(event.target.value as Role)}><option value="member">成员</option><option value="reviewer">审核员</option><option value="admin">管理员</option></select></label>
+    {isCurrent ? <span className="self-protected">受保护</span> : confirming
+      ? <div className="remove-confirm"><button onClick={() => void remove()} disabled={busy}>移除</button><button onClick={() => setConfirming(false)} disabled={busy}>保留</button></div>
+      : <button className="remove-member" onClick={() => setConfirming(true)} aria-label={`移除 ${item.user.username}`}>×</button>}
   </article>;
 }
 
@@ -153,7 +154,7 @@ function AddMemberForm({ onAdd }: { onAdd: (username: string, password: string, 
       setPassword("");
       setRole("member");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to add member");
+      setError(err instanceof Error ? err.message : "无法添加成员");
     } finally {
       setBusy(false);
     }
@@ -161,19 +162,19 @@ function AddMemberForm({ onAdd }: { onAdd: (username: string, password: string, 
 
   return <aside className="add-member-card">
     <span className="add-member-index">＋</span>
-    <p className="eyebrow">Grant access</p>
-    <h3>Add a workspace member</h3>
-    <p>Create a local account or add an existing account by username. Existing account passwords are never changed here.</p>
+    <p className="eyebrow">授予访问权限</p>
+    <h3>添加工作空间成员</h3>
+    <p>创建本地账户，或通过用户名添加已有账户。此操作不会修改已有账户的密码。</p>
     <form onSubmit={submit}>
-      <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" required /></label>
-      <label>Initial password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength={10} required /></label>
-      <label>Role<select value={role} onChange={(event) => setRole(event.target.value as Role)}><option value="member">Member</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></label>
+      <label>用户名<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" required /></label>
+      <label>初始密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength={10} required /></label>
+      <label>角色<select value={role} onChange={(event) => setRole(event.target.value as Role)}><option value="member">成员</option><option value="reviewer">审核员</option><option value="admin">管理员</option></select></label>
       {error && <small className="review-error">{error}</small>}
-      <button className="primary-button" disabled={busy}>{busy ? "Adding…" : "Add member"}</button>
+      <button className="primary-button" disabled={busy}>{busy ? "添加中…" : "添加成员"}</button>
     </form>
   </aside>;
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return zhDateOnly(value, { month: "short", day: "numeric", year: "numeric" });
 }

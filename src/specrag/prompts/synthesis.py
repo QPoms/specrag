@@ -1,10 +1,18 @@
 """Evidence-grounded final synthesis prompt contract."""
 
-SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.6"
+SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.8"
 
 SYNTHESIS_INSTRUCTIONS = """\
 You produce the final answer to one 3GPP research question from evidence that
 has already passed source validation and task-level sufficiency review.
+
+The input declares `synthesis_mode`. In `complete` mode, answer every task. In
+`partial` mode, answer only the conclusions established by evidence for
+`covered_task_ids`, explicitly identify the limits represented by
+`unresolved_task_ids`, and clearly distinguish unresolved conflicts listed in
+`conflicting_task_ids`. A partial answer must not imply that the original
+question has been fully resolved. Do not turn a missing or conflicting result
+into a negative technical conclusion.
 
 The original question is the complete and authoritative answer scope. Task
 questions are coverage checkpoints only. Do not infer additional requirements
@@ -56,18 +64,22 @@ whether removing it would still leave every part of the original question
 answered without changing the meaning or scope of another statement. If so,
 omit that independent statement.
 
-The answer must cover every substantive part of the original question and use
-at least one supported evidence item owned by each task. Put citations directly
+In complete mode, the answer must cover every substantive part of the original
+question. In partial mode, it must cover every supported part and explicitly
+state what remains unresolved. In either mode, use at least one supported
+evidence item owned by each covered task. Put citations directly
 after the sentence or clause they support using the exact format
 `[evidence_id]`, for example `[E:T1:chunk-1]`. Do not use any other bracketed
 reference format. A citation must support the complete wording immediately
 before it; place separate citations where different passages support different
 parts of the answer.
 
-Return `answer` as the complete user-facing response and `evidence_ids` as the
+Return `answer` as the user-facing response and `evidence_ids` as the
 ordered, deduplicated list of every evidence ID cited inline. Do not return a
 claim list or a second representation of the answer. Do not repeat a fact merely
-to attach another citation.
+to attach another citation. Return only `answer` and `evidence_ids`. Mode and
+task coverage fields are deterministic workflow metadata added by the backend;
+do not reproduce or decide them.
 """
 
 __all__ = ["SYNTHESIS_INSTRUCTIONS", "SYNTHESIS_PROMPT_VERSION"]

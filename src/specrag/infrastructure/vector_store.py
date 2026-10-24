@@ -27,8 +27,9 @@ def open_chroma_collection(
     embedding_model: str,
     document_text: Callable[[Any], str],
     retain_extra: bool = False,
+    add_missing: bool = True,
 ):
-    """Open a local collection and add missing immutable source chunks."""
+    """Open a local collection and optionally add missing source chunks."""
 
     import chromadb
     from chromadb.utils import embedding_functions
@@ -40,11 +41,20 @@ def open_chroma_collection(
     )
     client = chromadb.PersistentClient(path=str(directory / "chroma"))
     name = "specification_evidence"
-    collection = client.get_or_create_collection(
-        name,
-        embedding_function=embedding,
-        metadata={"hnsw:space": "cosine"},
-    )
+    if add_missing:
+        collection = client.get_or_create_collection(
+            name,
+            embedding_function=embedding,
+            metadata={"hnsw:space": "cosine"},
+        )
+    else:
+        try:
+            collection = client.get_collection(
+                name,
+                embedding_function=embedding,
+            )
+        except Exception as exc:
+            raise RuntimeError("vector index is not ready") from exc
     expected_ids = {item.chunk_id for item in chunks}
     existing_ids = set(collection.get(include=[]).get("ids", []))
     if not retain_extra and not existing_ids.issubset(expected_ids):
@@ -56,6 +66,10 @@ def open_chroma_collection(
         )
         existing_ids = set()
     missing = tuple(item for item in chunks if item.chunk_id not in existing_ids)
+    if missing and not add_missing:
+        raise RuntimeError(
+            f"vector index is not ready: {len(missing)} chunks are missing"
+        )
     for offset in range(0, len(missing), 128):
         batch = missing[offset : offset + 128]
         collection.add(

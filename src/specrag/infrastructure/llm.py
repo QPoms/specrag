@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from specrag.config import AppConfig, load_config
 from specrag.context import ContextBudgetExceededError, ModelProfileResolver, TokenBudgetManager
@@ -26,6 +27,7 @@ from specrag.models import (
     NativeFunctionDefinition,
 )
 from .llm_budget import build_token_budget_manager
+from .model_deadline import ModelCallDeadline
 from .llm_contracts import (
     LLMApiMode,
     LLMCallReceipt,
@@ -40,6 +42,7 @@ from .api_errors import (
     StructuredLLMError,
     classify_provider_error,
     is_retryable_provider_error,
+    safe_structured_llm_error,
 )
 
 
@@ -73,39 +76,6 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _safe_error(
-    exc: Exception,
-    *,
-    attempt_count: int | None = None,
-    exhausted_models: int | None = None,
-) -> StructuredLLMError:
-    """Do not persist provider bodies, headers, request objects, or prompts."""
-
-    failure = classify_provider_error(exc)
-    details = [type(exc).__name__]
-    request_id = getattr(exc, "request_id", None)
-    for label, value in (
-        ("status", getattr(exc, "status_code", None)),
-        ("code", getattr(exc, "code", None)),
-        ("param", getattr(exc, "param", None)),
-    ):
-        if isinstance(value, (str, int)) and str(value):
-            details.append(f"{label}={str(value)[:80]}")
-    if isinstance(request_id, str) and request_id:
-        details.append(f"request_id_sha256={_sha256(request_id)[:16]}")
-    if attempt_count is not None:
-        details.append(f"attempts={attempt_count}")
-    if exhausted_models is not None:
-        details.append(f"models={exhausted_models}")
-    return StructuredLLMError(
-        "structured LLM request failed (" + ", ".join(details) + ")",
-        failure_kind=failure.kind,
-        retryable=failure.retryable,
-        status_code=failure.status_code,
-        attempt_count=attempt_count,
-    )
-
-
 def _is_retryable_provider_error(exc: Exception) -> bool:
     return is_retryable_provider_error(exc)
 
@@ -124,6 +94,7 @@ class OpenAIStructuredClient:
         "_reasoning_effort",
         "_retry_initial_delay_seconds",
         "_retry_max_delay_seconds",
+        "_deadline",
     )
 
     def __init__(
@@ -140,6 +111,7 @@ class OpenAIStructuredClient:
         fallback_models: tuple[str, ...] = (),
         retry_initial_delay_seconds: float = 1.0,
         retry_max_delay_seconds: float = 15.0,
+        deadline_at: datetime | None = None,
         client: Any | None = None,
         budget_manager: TokenBudgetManager | None = None,
     ) -> None:
@@ -166,6 +138,9 @@ class OpenAIStructuredClient:
         self._max_retries = max_retries
         self._retry_initial_delay_seconds = retry_initial_delay_seconds
         self._retry_max_delay_seconds = retry_max_delay_seconds
+        self._deadline = ModelCallDeadline(
+            timeout_seconds, deadline_at, self._api_mode.value
+        )
         self._budget_manager = budget_manager or TokenBudgetManager(
             ModelProfileResolver(ModelContextProfile(
                 model_id="default",
@@ -281,6 +256,7 @@ class OpenAIStructuredClient:
                             reasoning={"effort": self._reasoning_effort},
                             max_output_tokens=self._max_output_tokens,
                             store=False,
+                            timeout=self._deadline.request_timeout(),
                         )
                         status = getattr(raw, "status", "completed")
                         if status != "completed":
@@ -306,6 +282,7 @@ class OpenAIStructuredClient:
                             reasoning_effort=self._reasoning_effort,
                             max_completion_tokens=self._max_output_tokens,
                             store=False,
+                            timeout=self._deadline.request_timeout(),
                         )
                         choice = raw.choices[0]
                         finish_reason = getattr(choice, "finish_reason", "stop")
@@ -334,26 +311,51 @@ class OpenAIStructuredClient:
                     break
                 except StructuredLLMError:
                     raise
+                except ValidationError as exc:
+                    # Use a small schema-correction allowance, independent of
+                    # the larger transient-provider retry budget.
+                    if retry_index < min(self._max_retries, 2):
+                        delay = min(
+                            self._retry_initial_delay_seconds * (2 ** retry_index),
+                            self._retry_max_delay_seconds,
+                        )
+                        self._deadline.sleep_before_retry(delay)
+                        continue
+                    if model_index + 1 < len(models):
+                        break
+                    raise StructuredLLMError(
+                        "structured LLM output failed schema validation",
+                        failure_kind="structured_output",
+                        retryable=False,
+                        attempt_count=len(attempted_models),
+                        public_message=(
+                            "The model returned an invalid structured response "
+                            "after bounded correction attempts."
+                        ),
+                        capability="structured_output",
+                        api_mode=self._api_mode.value,
+                    ) from None
                 except Exception as exc:  # noqa: BLE001 - sanitized below
                     if not _is_retryable_provider_error(exc):
-                        raise _safe_error(
+                        raise safe_structured_llm_error(
                             exc,
                             attempt_count=len(attempted_models),
+                            api_mode=self._api_mode.value,
                         ) from None
                     if retry_index < self._max_retries:
                         delay = min(
                             self._retry_initial_delay_seconds * (2 ** retry_index),
                             self._retry_max_delay_seconds,
                         )
-                        if delay:
-                            time.sleep(delay)
+                        self._deadline.sleep_before_retry(delay)
                         continue
                     if model_index + 1 < len(models):
                         break
-                    raise _safe_error(
+                    raise safe_structured_llm_error(
                         exc,
                         attempt_count=len(attempted_models),
                         exhausted_models=len(models),
+                        api_mode=self._api_mode.value,
                     ) from None
             if output is not None:
                 break
@@ -468,6 +470,7 @@ class OpenAIStructuredClient:
                     }
                     if max_tool_calls is not None:
                         kwargs["max_tool_calls"] = max_tool_calls
+                    kwargs["timeout"] = self._deadline.request_timeout()
                     raw = self._client.responses.create(**kwargs)
                     status = getattr(raw, "status", "completed")
                     if status != "completed":
@@ -509,24 +512,27 @@ class OpenAIStructuredClient:
                     raise
                 except Exception as exc:  # noqa: BLE001 - sanitized below
                     if not _is_retryable_provider_error(exc):
-                        raise _safe_error(
+                        raise safe_structured_llm_error(
                             exc,
                             attempt_count=len(attempted_models),
+                            operation="native_tool_calling",
+                            api_mode=LLMApiMode.RESPONSES.value,
                         ) from None
                     if retry_index < self._max_retries:
                         delay = min(
                             self._retry_initial_delay_seconds * (2 ** retry_index),
                             self._retry_max_delay_seconds,
                         )
-                        if delay:
-                            time.sleep(delay)
+                        self._deadline.sleep_before_retry(delay)
                         continue
                     if model_index + 1 < len(models):
                         break
-                    raise _safe_error(
+                    raise safe_structured_llm_error(
                         exc,
                         attempt_count=len(attempted_models),
                         exhausted_models=len(models),
+                        operation="native_tool_calling",
+                        api_mode=LLMApiMode.RESPONSES.value,
                     ) from None
             if calls is not None:
                 break
@@ -535,7 +541,7 @@ class OpenAIStructuredClient:
 
         request_sha = _sha256(_canonical_json({
             "model": selected_model,
-            "api_mode": self._api_mode.value,
+            "api_mode": LLMApiMode.RESPONSES.value,
             "purpose": purpose,
             "prompt_version": prompt_version,
             "instructions": instructions,
@@ -546,7 +552,7 @@ class OpenAIStructuredClient:
         response_json = _canonical_json([call.model_dump(mode="json") for call in calls])
         receipt = LLMCallReceipt(
             model=selected_model,
-            api_mode=self._api_mode,
+            api_mode=LLMApiMode.RESPONSES,
             purpose=purpose,
             prompt_version=prompt_version,
             request_sha256=request_sha,
@@ -578,7 +584,6 @@ class OpenAIStructuredClient:
             replay_items=replay_items,
             receipt=receipt,
         )
-
 
 __all__ = [
     "LLMApiMode",

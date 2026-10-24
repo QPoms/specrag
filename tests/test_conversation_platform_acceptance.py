@@ -178,15 +178,6 @@ class _AsyncModel:
                 },
             }, "async-start"),)
         elif self.step == 2:
-            run_id = kwargs["prior_outputs"][0].output["run_id"]
-            calls = (_call("respond", {
-                "text": "研究任务已提交，完成后会回到本会话。",
-                "source_kind": "direct_conversation",
-                "research_result_ids": [],
-                "run_ids": [run_id],
-                "citations": [],
-            }, "async-accepted"),)
-        elif self.step == 3:
             result = kwargs["input_payload"]["available_research_results"][-1]
             calls = (_call("respond", {
                 "text": result["answer"],

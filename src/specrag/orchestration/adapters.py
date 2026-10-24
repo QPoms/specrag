@@ -140,41 +140,113 @@ class EvidenceSufficiencyHandler:
     service: EvidenceSufficiencyService
 
     def __call__(self, state: ResearchState) -> dict[str, object]:
+        assessment_by_task = {
+            item.task_id: item for item in state["sufficiency_assessments"]
+        }
+        completed_task_ids = {
+            task.task_id
+            for task in state["research_tasks"]
+            if task.status == "completed"
+            and (
+                assessment := assessment_by_task.get(task.task_id)
+            ) is not None
+            and assessment.status == "sufficient"
+        }
+        active_tasks = tuple(
+            task
+            for task in state["research_tasks"]
+            if task.task_id not in completed_task_ids
+        )
+        active_candidates = tuple(
+            item
+            for item in state["candidate_evidence"]
+            if item.task_id not in completed_task_ids
+        )
+        active_evidence_ids = {item.evidence_id for item in active_candidates}
         batch = self.service.evaluate(
-            state["research_tasks"],
-            state["candidate_evidence"],
-            state["source_validations"],
+            active_tasks,
+            active_candidates,
+            tuple(
+                item
+                for item in state["source_validations"]
+                if item.evidence_id in active_evidence_ids
+            ),
             original_question=state["user_question"],
         )
+        updated_task_by_id = {item.task_id: item for item in batch.tasks}
+        updated_assessment_by_task = {
+            **{
+                task_id: assessment_by_task[task_id]
+                for task_id in completed_task_ids
+            },
+            **{item.task_id: item for item in batch.assessments},
+        }
+        validated_by_id = {
+            item.evidence_id: item
+            for item in state["validated_evidence"]
+            if item.task_id in completed_task_ids
+        }
+        validated_by_id.update(
+            {item.evidence_id: item for item in batch.validated_evidence}
+        )
+        tasks = tuple(
+            updated_task_by_id.get(task.task_id, task)
+            for task in state["research_tasks"]
+        )
         return {
-            "research_tasks": batch.tasks,
-            "validated_evidence": batch.validated_evidence,
-            "sufficiency_assessments": batch.assessments,
+            "research_tasks": tasks,
+            "validated_evidence": tuple(validated_by_id.values()),
+            "sufficiency_assessments": tuple(
+                updated_assessment_by_task[task.task_id]
+                for task in tasks
+                if task.task_id in updated_assessment_by_task
+            ),
             "gaps": batch.gaps,
-            "evidence_sufficient": batch.evidence_sufficient,
+            "evidence_sufficient": bool(tasks)
+            and all(task.status == "completed" for task in tasks),
         }
 
 
 @dataclass(frozen=True)
 class EvidenceSynthesisHandler:
-    """Produce the final answer only from sufficient validated evidence."""
+    """Produce a complete or explicitly qualified evidence-backed answer."""
 
     service: EvidenceSynthesisService
 
     def __call__(self, state: ResearchState) -> dict[str, object]:
-        if state["evidence_sufficient"] is not True:
-            raise ValueError("cannot synthesize while evidence is insufficient")
-        synthesis = self.service.synthesize(
-            state["user_question"],
-            state["research_tasks"],
-            state["candidate_evidence"],
-            state["validated_evidence"],
-            state["sufficiency_assessments"],
+        mode = (
+            "complete" if state["evidence_sufficient"] is True else "partial"
         )
+        try:
+            synthesis = self.service.synthesize(
+                state["user_question"],
+                state["research_tasks"],
+                state["candidate_evidence"],
+                state["validated_evidence"],
+                state["sufficiency_assessments"],
+                mode=mode,
+            )
+        except Exception as exc:
+            if getattr(exc, "failure_kind", None) is None:
+                raise
+            synthesis = self.service.evidence_digest(
+                state["research_tasks"],
+                state["candidate_evidence"],
+                state["validated_evidence"],
+                state["sufficiency_assessments"],
+                mode=mode,
+            )
+            errors = (
+                *state["errors"],
+                "model synthesis unavailable; deterministic evidence digest published",
+            )
+        else:
+            errors = state["errors"]
         return {
             "synthesis": synthesis,
             "final_answer": synthesis.answer,
-            "stop_reason": "completed",
+            "stop_reason": state["stop_reason"] or "completed",
+            "errors": errors,
         }
 
 

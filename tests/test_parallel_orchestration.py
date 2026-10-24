@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+
+import pytest
+
 from specrag.agents.models import (
     AgentControlCall,
     AgentResearchReview,
@@ -8,7 +12,15 @@ from specrag.agents.models import (
     AgentToolOutcome,
     AgenticRetrievalExecution,
 )
-from specrag.infrastructure.structured_agent import CodexAgentReceipt
+from specrag.infrastructure.receipt_capture import (
+    record_agent_receipt,
+    record_failed_agent_call,
+)
+from specrag.infrastructure.structured_agent import (
+    CodexAgentError,
+    CodexAgentReceipt,
+    capture_agent_receipts,
+)
 from specrag.models import (
     ResearchBudget,
     ResearchGap,
@@ -24,6 +36,7 @@ from specrag.orchestration import (
     build_parallel_research_workflow,
     new_parallel_research_state,
 )
+from specrag.orchestration.task_execution import terminalize_tasks
 from specrag.retrieval.planner import (
     PlannedRetrievalExecution,
     PlannedRetrievalHit,
@@ -58,8 +71,8 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
         reasoning_effort="test",
         purpose="test",
         prompt_version="test",
-        request_sha256="b" * 64,
-        response_sha256="c" * 64,
+        request_sha256=hashlib.sha256(task_id.encode()).hexdigest(),
+        response_sha256=hashlib.sha256(f"response:{task_id}".encode()).hexdigest(),
         latency_ms=1,
     )
     hit = PlannedRetrievalHit(
@@ -91,32 +104,36 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
         rounds_used=1,
         search_actions_used=1,
         expansion_actions_used=0,
-        turns=(AgentRetrievalTurn(
-            round_number=1,
-            control_call=AgentControlCall(
-                call_id=f"control-{task_id}",
-                name="update_research_state",
-                review=AgentResearchReview(
-                    assessment="Evidence found.",
-                    evidence_selections=(),
-                    unresolved_gaps=(),
+        turns=(
+            AgentRetrievalTurn(
+                round_number=1,
+                control_call=AgentControlCall(
+                    call_id=f"control-{task_id}",
+                    name="update_research_state",
+                    review=AgentResearchReview(
+                        assessment="Evidence found.",
+                        evidence_selections=(),
+                        unresolved_gaps=(),
+                    ),
                 ),
+                receipt=receipt,
+                outcomes=(outcome,),
             ),
-            receipt=receipt,
-            outcomes=(outcome,),
-        ),),
+        ),
         evidence_execution=PlannedRetrievalExecution(
             status="completed",
             embedding_model="test",
             corpus_version_policy="highest_version_within_release",
             corpus_release=17,
-            tasks=(PlannedRetrievalTaskResult(
-                retrieval_id=f"RET-{task_id}",
-                query_id=query_id,
-                planner_action="planned",
-                status="completed",
-                hits=(hit,),
-            ),),
+            tasks=(
+                PlannedRetrievalTaskResult(
+                    retrieval_id=f"RET-{task_id}",
+                    query_id=query_id,
+                    planner_action="planned",
+                    status="completed",
+                    hits=(hit,),
+                ),
+            ),
         ),
     )
 
@@ -154,9 +171,26 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
         objective="O2",
     )
     plan = ResearchPlan(plan_id="P1", tasks=(task_a, task_b))
+    router_receipt = CodexAgentReceipt(
+        codex_version="test",
+        model="test",
+        reasoning_effort="test",
+        purpose="route",
+        prompt_version="test",
+        request_sha256="d" * 64,
+        response_sha256="e" * 64,
+        input_tokens=7,
+        output_tokens=3,
+        latency_ms=1,
+    )
+
+    def route(state):
+        record_agent_receipt(router_receipt)
+        return {"route": "plan"}
+
     workflow = build_parallel_research_workflow(
         ResearchNodeHandlers(
-            router=lambda state: {"route": "plan"},
+            router=route,
             planner=lambda state: {
                 "research_plan": plan,
                 "research_tasks": plan.tasks,
@@ -169,6 +203,15 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
                     task.model_copy(update={"status": "completed"})
                     for task in state["research_tasks"]
                 ),
+                "sufficiency_assessments": tuple(
+                    TaskSufficiencyAssessment(
+                        task_id=item.task_id,
+                        status="sufficient",
+                        supporting_evidence_ids=(item.evidence_id,),
+                        rationale="The task has supported evidence.",
+                    )
+                    for item in state["candidate_evidence"]
+                ),
             },
             replanner=lambda state: {},
             synthesizer=lambda state: {
@@ -177,6 +220,7 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
             },
         ),
         ParallelResearcherHandler(service),
+        receipt_capture=capture_agent_receipts,
     )
 
     result = workflow.invoke(
@@ -194,7 +238,74 @@ def test_parallel_workflow_fans_out_independent_tasks_and_fans_in() -> None:
     assert result["budget"].tool_calls_used_for("T1") == 1
     assert result["budget"].tool_calls_used_for("T2") == 1
     assert len(result["candidate_evidence"]) == 2
+    assert {
+        (item.task_id, item.attempt, item.status) for item in result["task_executions"]
+    } == {
+        ("T1", 1, "completed"),
+        ("T2", 1, "completed"),
+    }
     assert result["final_answer"] == "Grounded parallel answer."
+    assert len(result["model_receipts"]) == 3
+    assert result["model_receipts"][0]["stage"] == "router"
+    assert {item["stage"] for item in result["model_receipts"][1:]} == {"researcher"}
+    assert all(item.latency_ms >= 0 for item in result["researcher_results"])
+
+
+def test_failed_node_emits_captured_model_receipt_before_reraising() -> None:
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    def fail_router(state):
+        error = CodexAgentError(
+            "provider unavailable",
+            failure_kind="provider_unavailable",
+            retryable=True,
+            attempt_count=3,
+        )
+        record_failed_agent_call(
+            model="test",
+            reasoning_effort="high",
+            purpose="route",
+            prompt_version="test",
+            request_sha256="a" * 64,
+            latency_ms=12,
+            error=error,
+        )
+        raise error
+
+    handlers = ResearchNodeHandlers(
+        router=fail_router,
+        planner=lambda state: {},
+        researcher=lambda state: {},
+        source_validator=lambda state: {},
+        sufficiency_judge=lambda state: {},
+        replanner=lambda state: {},
+        synthesizer=lambda state: {},
+    )
+    workflow = build_parallel_research_workflow(
+        handlers,
+        ParallelResearcherHandler(_FakeService()),
+        receipt_capture=capture_agent_receipts,
+        event_sink=lambda name, state, update, latency: emitted.append(
+            (name, update)
+        ),
+    )
+
+    with pytest.raises(CodexAgentError, match="provider unavailable"):
+        workflow.invoke(
+            new_parallel_research_state(
+                research_id="failed-receipt-test",
+                user_question="Question",
+            ),
+            thread_id="failed-receipt-test",
+        )
+
+    assert len(emitted) == 1
+    assert emitted[0][0] == "router"
+    receipts = emitted[0][1]["model_receipts"]
+    assert len(receipts) == 1
+    assert receipts[0]["stage"] == "router"
+    assert receipts[0]["outcome"] == "failed"
+    assert receipts[0]["failure_kind"] == "provider_unavailable"
 
 
 def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
@@ -225,8 +336,7 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
 
     def judge(state):
         evidence_by_task = {
-            item.task_id: item.evidence_id
-            for item in state["candidate_evidence"]
+            item.task_id: item.evidence_id for item in state["candidate_evidence"]
         }
         assessments = tuple(
             TaskSufficiencyAssessment(
@@ -294,12 +404,13 @@ def test_parallel_workflow_defers_dependent_task_until_next_wave() -> None:
     assert result["budget"].replans_used == 0
     assert len(result["researcher_results"]) == 2
     assert result["researcher_results_processed"] == 2
+    assert [item.task_id for item in result["task_executions"]] == ["T1", "T2"]
     assert result["final_answer"] == "Multi-hop answer."
     dependency_context = service.contexts["T2"]["dependency_context"]
     assert dependency_context[0]["task_id"] == "T1"
-    assert dependency_context[0]["supporting_evidence"][0][
-        "evidence_id"
-    ].startswith("E:T1:")
+    assert dependency_context[0]["supporting_evidence"][0]["evidence_id"].startswith(
+        "E:T1:"
+    )
 
 
 def test_incomplete_predecessor_replans_before_dependent_task() -> None:
@@ -330,17 +441,14 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
 
     def judge(state):
         evidence_by_task = {
-            item.task_id: item.evidence_id
-            for item in state["candidate_evidence"]
+            item.task_id: item.evidence_id for item in state["candidate_evidence"]
         }
         if service.calls == ["T1"]:
             missing = "The predecessor still lacks its required relation."
             return {
                 "evidence_sufficient": False,
                 "research_tasks": (
-                    state["research_tasks"][0].model_copy(
-                        update={"status": "running"}
-                    ),
+                    state["research_tasks"][0].model_copy(update={"status": "running"}),
                     state["research_tasks"][1],
                 ),
                 "sufficiency_assessments": (
@@ -352,12 +460,14 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
                         rationale=missing,
                     ),
                 ),
-                "gaps": (ResearchGap(
-                    gap_id="G:T1:missing_relation",
-                    task_id="T1",
-                    kind="missing_relation",
-                    description=missing,
-                ),),
+                "gaps": (
+                    ResearchGap(
+                        gap_id="G:T1:missing_relation",
+                        task_id="T1",
+                        kind="missing_relation",
+                        description=missing,
+                    ),
+                ),
             }
         assessments = tuple(
             TaskSufficiencyAssessment(
@@ -422,4 +532,48 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
     assert result["budget"].initial_tool_calls_used_for("T1") == 1
     assert result["budget"].gap_tool_calls_used_for("T1") == 1
     assert result["budget"].initial_tool_calls_used_for("T2") == 1
+    assert [
+        (item.task_id, item.attempt, item.phase, item.status)
+        for item in result["task_executions"]
+    ] == [
+        ("T1", 1, "initial", "completed"),
+        ("T1", 2, "corrective", "completed"),
+        ("T2", 1, "initial", "completed"),
+    ]
     assert result["final_answer"] == "Answer after predecessor retry."
+
+
+def test_join_barrier_terminalizes_unfinished_and_dependency_blocked_tasks() -> None:
+    first = ResearchTask(task_id="T1", question="Q1", objective="O1", status="running")
+    dependent = ResearchTask(
+        task_id="T2",
+        question="Q2",
+        objective="O2",
+        dependencies=("T1",),
+    )
+    state = new_parallel_research_state(
+        research_id="join-barrier-test",
+        user_question="Q",
+    )
+    state["research_tasks"] = (first, dependent)
+    state["sufficiency_assessments"] = (
+        TaskSufficiencyAssessment(
+            task_id="T1",
+            status="partial",
+            missing_relation="The required condition is unresolved.",
+            rationale="Only partial support was found.",
+        ),
+    )
+    state["stop_reason"] = "iteration_budget"
+
+    update = terminalize_tasks(state)
+
+    assert [task.status for task in update["research_tasks"]] == [
+        "completed",
+        "blocked",
+    ]
+    assessments = {item.task_id: item for item in update["sufficiency_assessments"]}
+    assert assessments["T1"].status == "partial"
+    assert assessments["T2"].status == "insufficient"
+    assert [gap.task_id for gap in update["gaps"]] == ["T2"]
+    assert update["evidence_sufficient"] is False

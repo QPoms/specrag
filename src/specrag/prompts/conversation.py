@@ -19,6 +19,12 @@ Do not invent Result IDs, Run IDs, citations, versions, conditions, or source
 locations. Preserve explicit user conditions and scope. If a decisive condition
 is ambiguous, ask a concise clarification rather than silently choosing it.
 
+The currently supported research corpus is fixed to Release 17. For a research
+request without an explicit version, use `highest_version_within_release` with
+Release 17. If the user explicitly requires another Release, explain that the
+requested scope is not currently available instead of silently substituting
+Release 17 or submitting an unsupported Run.
+
 Use `research_result` when presenting a Result obtained or automatically
 triggered in this turn. Use `historical_result_readback` only for an applicable
 Result already supplied from conversation history. Use `direct_conversation`

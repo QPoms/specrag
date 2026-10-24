@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import logging
 
 from specrag.access import ServiceDelegationSigner
 from specrag.agents import ConversationAgent
+from specrag.infrastructure import probe_native_tool_capability
 from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
+from specrag.models import NativeToolCapability
 from specrag.orchestration import (
     ConversationTurnWorker,
     ResearchLifecycleWorker,
@@ -24,6 +27,7 @@ from .workspace_services import WorkspaceServices
 
 DELEGATION_SECRET_ENV = "SPECRAG_MCP_DELEGATION_SECRET"
 MCP_URL_ENV = "SPECRAG_MCP_URL"
+_LOGGER = logging.getLogger(__name__)
 
 
 def build_conversation_worker(
@@ -47,6 +51,17 @@ def build_conversation_worker(
         instructions=CONVERSATION_AGENT_INSTRUCTIONS,
         prompt_version=CONVERSATION_AGENT_PROMPT_VERSION,
     )
+    capability = (
+        probe_native_tool_capability(agent_model, agent.tools)
+        if model is None
+        else NativeToolCapability(
+            status="ready",
+            api_mode="responses",
+            message="The injected Conversation model is available.",
+        )
+    )
+    log = _LOGGER.info if capability.status == "ready" else _LOGGER.error
+    log("Conversation model capability: %s", capability.message)
     return ConversationTurnWorker(
         queue=services.conversation_turn_queue,
         store=services.conversation_agent_store,
@@ -62,6 +77,7 @@ def build_conversation_worker(
             os.environ.get(MCP_URL_ENV, "http://127.0.0.1:8766/mcp")
         ),
         delegation_signer=ServiceDelegationSigner(secret),
+        model_capability=capability,
     )
 
 
@@ -81,6 +97,21 @@ class ApplicationWorkers:
     lifecycle: ResearchLifecycleWorker
     conversation: ConversationTurnWorker | None
     owned: tuple[bool, bool, bool]
+
+    @property
+    def conversation_capability(self) -> NativeToolCapability:
+        if self.conversation is None:
+            return NativeToolCapability(
+                status="disabled",
+                message=(
+                    "Conversation Agent is disabled because the MCP delegation "
+                    "secret is not configured in the API process."
+                ),
+            )
+        return self.conversation.model_capability or NativeToolCapability(
+            status="ready",
+            message="The injected Conversation model did not require a live probe.",
+        )
 
     @classmethod
     def create(
@@ -102,18 +133,26 @@ class ApplicationWorkers:
             owned=(run is None, lifecycle is None, conversation is None),
         )
 
-    def start(self) -> None:
-        self.run.start()
-        self.lifecycle.start()
-        if self.conversation is not None:
+    def start(
+        self, *, research: bool = True, lifecycle: bool = True,
+        conversation: bool = True,
+    ) -> None:
+        if research:
+            self.run.start()
+        if lifecycle:
+            self.lifecycle.start()
+        if conversation and self.conversation is not None:
             self.conversation.start()
 
-    def stop(self) -> None:
-        if self.owned[0]:
+    def stop(
+        self, *, research: bool = True, lifecycle: bool = True,
+        conversation: bool = True,
+    ) -> None:
+        if research and self.owned[0]:
             self.run.stop()
-        if self.owned[1]:
+        if lifecycle and self.owned[1]:
             self.lifecycle.stop()
-        if self.owned[2] and self.conversation is not None:
+        if conversation and self.owned[2] and self.conversation is not None:
             self.conversation.stop()
 __all__ = [
     "DELEGATION_SECRET_ENV",

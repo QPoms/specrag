@@ -53,6 +53,7 @@ from specrag.specfacts import SpecFactService
 from specrag.retrieval.corpus import discover_source_documents
 from specrag.retrieval.corpus_sync import CorpusSyncService, active_snapshot
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
+from specrag.retrieval.pool import RetrieverPool
 from specrag.retrieval.models import CorpusScope, SpecificationVersion
 from specrag.config import load_config
 
@@ -83,6 +84,51 @@ class WorkspaceServices:
     result_store: SQLiteResearchResultStore
     research_results: ResearchResultService
     harness: RunHarness
+    retriever_pool: RetrieverPool
+
+    def prewarm_research_runtime(
+        self, release: int = 17,
+    ) -> HybridMarkdownRetriever:
+        """Open one validated immutable corpus runtime before serving tools."""
+
+        if self.harness.corpus_snapshot is None:
+            raise RuntimeError("corpus snapshot service is unavailable")
+        versions = self.harness.corpus_snapshot(SpecificationScope(
+            policy="highest_version_within_release",
+            release=release,
+        ))
+        local = discover_source_documents(
+            load_config().retrieval,
+            CorpusScope(
+                version_policy="highest_version_within_release",
+                release=release,
+            ),
+        )
+        active_identity = {
+            (item.specification, item.version) for item in versions
+        }
+        local_identity = {
+            (item.specification, item.version)
+            for item in local
+            if item.specification is not None and item.version is not None
+        }
+        if active_identity != local_identity:
+            raise RuntimeError(
+                f"Release {release} active corpus does not match the local "
+                "source snapshot"
+            )
+        bound = tuple(
+            SpecificationVersion(
+                specification=item.specification,
+                version=item.version,
+                release=item.release,
+            )
+            for item in versions
+        )
+        return self.retriever_pool.get(CorpusScope(
+            version_policy="exact_version" if len(bound) == 1 else "mixed_versions",
+            versions=bound,
+        ))
 
     @classmethod
     def create(
@@ -156,6 +202,7 @@ class WorkspaceServices:
             )
 
         corpus_sync = CorpusSyncService(corpus_store, build_document)
+        retriever_pool = RetrieverPool(app_config.retrieval)
         def snapshot(
             context: ActorContext, question: str, release: int,
         ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[dict[str, object], ...]]:
@@ -214,37 +261,44 @@ class WorkspaceServices:
         def corpus_snapshot(
             requested: SpecificationScope,
         ) -> tuple[CorpusVersionRef, ...]:
-            cfg = load_config().retrieval
-            retrieval_scope = CorpusScope(
-                version_policy=requested.policy,
-                release=requested.release,
-                versions=tuple(
-                    SpecificationVersion(
-                        specification=item.specification,
-                        version=item.version,
-                        release=item.release,
-                    )
-                    for item in requested.versions
-                ),
-            )
-            selected = tuple(
-                CorpusVersionRef(
-                    specification=document.specification,
-                    version=document.version,
-                    release=document.release,
+            supported_release = 17
+            requested_releases = {
+                int(item.release) for item in requested.versions
+                if item.release is not None
+            }
+            if requested.release is not None:
+                requested_releases.add(requested.release)
+            if (
+                requested.policy == "latest_per_spec"
+                or requested_releases != {supported_release}
+            ):
+                raise ValueError(
+                    "only Release 17 research is currently supported"
                 )
-                for document in discover_source_documents(cfg, retrieval_scope)
-                if document.specification is not None and document.version is not None
-            )
             if requested.policy == "highest_version_within_release":
                 assert requested.release is not None
-                active = active_snapshot(corpus_store, requested.release)
-                if (
-                    active
-                    and {item.specification for item in active}
-                    == {item.specification for item in selected}
-                ):
-                    return active
+                selected = active_snapshot(corpus_store, requested.release)
+                if not selected:
+                    raise ValueError(
+                        f"Release {requested.release} corpus is not active; run "
+                        f"`specrag corpus sync --release {requested.release} --apply`"
+                    )
+            else:
+                selected = tuple(CorpusVersionRef(
+                    specification=item.specification,
+                    version=item.version,
+                    release=item.release,
+                ) for item in requested.versions)
+            for item in selected:
+                record = corpus_store.find(
+                    int(item.release), item.specification, item.version
+                )
+                if record is None or record.status not in {
+                    "ready", "active", "draining"
+                }:
+                    raise ValueError(
+                        f"{item.specification} v{item.version} index is not ready"
+                    )
             return selected
 
         def bind_corpus(run: ResearchRun) -> None:
@@ -286,6 +340,12 @@ class WorkspaceServices:
                 research_context=research_context,
                 corpus_scope=corpus_scope,
                 context_harness=context_harness,
+                retriever=retriever_pool.get(
+                    corpus_scope or CorpusScope(
+                        version_policy="highest_version_within_release",
+                        release=release,
+                    )
+                ),
             )
 
         harness = RunHarness(
@@ -304,6 +364,15 @@ class WorkspaceServices:
             result_lookup=lambda run_id: (
                 result.result_id
                 if (result := result_store.latest_for_run(run_id)) is not None
+                else None
+            ),
+            checkpoint_reader=lambda thread_id: (
+                dict(checkpoint_tuple.checkpoint.get("channel_values", {}))
+                if (
+                    checkpoint_tuple := checkpoint.saver.get_tuple({
+                        "configurable": {"thread_id": thread_id}
+                    })
+                ) is not None
                 else None
             ),
         )
@@ -332,6 +401,7 @@ class WorkspaceServices:
             result_store,
             research_results,
             harness,
+            retriever_pool,
         )
 
     def close(self) -> None:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TaskStatus = Literal["pending", "running", "completed", "blocked", "failed"]
+TaskExecutionStatus = Literal["queued", "running", "completed", "failed"]
 GapDimension = Literal[
     "actor",
     "action",
@@ -45,7 +46,9 @@ StopReason = Literal[
     "unrecoverable_error",
     "cancelled",
     "elapsed_time_budget",
+    "research_time_budget",
 ]
+SynthesisMode = Literal["complete", "partial"]
 
 
 class _StrictModel(BaseModel):
@@ -60,6 +63,18 @@ class ResearchTask(_StrictModel):
     status: TaskStatus = "pending"
 
 
+class ResearchTaskExecution(_StrictModel):
+    """Immutable audit record for one initial or corrective task attempt."""
+
+    execution_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    phase: Literal["initial", "corrective"] = "initial"
+    status: TaskExecutionStatus = "queued"
+    stop_reason: ResearcherStopReason | None = None
+    error: str | None = None
+
+
 class ResearchRouteDecision(_StrictModel):
     route: Literal["single_task", "decompose"]
     complexity: Literal["simple", "complex"] = Field(
@@ -72,9 +87,7 @@ class ResearchRouteDecision(_StrictModel):
 
     @model_validator(mode="after")
     def _coherent_route(self) -> "ResearchRouteDecision":
-        expected_route = (
-            "single_task" if self.complexity == "simple" else "decompose"
-        )
+        expected_route = "single_task" if self.complexity == "simple" else "decompose"
         if self.route != expected_route:
             raise ValueError(
                 "simple questions require single_task; complex questions require "
@@ -190,12 +203,14 @@ class TaskSufficiencyAssessment(_StrictModel):
             raise ValueError("sufficient assessment cannot contain a gap")
         if self.status != "sufficient" and not self.missing_relation:
             raise ValueError("non-sufficient assessment requires missing_relation")
-        if self.status == "sufficient" and any((
-            self.required_proposition is not None,
-            self.missing_dimensions,
-            self.evidence_need is not None,
-            self.trusted_anchors,
-        )):
+        if self.status == "sufficient" and any(
+            (
+                self.required_proposition is not None,
+                self.missing_dimensions,
+                self.evidence_need is not None,
+                self.trusted_anchors,
+            )
+        ):
             raise ValueError("sufficient assessment cannot contain gap details")
         if self.status != "sufficient":
             if self.required_proposition is None:
@@ -208,15 +223,9 @@ class TaskSufficiencyAssessment(_StrictModel):
                 object.__setattr__(
                     self,
                     "evidence_need",
-                    (
-                        "conflict"
-                        if self.status == "conflict"
-                        else "relationship"
-                    ),
+                    ("conflict" if self.status == "conflict" else "relationship"),
                 )
-        if len(self.supporting_evidence_ids) != len(
-            set(self.supporting_evidence_ids)
-        ):
+        if len(self.supporting_evidence_ids) != len(set(self.supporting_evidence_ids)):
             raise ValueError("supporting evidence IDs must be unique")
         if len(self.missing_dimensions) != len(set(self.missing_dimensions)):
             raise ValueError("missing dimensions must be unique")
@@ -228,6 +237,10 @@ class TaskSufficiencyAssessment(_StrictModel):
 class EvidenceSynthesis(_StrictModel):
     answer: str = Field(min_length=1)
     evidence_ids: tuple[str, ...] = Field(min_length=1)
+    mode: SynthesisMode = "complete"
+    covered_task_ids: tuple[str, ...] = ()
+    unresolved_task_ids: tuple[str, ...] = ()
+    conflicting_task_ids: tuple[str, ...] = ()
 
     @model_validator(mode="before")
     @classmethod
@@ -237,12 +250,14 @@ class EvidenceSynthesis(_StrictModel):
         if not isinstance(value, Mapping) or "claims" not in value:
             return value
         claims = value.get("claims") or ()
-        evidence_ids = tuple(dict.fromkeys(
-            str(evidence_id)
-            for claim in claims
-            if isinstance(claim, Mapping)
-            for evidence_id in claim.get("evidence_ids", ())
-        ))
+        evidence_ids = tuple(
+            dict.fromkeys(
+                str(evidence_id)
+                for claim in claims
+                if isinstance(claim, Mapping)
+                for evidence_id in claim.get("evidence_ids", ())
+            )
+        )
         answer = str(value.get("answer") or "").strip()
         if not answer:
             answer = "\n\n".join(
@@ -254,6 +269,32 @@ class EvidenceSynthesis(_StrictModel):
 
     @model_validator(mode="after")
     def _unique_evidence(self) -> "EvidenceSynthesis":
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("synthesis evidence IDs must be unique")
+        for name, values in (
+            ("covered task", self.covered_task_ids),
+            ("unresolved task", self.unresolved_task_ids),
+            ("conflicting task", self.conflicting_task_ids),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"synthesis {name} IDs must be unique")
+        if set(self.conflicting_task_ids) - set(self.unresolved_task_ids):
+            raise ValueError("conflicting synthesis tasks must also be unresolved")
+        if self.mode == "complete" and (
+            self.unresolved_task_ids or self.conflicting_task_ids
+        ):
+            raise ValueError("complete synthesis cannot contain unresolved tasks")
+        return self
+
+
+class EvidenceSynthesisDraft(_StrictModel):
+    """Only the evidence-grounded content entrusted to the model."""
+
+    answer: str = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_evidence(self) -> "EvidenceSynthesisDraft":
         if len(self.evidence_ids) != len(set(self.evidence_ids)):
             raise ValueError("synthesis evidence IDs must be unique")
         return self
@@ -324,9 +365,13 @@ class ResearchWorkerResult(_StrictModel):
     """Serializable output of one parallel Researcher assignment."""
 
     task_id: str = Field(min_length=1)
+    execution_id: str | None = None
+    execution_status: Literal["completed", "failed"] = "completed"
     candidate_evidence: tuple[CandidateEvidence, ...] = ()
     tool_calls: tuple[ToolCallRecord, ...] = ()
     evidence_selections: tuple[ResearcherEvidenceSelectionRecord, ...] = ()
+    model_receipts: tuple[dict[str, object], ...] = ()
+    latency_ms: float = Field(default=0.0, ge=0)
     tool_calls_used: int = Field(default=0, ge=0)
     stop_reason: ResearcherStopReason
     errors: tuple[str, ...] = ()
@@ -388,9 +433,8 @@ class ResearchBudget(_StrictModel):
     def tool_calls_used_for(self, task_id: str) -> int:
         """Return all retrieval calls charged to one ResearchTask."""
 
-        return (
-            self.initial_tool_calls_used_for(task_id)
-            + self.gap_tool_calls_used_for(task_id)
+        return self.initial_tool_calls_used_for(task_id) + self.gap_tool_calls_used_for(
+            task_id
         )
 
     def remaining_tool_calls_for(
@@ -434,34 +478,37 @@ class ResearchBudget(_StrictModel):
         usage[task_id] = updated
         ordered = tuple(sorted(usage.items()))
         field = (
-            "gap_tool_calls_used_by_task"
-            if corrective
-            else "tool_calls_used_by_task"
+            "gap_tool_calls_used_by_task" if corrective else "tool_calls_used_by_task"
         )
         total = sum(value for _, value in ordered)
         if corrective:
             total += sum(value for _, value in self.tool_calls_used_by_task)
         else:
             total += sum(value for _, value in self.gap_tool_calls_used_by_task)
-        return self.model_copy(update={
-            "tool_calls_used": total,
-            field: ordered,
-        })
+        return self.model_copy(
+            update={
+                "tool_calls_used": total,
+                field: ordered,
+            }
+        )
 
 
 __all__ = [
     "CandidateEvidence",
     "EvidenceSynthesis",
+    "EvidenceSynthesisDraft",
     "ResearchBudget",
     "ResearchGap",
     "ResearchPlan",
     "ResearchRouteDecision",
     "ResearcherStopReason",
     "ResearchTask",
+    "ResearchTaskExecution",
     "SourceValidationResult",
     "StopReason",
     "TaskSufficiencyAssessment",
     "TaskStatus",
+    "TaskExecutionStatus",
     "ToolCallRecord",
     "ResearchWorkerResult",
     "ValidatedEvidence",

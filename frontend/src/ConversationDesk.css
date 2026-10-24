@@ -41,11 +41,12 @@
 .source-attribution span, .source-attribution code { padding: 3px 5px; border-radius: 2px; color: #667a6b; background: #e9efe8; font: 8px "DM Mono", monospace; }
 .source-attribution span { text-transform: capitalize; }
 .source-attribution code { color: #9b624b; background: #f3e7df; }
-.turn-status { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; color: #8d968f; font: 8px "DM Mono", monospace; text-transform: capitalize; }
+.turn-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; color: #8d968f; font: 8px "DM Mono", monospace; text-transform: capitalize; }
 .turn-status i { width: 6px; height: 6px; border-radius: 50%; background: #9aa39c; }
 .turn-status.queued i, .turn-status.running i { background: #c57b5c; box-shadow: 0 0 0 3px rgba(197,123,92,.12); }
 .turn-status.completed i { background: #6d8b73; }
 .turn-status.failed i, .turn-status.cancelled i { background: #ad5743; }
+.turn-status small { display: block; flex-basis: 100%; max-width: 720px; margin: 2px 0 0 12px; color: #9d4b38; font: 10px/1.45 Inter, sans-serif; text-transform: none; }
 .research-link-card { display: grid; gap: 6px; width: 100%; margin-top: 11px; border: 1px solid #cad5ca; border-radius: 3px; padding: 10px 11px; color: #4b5b50; background: #eef3eb; text-align: left; }
 .research-link-card:hover { border-color: #93a595; background: #e8efe5; }
 .research-link-card > span { display: flex; align-items: center; gap: 7px; }
@@ -62,6 +63,10 @@
 .conversation-composer small { color: #939c94; font: 8px/1.45 "DM Mono", monospace; }
 .conversation-composer button { min-width: 88px; }
 .conversation-error { margin: 12px 24px 0; padding: 9px 11px; border: 1px solid #ddb0a2; border-radius: 3px; color: #9d4b38; background: #fff0eb; font-size: 10px; }
+.conversation-capability-error { display: grid; gap: 4px; margin: 12px 24px 0; padding: 12px 14px; border: 1px solid #ddb0a2; border-radius: 3px; color: #71392d; background: #fff0eb; }
+.conversation-capability-error strong { font-size: 12px; }
+.conversation-capability-error span { font-size: 11px; line-height: 1.45; }
+.conversation-capability-error small { color: #9d6254; font: 9px "DM Mono", monospace; }
 
 @media (max-width: 900px) {
   .conversation-desk { grid-template-columns: 1fr; }

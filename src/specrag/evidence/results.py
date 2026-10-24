@@ -65,7 +65,11 @@ class ResearchResultMaterializer:
             synthesis_is_safe = bool(cited_ids) and all(
                 evidence_id in copied_by_id
                 and copied_by_id[evidence_id].validation.supports_target
-                and copied_by_id[evidence_id].validation.validation_status == "supported"
+                and copied_by_id[evidence_id].validation.validation_status in (
+                    {"supported"}
+                    if synthesis.mode == "complete"
+                    else {"supported", "partial"}
+                )
                 for evidence_id in cited_ids
             )
         evidence_status = self._evidence_status(outcome, synthesis_is_safe)

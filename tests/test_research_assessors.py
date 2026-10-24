@@ -71,13 +71,17 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
         task.question,
         (task,),
         (first,),
+        mode="complete",
+        covered_task_ids=("T1",),
+        unresolved_task_ids=(),
+        conflicting_task_ids=(),
     )
 
     assert sufficiency.status == "sufficient"
     assert synthesis.evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
         "evidence-sufficiency/v1.13",
-        "evidence-synthesis/v1.6",
+        "evidence-synthesis/v1.8",
     ]
     sufficiency_payload = agent.payloads[0][1]
     assert sufficiency_payload["original_question"] == (
@@ -88,6 +92,8 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
         "question": "What starts registration?",
     }
     synthesis_payload = agent.payloads[1][1]
+    assert synthesis_payload["synthesis_mode"] == "complete"
+    assert synthesis_payload["covered_task_ids"] == ("T1",)
     assert synthesis_payload["task_evidence"][0]["task_id"] == "T1"
     assert synthesis_payload["task_evidence"][0]["task_question"] == (
         "What starts registration?"
@@ -106,7 +112,9 @@ def test_synthesis_prompt_enforces_final_answer_boundary() -> None:
         SYNTHESIS_INSTRUCTIONS
     )
     assert "one complete, coherent answer" in SYNTHESIS_INSTRUCTIONS
-    assert "supported evidence item owned by each task" in SYNTHESIS_INSTRUCTIONS
+    assert "supported\nevidence item owned by each covered task" in (
+        SYNTHESIS_INSTRUCTIONS
+    )
     assert "Do not return a\nclaim list" in SYNTHESIS_INSTRUCTIONS
     assert "different specifications or radio" in SYNTHESIS_INSTRUCTIONS
     assert "systems into one generalized statement" in SYNTHESIS_INSTRUCTIONS

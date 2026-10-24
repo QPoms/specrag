@@ -72,10 +72,11 @@ user question or task
 - `src/specrag/prompts/synthesis.py`: versioned final-answer contract. The
   original question is authoritative, task questions are coverage checkpoints,
   and only source-valid evidence selected by the Sufficiency Judge is eligible.
-- `src/specrag/evidence/synthesis.py`: validates that every sufficient task is
-  represented by eligible inline evidence citations. The Synthesizer produces
-  one complete user-facing answer directly; there is no parallel claim list or
-  claim-concatenation step.
+- `src/specrag/evidence/synthesis.py`: validates that every covered task is
+  represented by eligible inline evidence citations. The same Synthesizer
+  produces either a complete answer or an explicitly qualified partial answer
+  with covered, unresolved, and conflicting task IDs; there is no parallel
+  claim list or claim-concatenation step.
 - `src/specrag/tools/`: provider-neutral per-tool argument schemas, function
   descriptions, registry, and seven trusted retrieval adapters. The Registry
   is the single source for definition, validation, and execution. HyDE embeds an
@@ -379,14 +380,20 @@ ignored by Git. They are reproducible caches rather than project data.
 Copy `.env.example` to `.env`, set the OpenAI-compatible endpoint and model
 IDs, then adjust retrieval mechanics in `config.yaml`.
 
-The default corpus scope is Release 17. Before the version registry is
-initialized, a retrieval run selects the highest locally available version of
-every specification within that Release. Once a complete active registry is
-available, new Runs freeze its exact per-specification versions; resume reuses
-that binding even if active pointers later change.
-Cross-version research compares isolated Release-scoped runs. Explicit latest,
-exact-version, and mixed-version scopes are also supported and retain each
-source document's exact identity.
+The current product research scope is fixed to Release 17. Initialize its
+version registry and validate the already-built chunk/vector artifacts once
+before accepting research:
+
+```text
+specrag corpus sync --release 17 --apply
+specrag corpus status --release 17
+```
+
+New Runs then freeze the active Release 17 versions and resume reuses that
+exact binding even if active pointers later change. A Run is rejected clearly
+when Release 17 is not active or its read-only retrieval snapshot is incomplete;
+research execution never builds chunks or adds embeddings. Other Releases and
+cross-version research remain a later product capability.
 
 Specification synchronization is intentionally dormant by default. The local
 CLI scans already materialized Markdown under `data/3gpp`; the explicit
@@ -443,12 +450,12 @@ service rejects self-demotion and self-removal. User Core responses are owner-pr
 workspace knowledge remains workspace-scoped and review actions are enforced
 by the existing role policy. Research can now
 also be submitted through `POST /api/v1/workspaces/{workspace}/runs`; the API
-returns HTTP 202 with a queued Run while an in-process worker executes the
-existing RunHarness. Clients can consume ordered durable events from
+returns HTTP 202 with a queued Run for the existing RunHarness. Clients can
+consume ordered durable events from
 `GET /api/v1/workspaces/{workspace}/runs/{run_id}/events` as SSE. It
 also exposes authenticated cancellation plus asynchronous Resume and Retry
-controls. Resume requires a durable checkpoint and continues the same Run with
-a renewed elapsed-time window; Retry creates a new Run and stores its
+controls. Resume requires a durable checkpoint and continues the same Run;
+Retry creates a new Run and stores its
 `retry_of_run_id` relationship. Inspection returns only a redacted failure
 summary, including a safe failure kind and whether a manual retry is
 appropriate, plus lifecycle metrics and durable events rather than exception
@@ -456,10 +463,12 @@ traces or provider payloads. API and Worker threads use separate SQLite connecti
 the same WAL database instead of concurrently sharing one connection. It
 deliberately does not enable credential cookies or permissive CORS, and
 deployments that bind beyond localhost must terminate TLS. Run jobs are stored
-in a durable SQLite queue with atomic leases and startup recovery. The default
-API embeds the Worker for local development; production-style deployments can
-run `specrag-api --worker-mode external` beside a separate `specrag-worker`
-process against the same database. A broker such as Redis remains a later
+in a durable SQLite queue with atomic leases and startup recovery. In the
+normal API + MCP deployment, `specrag-api` starts only the Conversation Worker,
+while `specrag-mcp` owns the Research and Lifecycle Workers. This prevents both
+processes from executing or trying to repair the same research index. The
+explicit `--worker-mode embedded` option remains available for isolated tests
+and single-process diagnostics. A broker such as Redis remains a later
 scale-out option.
 
 Persistent Conversations are available under
@@ -487,6 +496,16 @@ as an immutable Research Result with sufficient, partial, insufficient, or
 conflict evidence status. Results are owner-private and available from
 `/api/v1/workspaces/{workspace}/research-results/{result_id}` and the matching
 Conversation Result collection. Run inspection exposes the latest `result_id`.
+New Research Runs use completion-first mode by default: there is no whole-Run
+wall-clock deadline, while iteration/tool/replan budgets, individual provider
+timeouts, cancellation, Worker leases, and crash recovery remain bounded. An
+explicit `--elapsed-seconds` value still enables the compatible phased deadline
+policy when an operator needs it. Independent dependency-ready ResearchTasks
+run concurrently as durable TaskExecutions. The Synthesizer is reached only
+after every planned task is completed, blocked, or failed, and normally
+completed Runs still publish partial, conflicting, or insufficient Results.
+The MCP synchronous wait remains 10 seconds and hands the same Run to the
+Worker when that window expires.
 The Lifecycle Worker consumes the completion outbox in embedded and standalone
 Worker modes. It defers presentation while the originating Turn is active,
 skips it after a newer user message or authorization loss, and prevents two
@@ -509,6 +528,11 @@ high-entropy service secret in the issuing application and MCP process through
 ```text
 specrag-mcp --database .local/state/specrag.sqlite3
 ```
+
+`specrag-mcp` validates the active Release 17 registry and prewarms the
+immutable Retriever, vector index, and embedding model before accepting tool
+traffic. Run submission itself performs only the lightweight database-backed
+version binding; it never chunks or embeds the corpus.
 
 It exposes the Streamable HTTP endpoint at `http://127.0.0.1:8766/mcp` and
 starts the existing Run and Lifecycle Workers for the local deployment. The
@@ -541,18 +565,23 @@ providers, production deployment, and automatic whole-Run replay are deferred.
 The first browser client lives under `frontend/`. It is a local React +
 TypeScript + Vite application: the browser stores only the server-issued
 session token in `sessionStorage`, calls the API for workspace membership and
-context, and never opens the SQLite state directly. Its primary research desk
+context, and never opens the SQLite state directly. The interface defaults to
+Simplified Chinese (`zh-CN`), including localized lifecycle labels and dates;
+direct Runs submitted from the browser request Chinese research answers. Its
+primary research desk
 is a persistent Conversation list and thread with ordinary dialogue,
 multi-turn specification research, inline Turn/tool/Run/Result state, source
 attribution, archive/restore, and cursor-based SSE reconnect recovery. The
 legacy direct Run entry and linked Run/evidence views remain available. It also
 provides a responsive Memory/SpecFact management surface. The admin-only People & Permissions panel
 adds local members, edits roles, confirms removal, and explains each role;
-non-admin clients do not request the member directory. Start
-the API in one terminal and the frontend in another:
+non-admin clients do not request the member directory. Run the one-time
+Release 17 corpus activation first, then start MCP, API, and the frontend in
+separate terminals:
 
 ```text
-set SPECRAG_MCP_DELEGATION_SECRET=<at-least-32-byte-shared-secret>
+specrag corpus sync --release 17 --apply
+$env:SPECRAG_MCP_DELEGATION_SECRET="<at-least-32-byte-shared-secret>"
 specrag-mcp
 specrag-api
 cd frontend
@@ -560,9 +589,36 @@ npm install
 npm run dev
 ```
 
-For a separate local Worker, start the API with
-`specrag-api --worker-mode external` and run `specrag-worker` in another
-terminal. Both processes must point at the same SQLite state database.
+At API startup, the Conversation runtime sends one bounded capability probe
+through the same configured model, Responses API path, and strict function
+schemas used by real Turns. `GET /healthz` reports a redacted
+`conversation_agent` state (`ready`, `unavailable`, or `disabled`) with only
+safe status metadata. The browser shows that diagnostic before submission, and
+failed Turns retain the safe actionable reason instead of only displaying
+`invalid_request`. A capability failure leaves the API available in degraded
+mode for login, history, and inspection; it prevents the Turn Worker from
+repeating a known-incompatible model request. Provider response bodies,
+credentials, endpoints, prompts, and headers are never returned by this
+diagnostic.
+
+Ordinary introductions may mention that SpecRAG researches 3GPP specifications
+and compares Releases without being mistaken for an unsupported normative
+answer. Actual requirement language is still rejected unless it is backed by
+an applicable Research Result; known response-contract rejections now produce
+a specific safe Turn diagnostic.
+
+The model adapter reads the current repository `.env` when a process starts;
+non-empty OpenAI-compatible settings in that file take precedence over stale
+inherited process values. Restart `specrag-api` after changing the model key,
+endpoint, or model so the startup probe uses the new configuration. The MCP
+delegation secret is a separate service credential and must still be identical
+in the API and MCP process environments.
+
+Do not start `specrag-worker` beside the normal MCP deployment: MCP already
+owns the Research and Lifecycle Workers. `specrag-api --worker-mode external`
+and `specrag-worker` are retained only as an alternative standalone Worker
+topology, and all participating processes must point at the same SQLite state
+database.
 
 Vite proxies `/api` to `http://127.0.0.1:8000` by default. Set
 `VITE_API_BASE_URL` when the API is hosted elsewhere. Completed Runs now show

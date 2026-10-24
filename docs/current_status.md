@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-23
+Updated: 2026-10-24
 
 ## Current state
 
@@ -20,10 +20,157 @@ links, conditional automatic presentation Turn scheduling, Agent execution,
 and reconnectable browser projection are supported through the authenticated
 API. The existing Run research API, CLI, and linked Run views remain supported.
 
+The current product research scope is now fixed to Release 17. Research
+submission requires a complete active corpus registry and opens the existing
+chunk/vector snapshot read-only. Retriever instances are cached by immutable
+corpus scope within each process, so a Research Run no longer chunks documents,
+adds embeddings, or reconstructs an equivalent retriever for every Run.
+`specrag corpus sync --release 17 --apply` is the only supported build and
+activation path for this phase.
+
+The local artifact audit on 2026-10-23 found a complete Release 17 chunk
+snapshot: 34 documents and 27,858 chunks. The previous Chroma HNSW segment was
+not readable by the current runtime even though its vector identities were
+complete. Its 27,858 Release 17 vectors were validated and imported into a new
+current-format HNSW index without recomputing their embeddings. The SQLite
+registry now contains 47 Release 17 historical versions, all 34 current
+specification versions are active, and a read-only hybrid query over the exact
+Release 17 fingerprint completes without retrieval errors. The physical
+Release 18 snapshot remains incomplete by 20,631 vectors, the mixed 17/18
+snapshot has the same deficit, and no Release 19 source snapshot exists.
+
+An accepted queued/running Research Run now ends the originating Conversation
+Turn immediately with a background-research acknowledgement. The Agent does
+not spend its model-step budget polling status in that same Turn. The existing
+Lifecycle Worker persists the Result and conditionally schedules the automatic
+presentation Turn after completion.
+
+Normal local process ownership is now unambiguous: `specrag-api` defaults to
+the Conversation Worker only, while `specrag-mcp` owns Research Run execution
+and lifecycle reconciliation. This removes the previous API/MCP dual-worker
+race against the shared vector store. Embedded API workers remain an explicit
+diagnostic/test mode.
+
+Worker recovery now terminalizes an already-expired Run before constructing
+its research runtime. Runtime-construction failures are also covered by the
+RunHarness failure transaction, so they persist a terminal Run instead of
+being released and retried indefinitely. This prevents stale Runs from
+starving newer Conversation research after an MCP restart.
+
 The detailed design baseline is recorded in
 `docs/architecture/conversation_research_platform.md`, with separate Mermaid
 component, synchronous/asynchronous, completion, state, and data-model diagrams.
 All eight implementation stages are active in the runtime.
+
+Conversation model compatibility is now checked while the API runtime is
+composed. The probe uses the real Responses API native-tool path and all four
+Conversation tool definitions without executing a research tool. Its redacted
+ready/unavailable/disabled projection is exposed by `/healthz` and displayed
+by the browser before a user submits a message. Provider failures retain only
+the stable failure kind, retryability, HTTP status, allowlisted provider code
+or parameter, API mode, and a safe public explanation; raw response bodies,
+credentials, endpoints, prompts, and headers do not cross the infrastructure
+boundary. Failed Conversation Turns now display that explanation.
+
+The original `start_research` Pydantic schema was not a valid strict function
+schema because defaulted fields were omitted from `required`. Conversation
+tool definitions now follow the strict Responses contract: every object sets
+`additionalProperties: false`, every property is required, and semantically
+optional values are nullable. This removes the request-time 400 failure that
+previously surfaced in the browser only as `Turn Failed · invalid_request`.
+The current repository `.env` remains the authoritative source for non-empty
+OpenAI-compatible settings at process startup, avoiding accidental use of an
+older inherited key or endpoint.
+
+The direct-response evidence guard now distinguishes actual normative language
+from harmless platform descriptions: mentioning 3GPP, a TS family, or a Release
+while explaining the assistant's capabilities no longer fails an ordinary
+conversation, while requirement language such as `shall`, `must`, `规定`, and
+`要求` remains blocked without a Research Result. Known local response-contract
+rejections are persisted with a specific safe explanation instead of the
+generic internal-error message.
+
+The current quality gate passes the structure check, the 50-question QA data
+check, and all 312 tests. The frontend production TypeScript/Vite build passes,
+and a live probe using the current project `.env` reports the configured model
+ready for the Responses native-tool contract.
+
+A live 2026-10-24 Vite-proxy/API/MCP/Worker exercise created one immutable
+Release 17 Run, reused the 27,858-vector index, persisted a partial Research
+Result, and automatically presented that Result in the originating
+Conversation. The follow-up hardening is now implemented. New Runs default to
+completion-first execution without a whole-Run wall-clock deadline. Logical
+iteration/tool/replan budgets, individual provider timeouts, cancellation,
+Worker leases, and recovery remain bounded; an explicit elapsed window still
+enables the compatible phased deadline policy. The product application now
+uses the existing Parallel Research Workflow: every initial or corrective
+attempt is an immutable TaskExecution, dependency-ready tasks fan out
+concurrently, and a deterministic join barrier terminalizes every planned task
+before synthesis. Evidence status remains separate from execution lifecycle,
+so a normally completed Run can publish sufficient, partial, conflicting, or
+insufficient Results.
+
+The synthesis model now returns only answer prose and ordered evidence IDs;
+mode and task coverage metadata are derived by deterministic backend code.
+Strict-schema failures receive bounded corrective retries. Run submission no
+longer constructs a Retriever or opens the vector index. The MCP process
+validates the active Release 17 corpus and prewarms the shared immutable-scope
+Retriever pool before accepting tool traffic, and its Worker reuses that same
+runtime. The original five-stage implementation was first verified offline.
+
+The subsequent live backend validation is now complete. A simple single-task
+Run and a complex three-task fan-out Run both completed, crossed the all-task
+terminal barrier before synthesis, and persisted sufficient Research Results.
+The complex Run dispatched all three independent TaskExecutions in one wave.
+The same process reused one immutable Retriever and no chunk/index snapshot
+file changed during either Run. Cold Release 17 prewarm remains an observed
+startup cost of roughly 115 seconds, while warmed Run submission takes tens of
+milliseconds.
+
+Live validation also exposed and fixed an observability gap in the product
+Parallel Research Workflow. The existing safe ContextVar receipt capture is
+now applied around normal graph nodes, parallel Researcher Results retain their
+model receipts and wall-clock latency through fan-in, and serialized Run Events
+record both. Concurrent Researcher stage latency is aggregated as the maximum
+worker latency per dispatch wave, then summed across waves. Model-receipt
+latency is excluded from node-stage totals to prevent double counting. Missing
+provider usage remains `null` instead of being reported as zero. A follow-up
+live Run persisted five Router/Researcher/Judge/Synthesizer receipts, reported
+21,470 input and 1,518 output Tokens, and recorded 19.37 seconds of Researcher
+critical-path time. The project `uv` quality gate passes all 313 tests and the
+frontend production build passes.
+
+The authenticated API-to-MCP service-chain validation now completes end to
+end. A Conversation research request created exactly one immutable Release 17
+Run, ended its originating Turn with a background acknowledgement after 20.87
+seconds, and let the MCP-owned Worker continue the same Run without a global
+deadline. The Run crossed the all-task terminal barrier after 608.14 seconds,
+persisted a partial Research Result with 60 evidence items, and triggered a new
+internal Conversation Turn. The final assistant message links the same Run and
+Result and exposes 22 citations. All 16 Conversation Events were unique,
+strictly ordered, and replayable after reconnect. Durable telemetry reported
+765,927 input and 68,688 output Tokens, including Researcher and Sufficiency
+Judge critical-path latency.
+
+Repeated live runs also hardened two untrusted-provider boundaries. A Judge
+assessment that selects evidence outside its task's source-valid eligible set
+is now downgraded to an explicit insufficient assessment and Gap instead of
+aborting unrelated tasks. Completed sufficient task assessments are frozen, so
+later corrective waves judge only active tasks. If the final synthesis model
+reports a typed provider failure after task evidence has already been
+validated, the workflow can persist a deterministic, explicitly labeled
+evidence digest containing only eligible cited evidence; programming and state
+errors still fail normally. Failed graph-node model receipts are emitted before
+the exception propagates. The canonical project gate now passes all 316 tests.
+
+Browser-level validation now covers the same persisted state. A real headless
+Chrome session rendered the Simplified Chinese login and workspace, loaded the
+completed asynchronous Conversation with three messages, 22 Result citations,
+and its completed Run card, and completed a separate ordinary two-message
+Conversation without invoking any research tool. A hard reload restored the
+ordinary Conversation and both messages from the API. No browser console
+exception, network request failure, capability warning, or visible
+Conversation error was observed, and the production Vite build passes.
 
 No new corpus provider, private-document upload, external broker, production
 deployment layer, or automatic whole-Run replay is part of the planned first
@@ -61,7 +208,7 @@ start. Once the active registry completely covers a Release, it is the source
 of that snapshot; until then the existing highest-local-version behavior is
 used. Resume reconstructs retrieval from the stored exact binding, so an active
 pointer change cannot mix versions inside a Run. The Run wire contract is now
-`research-run/v1.6`, while persisted `research-run/v1` through `v1.5` payloads
+`research-run/v1.7`, while persisted `research-run/v1` through `v1.6` payloads
 remain readable.
 
 The multi-user local workspace milestone is implemented. The former
@@ -154,7 +301,8 @@ nodes and Researcher rounds/tool calls, stable operation keys, redacted model
 receipts, and per-stage latency/token inspection. Events cover transitions,
 task dispatch, tool calls, evidence selection, source validation, Judge, Gap,
 replan, synthesis, resume, cancellation, and stop. The runtime state wire
-contract is now `research-state/v1.6`.
+contract is now `research-state/v1.9`; persisted v1.7 and v1.8 checkpoints
+remain readable. The Research Run contract is `research-run/v1.8`.
 The public `context` package now provides the first Context Harness slice.
 Every OpenAI-compatible structured request receives a conservative full-request
 Token estimate before transmission, with a configurable profile checked again
@@ -197,7 +345,11 @@ The first local browser client is now implemented under `frontend/` as a React
 the server-issued bearer token in `sessionStorage`, and provides a responsive
 login view, workspace switcher, research-desk shell, async Run submission
 entry point, and an authenticated Fetch-based SSE reader for live Run stages.
-It does not access SQLite directly. Completed Runs now expose only supported
+The browser interface now defaults to Simplified Chinese (`zh-CN`): static
+copy, lifecycle/status labels, dates, diagnostics, knowledge review, and member
+administration are localized, while identifiers and source excerpts retain
+their authoritative values. Direct Runs submitted from the browser request
+Chinese answers. It does not access SQLite directly. Completed Runs now expose only supported
 evidence cited by the final answer through the authorized inspection response,
 and the
 research desk renders the directly generated answer, inline evidence IDs,
@@ -1157,7 +1309,7 @@ that gap into new retrieval calls in the same model turn. No second query-
 rewrite node or model call was added; Planner, retrieval algorithms, Source
 Validator, and Sufficiency Judge responsibilities are unchanged. Runtime state
 was `research-state/v1.5` for the expanded budget shape; the active multi-user
-runtime contract is `research-state/v1.6`.
+runtime contract is `research-state/v1.8`.
 
 Final synthesis now has the same explicit scope boundary. The
 `evidence-synthesis/v1.2` prompt lives under `specrag.prompts`; the model receives
@@ -1216,7 +1368,7 @@ handling or applicable limits. This prevents a broad procedural passage or
 success/failure message pair from being treated as proof of a more specific
 relation.
 
-Final synthesis uses `evidence-synthesis/v1.6`. It preserves nested branch
+Final synthesis uses `evidence-synthesis/v1.7`. It preserves nested branch
 antecedents, exceptions, implication direction, and normative limits that
 qualify the requested conclusion, while omitting independent evidence-backed
 facts that are unnecessary to answer the original question. Focused live
@@ -1228,7 +1380,7 @@ return/handling link; synthesis correctly did not run for either case.
 
 Judge-gap corrective retrieval is now being migrated from mandatory query
 rewriting to evidence-gap-directed acquisition. The runtime contract is
-`research-state/v1.7` and the Researcher controller contract is
+`research-state/v1.8` and the Researcher controller contract is
 `researcher-controller/v2.2`. Non-sufficient Judge assessments now carry a
 small required proposition, missing semantic dimensions, evidence-need type,
 trusted source-grounded anchors, and already-supported evidence IDs. Before a

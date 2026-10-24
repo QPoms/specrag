@@ -137,9 +137,12 @@ automatic physical retirement. Provider discovery and source materialization
 are injected at the retrieval boundary; provider SDK/network code belongs in
 `infrastructure`. Durable Runs persist exact version bindings before execution.
 
-The first orchestration implementation is `orchestration/workflow.py`. It owns
-the `StateGraph`, conditional edges, budget guard, checkpointer, and recovery
-API. Node business behavior is supplied through `ResearchNodeHandlers`.
+The shared orchestration primitives live in `orchestration/workflow.py`; the
+product research application uses the dependency-aware fan-out/fan-in graph in
+`orchestration/parallel.py`. Graph code owns conditional edges, TaskExecution
+scheduling, the all-task terminal join barrier, budget guards, checkpointers,
+and recovery. Node business behavior is supplied through
+`ResearchNodeHandlers`.
 The evidence path has one deterministic `source_validator` node followed by
 one model-backed `sufficiency_judge`: source validation checks provenance and
 exact locators, while the judge alone selects supporting evidence and decides

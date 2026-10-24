@@ -11,19 +11,48 @@ from specrag.infrastructure.structured_agent import CodexAgentError
 from specrag.models import (
     ActorContext,
     CorpusVersionRef,
+    DEFAULT_RESEARCH_ELAPSED_SECONDS,
     ResearchRequest,
     SpecificationScope,
 )
 from specrag.orchestration import RunHarness
+from specrag.orchestration.lifecycle import phase_deadlines
 
 
 NOW = datetime.now(timezone.utc)
 
 
+def test_default_run_budget_reserves_finalization_and_persistence() -> None:
+    research, finalization, hard = phase_deadlines(
+        NOW,
+        elapsed_time_seconds=DEFAULT_RESEARCH_ELAPSED_SECONDS,
+    )
+
+    assert hard - NOW == timedelta(minutes=20)
+    assert research - NOW == timedelta(minutes=17)
+    assert finalization - NOW == timedelta(minutes=19, seconds=30)
+
+
+def test_new_run_defaults_to_completion_first_without_phase_deadlines() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _factory)
+
+    submitted = harness.submit(
+        _context(), ResearchRequest(question="completion-first question")
+    )
+
+    assert submitted.run.research_deadline_at is None
+    assert submitted.run.finalization_deadline_at is None
+    assert submitted.run.deadline_at is None
+
+
 def _context(user="alice", workspace="WA", role="member"):
     return ActorContext(
-        user_id=user, workspace_id=workspace, role=role,
-        session_id=f"session-{user}", authenticated_at=NOW,
+        user_id=user,
+        workspace_id=workspace,
+        role=role,
+        session_id=f"session-{user}",
+        authenticated_at=NOW,
         expires_at=NOW + timedelta(hours=12),
     )
 
@@ -35,8 +64,11 @@ class _Workflow:
 
     def resume(self, *, thread_id):
         from specrag.orchestration.application import RuntimeStopped
+
         harness = self.control.__self__
-        run = next(item for item in harness.store._runs.values() if item.thread_id == thread_id)
+        run = next(
+            item for item in harness.store._runs.values() if item.thread_id == thread_id
+        )
         reason = self.control(run.run_id)
         if reason:
             raise RuntimeStopped(reason)
@@ -52,12 +84,19 @@ class _Application:
         self.workflow = _Workflow(control, crash=crash)
 
     def run(
-        self, *, research_id, question, thread_id, budget,
-        specfact_ids=(), memory_ids=(),
+        self,
+        *,
+        research_id,
+        question,
+        thread_id,
+        budget,
+        specfact_ids=(),
+        memory_ids=(),
     ):
         reason = self.control(research_id)
         if reason:
             from specrag.orchestration.application import RuntimeStopped
+
             raise RuntimeStopped(reason)
         return {"stop_reason": "completed"}
 
@@ -94,6 +133,10 @@ def _api_failure_factory(release, control, event_sink, research_context):
     return _ApiFailureApplication(control)
 
 
+def _factory_failure(release, control, event_sink, research_context):
+    raise RuntimeError("research runtime construction failed")
+
+
 def test_run_content_is_owner_private_and_admin_gets_metadata_only() -> None:
     store = InMemoryRunStore()
     harness = RunHarness(store, _factory)
@@ -117,14 +160,16 @@ def test_cancel_is_checked_before_runtime_execution() -> None:
     completed = harness.start(_context(), ResearchRequest(question="question"))
     assert harness.cancel(_context(), completed.run.run_id).status == "completed"
 
-    original = completed.run.model_copy(update={
-        "run_id": "RUN-" + "2" * 32,
-        "thread_id": "THREAD-" + "2" * 32,
-        "status": "queued",
-        "stop_reason": None,
-        "started_at": None,
-        "finished_at": None,
-    })
+    original = completed.run.model_copy(
+        update={
+            "run_id": "RUN-" + "2" * 32,
+            "thread_id": "THREAD-" + "2" * 32,
+            "status": "queued",
+            "stop_reason": None,
+            "started_at": None,
+            "finished_at": None,
+        }
+    )
     store.put(original)
     harness.cancel(_context(), original.run_id)
     resumed = harness.resume(_context(), original.run_id)
@@ -139,24 +184,86 @@ def test_run_events_and_snapshot_ids_are_stable() -> None:
         return ("SF-" + "1" * 24,), ("UM-" + "1" * 32,), ({"hint": question},)
 
     harness = RunHarness(store, _factory, context_snapshot=snapshot)
-    result = harness.start(_context(), ResearchRequest(
-        question="question", configuration_memory_ids=("UM-" + "2" * 32,),
-    ))
+    result = harness.start(
+        _context(),
+        ResearchRequest(
+            question="question",
+            configuration_memory_ids=("UM-" + "2" * 32,),
+        ),
+    )
     assert result.run.specfact_ids == ("SF-" + "1" * 24,)
     assert result.run.memory_ids == (
         "UM-" + "1" * 32,
         "UM-" + "2" * 32,
     )
-    assert [event.event_type for event in result.events] == ["run_started", "run_stopped"]
+    assert [event.event_type for event in result.events] == [
+        "run_started",
+        "run_stopped",
+    ]
     assert len({event.operation_key for event in result.events}) == 2
+
+
+def test_inspection_aggregates_parallel_critical_path_and_missing_usage() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _factory)
+    submitted = harness.submit(_context(), ResearchRequest(question="question"))
+    run = submitted.run
+    for task_id, latency_ms in (("T1", 100.0), ("T2", 180.0)):
+        harness.event_recorder.append(
+            run,
+            "node_transition",
+            f"worker:{task_id}",
+            stage="researcher",
+            task_id=task_id,
+            payload={
+                "latency_ms": latency_ms,
+                "parallel_worker": True,
+                "wave": 1,
+            },
+        )
+    harness.event_recorder.append(
+        run,
+        "node_transition",
+        "worker:T3",
+        stage="researcher",
+        task_id="T3",
+        payload={
+            "latency_ms": 50.0,
+            "parallel_worker": True,
+            "wave": 2,
+        },
+    )
+    harness.event_recorder.append(
+        run,
+        "model_receipt",
+        "receipt:1",
+        stage="router",
+        payload={"latency_ms": 25, "input_tokens": 10, "output_tokens": 5},
+    )
+    harness.event_recorder.append(
+        run,
+        "model_receipt",
+        "receipt:2",
+        stage="sufficiency_judge",
+        payload={"latency_ms": 30, "input_tokens": None, "output_tokens": None},
+    )
+
+    inspection = harness.inspect(_context(), run.run_id)
+
+    assert inspection.stage_latency_ms["researcher"] == 230.0
+    assert "router" not in inspection.stage_latency_ms
+    assert inspection.input_tokens is None
+    assert inspection.output_tokens is None
 
 
 def test_run_freezes_exact_corpus_versions_at_start() -> None:
     store = InMemoryRunStore()
-    snapshots = [(
-        CorpusVersionRef(specification="24.501", version="17.17.0"),
-        CorpusVersionRef(specification="33.501", version="17.12.0"),
-    )]
+    snapshots = [
+        (
+            CorpusVersionRef(specification="24.501", version="17.17.0"),
+            CorpusVersionRef(specification="33.501", version="17.12.0"),
+        )
+    ]
     harness = RunHarness(store, _factory, corpus_snapshot=lambda _scope: snapshots[0])
 
     result = harness.start(_context(), ResearchRequest(question="question"))
@@ -168,7 +275,8 @@ def test_run_freezes_exact_corpus_versions_at_start() -> None:
     persisted = harness.inspect(_context(), result.run.run_id).run
     assert persisted.corpus_version_policy == "mixed_versions"
     assert [item.version for item in persisted.corpus_versions] == [
-        "17.17.0", "17.12.0"
+        "17.17.0",
+        "17.12.0",
     ]
 
 
@@ -180,9 +288,7 @@ def test_conversation_submission_freezes_input_and_is_idempotent() -> None:
         question="When shall the UE register?",
         objective="Determine the normative registration trigger.",
         conditions=("UE is in 5GMM-DEREGISTERED",),
-        requested_scope=SpecificationScope(
-            policy="exact_version", versions=(bound,)
-        ),
+        requested_scope=SpecificationScope(policy="exact_version", versions=(bound,)),
         conversation_id="CONV-" + "A" * 32,
         origin_message_id="MESSAGE-1",
         origin_turn_id="TURN-" + "B" * 32,
@@ -242,18 +348,66 @@ def test_elapsed_deadline_stops_resume() -> None:
     store = InMemoryRunStore()
     harness = RunHarness(store, _factory)
     completed = harness.start(_context(), ResearchRequest(question="question"))
-    expired = completed.run.model_copy(update={
-        "run_id": "RUN-" + "3" * 32,
-        "thread_id": "THREAD-" + "3" * 32,
-        "status": "running",
-        "stop_reason": None,
-        "finished_at": None,
-        "deadline_at": NOW - timedelta(seconds=1),
-    })
+    expired = completed.run.model_copy(
+        update={
+            "run_id": "RUN-" + "3" * 32,
+            "thread_id": "THREAD-" + "3" * 32,
+            "status": "running",
+            "stop_reason": None,
+            "finished_at": None,
+            "deadline_at": NOW - timedelta(seconds=1),
+        }
+    )
     store.put(expired)
     result = harness.resume(_context(), expired.run_id)
     assert result.run.status == "timed_out"
     assert result.run.stop_reason == "elapsed_time_budget"
+
+
+def test_expired_run_is_terminal_before_runtime_construction() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _factory_failure)
+    queued = harness.submit(_context(), ResearchRequest(question="question"))
+    store.put(
+        queued.run.model_copy(
+            update={
+                "deadline_at": NOW - timedelta(seconds=1),
+            }
+        )
+    )
+
+    result = harness.execute_queued(_context(), queued.run.run_id)
+
+    assert result.run.status == "timed_out"
+    assert result.run.stop_reason == "elapsed_time_budget"
+    assert result.events[-1].event_type == "run_stopped"
+
+
+def test_runtime_construction_failure_is_persisted() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(store, _factory_failure)
+
+    with pytest.raises(RuntimeError, match="runtime construction failed"):
+        harness.start(_context(), ResearchRequest(question="question"))
+
+    failed = next(iter(store._runs.values()))
+    assert failed.status == "failed"
+    assert failed.stop_reason == "failed"
+    assert store.events(failed.run_id)[-1].event_type == "run_stopped"
+
+
+def test_inspection_reads_checkpoint_without_constructing_research_runtime() -> None:
+    store = InMemoryRunStore()
+    harness = RunHarness(
+        store,
+        _factory_failure,
+        checkpoint_reader=lambda thread_id: {"thread_id": thread_id},
+    )
+    queued = harness.submit(_context(), ResearchRequest(question="question"))
+
+    inspected = harness.inspect(_context(), queued.run.run_id)
+
+    assert inspected.checkpoint == {"thread_id": queued.run.thread_id}
 
 
 def test_new_harness_can_resume_after_process_interruption() -> None:
@@ -298,15 +452,15 @@ def test_terminal_run_can_queue_resume_only_with_checkpoint() -> None:
     store = InMemoryRunStore()
     harness = RunHarness(store, _factory)
     completed = harness.start(_context(), ResearchRequest(question="question"))
-    failed = completed.run.model_copy(update={
-        "status": "failed",
-        "stop_reason": "failed",
-    })
+    failed = completed.run.model_copy(
+        update={
+            "status": "failed",
+            "stop_reason": "failed",
+        }
+    )
     store.put(failed)
 
-    queued = harness.queue_resume(
-        _context(), failed.run_id, elapsed_time_seconds=120
-    )
+    queued = harness.queue_resume(_context(), failed.run_id, elapsed_time_seconds=120)
     duplicate = harness.queue_resume(
         _context(), failed.run_id, elapsed_time_seconds=120
     )
@@ -325,16 +479,17 @@ def test_terminal_run_can_queue_resume_only_with_checkpoint() -> None:
 def test_retry_creates_new_linked_run_with_fresh_lifecycle() -> None:
     store = InMemoryRunStore()
     harness = RunHarness(store, _factory)
-    completed = harness.start(_context(), ResearchRequest(
-        question="question",
-        release=18,
-        answer_language="Chinese",
-        detail_level="detailed",
-    ))
-
-    retried = harness.retry(
-        _context(), completed.run.run_id, elapsed_time_seconds=300
+    completed = harness.start(
+        _context(),
+        ResearchRequest(
+            question="question",
+            release=18,
+            answer_language="Chinese",
+            detail_level="detailed",
+        ),
     )
+
+    retried = harness.retry(_context(), completed.run.run_id, elapsed_time_seconds=300)
 
     assert retried.run.run_id != completed.run.run_id
     assert retried.run.retry_of_run_id == completed.run.run_id

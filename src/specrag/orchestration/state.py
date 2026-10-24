@@ -15,6 +15,7 @@ from specrag.models import (
     ResearcherStopReason,
     ResearcherEvidenceSelectionRecord,
     ResearchTask,
+    ResearchTaskExecution,
     ResearchWorkerResult,
     SourceValidationResult,
     StopReason,
@@ -25,13 +26,16 @@ from specrag.models import (
 
 
 class ResearchState(TypedDict):
-    schema_version: Literal["research-state/v1.7"]
+    schema_version: Literal[
+        "research-state/v1.7", "research-state/v1.8", "research-state/v1.9"
+    ]
     research_id: str
     user_question: str
     route: Literal["plan", "finish"]
     route_decision: ResearchRouteDecision | None
     research_plan: ResearchPlan | None
     research_tasks: tuple[ResearchTask, ...]
+    task_executions: tuple[ResearchTaskExecution, ...]
     candidate_evidence: tuple[CandidateEvidence, ...]
     source_validations: tuple[SourceValidationResult, ...]
     validated_evidence: tuple[ValidatedEvidence, ...]
@@ -72,13 +76,14 @@ def new_research_state(
     if not user_question.strip():
         raise ValueError("user_question must not be blank")
     return ResearchState(
-        schema_version="research-state/v1.7",
+        schema_version="research-state/v1.9",
         research_id=research_id,
         user_question=user_question,
         route="plan",
         route_decision=None,
         research_plan=None,
         research_tasks=(),
+        task_executions=(),
         candidate_evidence=(),
         source_validations=(),
         validated_evidence=(),

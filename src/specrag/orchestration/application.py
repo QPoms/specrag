@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from specrag.agents.models import ResearcherActionPlan
@@ -30,7 +31,10 @@ from specrag.infrastructure.research_planning import (
 from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
-from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
+from specrag.infrastructure.structured_agent import (
+    LLMApiStructuredAgent,
+    capture_agent_receipts,
+)
 from specrag.models import (
     CorpusSourceDocument,
     ResearchBudget,
@@ -43,11 +47,14 @@ from .adapters import (
     SourceValidationHandler,
     SingleResearcherHandler,
 )
+from .parallel import (
+    ParallelResearcherHandler,
+    ParallelResearchWorkflow,
+    build_parallel_research_workflow,
+)
 from .state import ResearchState, new_research_state
 from .workflow import (
     ResearchNodeHandlers,
-    SingleResearchWorkflow,
-    build_single_research_workflow,
 )
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
 from specrag.retrieval.corpus import (
@@ -113,9 +120,9 @@ class GapReplanner:
 
 @dataclass(frozen=True)
 class ResearchApplication:
-    """One reusable, fully assembled Single Researcher application."""
+    """One reusable dependency-aware parallel Researcher application."""
 
-    workflow: SingleResearchWorkflow
+    workflow: ParallelResearchWorkflow
     release: int
     corpus_scope: CorpusScope
     corpus_documents: tuple[CorpusSourceDocument, ...]
@@ -333,6 +340,7 @@ def build_researcher_planning_application(
         "target_release": release,
     })
     app_config = app_config.model_copy(update={"retrieval": retrieval_config})
+
     corpus_scope = corpus_scope_from_config(app_config.retrieval)
     documents = discover_source_documents(app_config.retrieval, corpus_scope)
     available_specifications = tuple(sorted({
@@ -372,6 +380,7 @@ def build_research_application(
     research_context: tuple[dict[str, object], ...] = (),
     corpus_scope: CorpusScope | None = None,
     context_harness: ContextHarness | None = None,
+    retriever: HybridMarkdownRetriever | None = None,
 ) -> ResearchApplication:
     """Wire existing retrieval, agent, evidence, and graph components."""
 
@@ -384,26 +393,34 @@ def build_research_application(
     })
     app_config = app_config.model_copy(update={"retrieval": retrieval_config})
 
-    retriever = HybridMarkdownRetriever(
-        app_config.retrieval,
-        corpus_scope=corpus_scope,
+    finalization_deadline_at = next((
+        datetime.fromisoformat(value)
+        for item in research_context
+        if item.get("kind") == "run_configuration"
+        and isinstance((value := item.get("finalization_deadline_at")), str)
+    ), None)
+
+    active_retriever = retriever or HybridMarkdownRetriever(
+        app_config.retrieval, corpus_scope=corpus_scope
     )
-    tool_registry = build_retrieval_tool_registry(retriever)
+    tool_registry = build_retrieval_tool_registry(active_retriever)
     planning_agent = LLMApiStructuredAgent(
         role="planning",
         reasoning_effort="high",
         config=app_config,
+        deadline_at=finalization_deadline_at,
     )
     summary_agent = LLMApiStructuredAgent(
         role="summary",
         reasoning_effort="high",
         config=app_config,
+        deadline_at=finalization_deadline_at,
     )
     router = StructuredQuestionRouter(planning_agent)
     planner = StructuredResearchPlanner(planning_agent)
     researcher_service = RegistryResearcherService(
         controller_agent=StructuredResearcherController(planning_agent),
-        retriever=retriever,
+        retriever=active_retriever,
         app_config=app_config,
         tool_registry=tool_registry,
         max_rounds=3,
@@ -449,20 +466,29 @@ def build_research_application(
         replanner=GapReplanner(),
         synthesizer=EvidenceSynthesisHandler(synthesis),
     )
+    research_deadline_at = next((
+        datetime.fromisoformat(value)
+        for item in research_context
+        if item.get("kind") == "run_configuration"
+        and isinstance((value := item.get("research_deadline_at")), str)
+    ), None)
     return ResearchApplication(
-        workflow=build_single_research_workflow(
+        workflow=build_parallel_research_workflow(
             handlers,
+            ParallelResearcherHandler(researcher_service),
             checkpointer=checkpointer,
             runtime_guard=(
                 (lambda state: _raise_if_stopped(stop_requested(state["research_id"])))
                 if stop_requested is not None else None
             ),
             event_sink=event_sink,
+            receipt_capture=capture_agent_receipts,
+            research_deadline_at=research_deadline_at,
         ),
         release=release,
-        corpus_scope=retriever.corpus_scope,
-        corpus_documents=retriever.documents,
-        retrieval_index_fingerprint=retriever.fingerprint,
+        corpus_scope=active_retriever.corpus_scope,
+        corpus_documents=active_retriever.documents,
+        retrieval_index_fingerprint=active_retriever.fingerprint,
     )
 
 

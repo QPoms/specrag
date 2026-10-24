@@ -92,25 +92,41 @@ class EvidenceSufficiencyService:
                     valid_candidates,
                     original_question,
                 )
-            if assessment.task_id != task.task_id:
-                raise ValueError(
-                    "sufficiency assessment returned a mismatched task ID"
-                )
             eligible = {
                 item.evidence_id for item in valid_candidates
             }
             unknown = set(assessment.supporting_evidence_ids) - eligible
-            if unknown:
-                raise ValueError(
-                    "sufficiency assessment cites ineligible evidence: "
-                    + ", ".join(sorted(unknown))
+            rejection_reason = None
+            if assessment.task_id != task.task_id:
+                rejection_reason = "The assessment returned a mismatched task ID."
+            elif unknown:
+                rejection_reason = (
+                    "The assessment referenced evidence that is not source-valid "
+                    "and eligible for this task."
                 )
-            if (
+            elif (
                 assessment.status == "sufficient"
                 and not assessment.supporting_evidence_ids
             ):
-                raise ValueError(
-                    "sufficient task requires at least one selected evidence item"
+                rejection_reason = (
+                    "The assessment claimed sufficiency without selecting evidence."
+                )
+            if rejection_reason is not None:
+                assessment = TaskSufficiencyAssessment(
+                    task_id=task.task_id,
+                    status="insufficient",
+                    supporting_evidence_ids=tuple(
+                        evidence_id
+                        for evidence_id in assessment.supporting_evidence_ids
+                        if evidence_id in eligible
+                    ),
+                    missing_relation=rejection_reason,
+                    required_proposition=task.objective,
+                    evidence_need="direct_fact",
+                    rationale=(
+                        "The model-proposed sufficiency decision was rejected by "
+                        "the deterministic evidence boundary."
+                    ),
                 )
 
             grounded_anchors = _grounded_gap_anchors(

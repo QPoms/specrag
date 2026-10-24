@@ -12,6 +12,11 @@ from .research import ResearchBudget
 from .results import PriorResultRef, ResearchInputSnapshot, SpecificationScope
 
 
+DEFAULT_RESEARCH_ELAPSED_SECONDS = 1_200
+RESEARCH_FINALIZATION_RESERVE_SECONDS = 180
+RESEARCH_PERSISTENCE_RESERVE_SECONDS = 30
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -23,6 +28,7 @@ RunStopReason = Literal[
     "completed",
     "cancelled",
     "elapsed_time_budget",
+    "research_time_budget",
     "iteration_budget",
     "tool_budget",
     "replan_budget",
@@ -65,9 +71,9 @@ class ResearchRun(_StrictModel):
     schema_version: Literal[
         "research-run/v1", "research-run/v1.1", "research-run/v1.2",
         "research-run/v1.3", "research-run/v1.4", "research-run/v1.5",
-        "research-run/v1.6",
+        "research-run/v1.6", "research-run/v1.7", "research-run/v1.8",
     ] = (
-        "research-run/v1.6"
+        "research-run/v1.8"
     )
     run_id: str = Field(pattern=r"^RUN-[0-9A-F]{32}$")
     thread_id: str = Field(pattern=r"^THREAD-[0-9A-F]{32}$")
@@ -91,6 +97,8 @@ class ResearchRun(_StrictModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    research_deadline_at: datetime | None = None
+    finalization_deadline_at: datetime | None = None
     deadline_at: datetime | None = None
     cancel_requested_at: datetime | None = None
     retry_of_run_id: str | None = Field(
@@ -132,6 +140,17 @@ class ResearchRun(_StrictModel):
         if self.finished_at is not None and self.started_at is not None:
             if self.finished_at < self.started_at:
                 raise ValueError("run cannot finish before start")
+        deadlines = tuple(
+            item for item in (
+                self.research_deadline_at,
+                self.finalization_deadline_at,
+                self.deadline_at,
+            ) if item is not None
+        )
+        if len(deadlines) > 1 and deadlines != tuple(sorted(deadlines)):
+            raise ValueError("Run phase deadlines must be ordered")
+        if deadlines and deadlines[0] < self.created_at:
+            raise ValueError("Run deadline cannot precede creation")
         if self.retry_of_run_id == self.run_id:
             raise ValueError("Run cannot retry itself")
         if self.corpus_version_policy is None and (
@@ -190,7 +209,7 @@ class ResearchRequest(_StrictModel):
     detail_level: str = Field(default="standard", min_length=1)
     configuration_memory_ids: tuple[str, ...] = ()
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
-    elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
+    elapsed_time_seconds: int | None = Field(default=None, ge=1, le=86400)
     development_question_id: str | None = None
     conversation_id: str | None = Field(
         default=None, pattern=r"^CONV-[0-9A-F]{32}$"

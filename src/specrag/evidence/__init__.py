@@ -11,7 +11,11 @@ from .sufficiency import (
     EvidenceSufficiencyService,
     TaskSufficiencyAssessor,
 )
-from .synthesis import EvidenceSynthesisGenerator, EvidenceSynthesisService
+from .synthesis import (
+    EvidenceSynthesisGenerator,
+    EvidenceSynthesisService,
+    partial_synthesis_eligible,
+)
 from .results import ResearchResultMaterializer
 
 __all__ = [
@@ -19,6 +23,7 @@ __all__ = [
     "EvidenceSufficiencyService",
     "EvidenceSynthesisGenerator",
     "EvidenceSynthesisService",
+    "partial_synthesis_eligible",
     "ResearchResultMaterializer",
     "SourceEvidenceValidator",
     "SourceValidationBatch",

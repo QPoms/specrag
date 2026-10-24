@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .runtime import RunFailureKind
 
 
 class _StrictModel(BaseModel):
@@ -35,8 +37,20 @@ class NativeFunctionCallOutput(_StrictModel):
     output: dict[str, Any]
 
 
+class NativeToolCapability(_StrictModel):
+    """Redacted startup status for the configured native-tool transport."""
+
+    status: Literal["ready", "unavailable", "disabled"]
+    api_mode: Literal["responses", "chat_completions"] | None = None
+    failure_kind: RunFailureKind | None = None
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    retryable: bool = False
+    message: str = Field(min_length=1, max_length=1000)
+
+
 __all__ = [
     "NativeFunctionCall",
     "NativeFunctionCallOutput",
     "NativeFunctionDefinition",
+    "NativeToolCapability",
 ]

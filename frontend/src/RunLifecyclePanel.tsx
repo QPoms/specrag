@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { RunInspection } from "./api";
+import { zhDate, zhLabel } from "./locale";
 
 type Action = "cancel" | "resume" | "retry";
 
@@ -37,32 +38,38 @@ export function RunLifecyclePanel({ inspection, busy, notice, onCancel, onResume
 
   return <section className={`run-control-panel ${inspection.failure ? "has-failure" : ""}`}>
     <div className="run-control-heading">
-      <div><p className="eyebrow">Run lifecycle</p><h2>Execution controls &amp; diagnostics</h2><p>{run.run_id}{run.retry_of_run_id && <> · retry of {run.retry_of_run_id}</>}</p></div>
-      <span className={`run-state-large ${run.status}`}><i />{run.status.replaceAll("_", " ")}</span>
+      <div><p className="eyebrow">研究任务生命周期</p><h2>执行控制与诊断</h2><p>{run.run_id}{run.retry_of_run_id && <> · 重试来源 {run.retry_of_run_id}</>}</p></div>
+      <span className={`run-state-large ${run.status}`}><i />{zhLabel(run.status)}</span>
     </div>
     {notice && <div className="run-action-notice">{notice}</div>}
     <div className="run-control-grid">
       <div className="run-metrics">
-        <Metric label="Elapsed stages" value={latency ? `${Math.round(latency)} ms` : "—"} />
-        <Metric label="Input tokens" value={inspection.input_tokens.toLocaleString()} />
-        <Metric label="Output tokens" value={inspection.output_tokens.toLocaleString()} />
-        <Metric label="Checkpoint" value={inspection.checkpoint_available ? "Available" : "Unavailable"} />
+        <Metric label="各阶段累计耗时" value={latency ? `${Math.round(latency)} 毫秒` : "—"} />
+        <Metric
+          label="输入 Token"
+          value={inspection.input_tokens?.toLocaleString("zh-CN") ?? "未提供"}
+        />
+        <Metric
+          label="输出 Token"
+          value={inspection.output_tokens?.toLocaleString("zh-CN") ?? "未提供"}
+        />
+        <Metric label="运行断点" value={inspection.checkpoint_available ? "可用" : "不可用"} />
       </div>
       <div className="run-actions">
-        {active && <button className="danger-action" disabled={busy !== null || Boolean(run.cancel_requested_at)} onClick={() => void act("cancel")}>{run.cancel_requested_at ? "Cancellation requested" : confirming === "cancel" ? "Confirm cancellation" : "Cancel Run"}</button>}
-        {canResume && <button className="resume-action" disabled={busy !== null} onClick={() => void act("resume")}>{busy === "resume" ? "Queueing resume…" : "Resume checkpoint"}</button>}
-        {canRetry && <button className="retry-action" disabled={busy !== null} onClick={() => void act("retry")}>{busy === "retry" ? "Creating retry…" : confirming === "retry" ? "Create a fresh Run" : "Retry as new Run"}</button>}
-        {confirming && <button className="cancel-confirm" onClick={() => setConfirming(null)} disabled={busy !== null}>Keep current state</button>}
-        {inspection.failure && !canResume && <small>Resume is unavailable because this Run has no durable checkpoint. Retry remains safe.</small>}
-        {!active && !canResume && !canRetry && <small>No lifecycle action is available for this state.</small>}
+        {active && <button className="danger-action" disabled={busy !== null || Boolean(run.cancel_requested_at)} onClick={() => void act("cancel")}>{run.cancel_requested_at ? "已请求取消" : confirming === "cancel" ? "确认取消" : "取消任务"}</button>}
+        {canResume && <button className="resume-action" disabled={busy !== null} onClick={() => void act("resume")}>{busy === "resume" ? "正在提交恢复…" : "从断点恢复"}</button>}
+        {canRetry && <button className="retry-action" disabled={busy !== null} onClick={() => void act("retry")}>{busy === "retry" ? "正在创建重试…" : confirming === "retry" ? "创建全新任务" : "新建任务并重试"}</button>}
+        {confirming && <button className="cancel-confirm" onClick={() => setConfirming(null)} disabled={busy !== null}>保持当前状态</button>}
+        {inspection.failure && !canResume && <small>此任务没有持久化断点，因此无法恢复；仍可安全地新建任务重试。</small>}
+        {!active && !canResume && !canRetry && <small>当前状态没有可用的生命周期操作。</small>}
       </div>
     </div>
     {inspection.failure && <div className="failure-diagnostic">
-      <div><span className="failure-mark">!</span><div><p className="eyebrow">Safe failure summary</p><h3>{inspection.failure.summary}</h3><p>Reason: <strong>{inspection.failure.stop_reason.replaceAll("_", " ")}</strong>{inspection.failure.last_stage && <> · Last stage: <strong>{inspection.failure.last_stage.replaceAll("_", " ")}</strong></>}</p></div></div>
-      <p className="failure-retryability">Manual retry: <strong>{inspection.failure.retryable ? "recommended when ready" : "check configuration first"}</strong>{inspection.failure.attempt_count && <> · Attempts: <strong>{inspection.failure.attempt_count}</strong></>}</p>
-      <p className="failure-safety">Provider payloads, stack traces, credentials, and raw exception text are intentionally excluded.</p>
+      <div><span className="failure-mark">!</span><div><p className="eyebrow">安全错误摘要</p><h3>{inspection.failure.summary}</h3><p>原因：<strong>{zhLabel(inspection.failure.stop_reason)}</strong>{inspection.failure.last_stage && <> · 最后阶段：<strong>{zhLabel(inspection.failure.last_stage)}</strong></>}</p></div></div>
+      <p className="failure-retryability">手动重试：<strong>{inspection.failure.retryable ? "准备好后建议重试" : "请先检查配置"}</strong>{inspection.failure.attempt_count && <> · 尝试次数：<strong>{inspection.failure.attempt_count}</strong></>}</p>
+      <p className="failure-safety">出于安全考虑，此处不会展示供应商原始响应、堆栈、凭证或未经处理的异常文本。</p>
     </div>}
-    {latestEvents.length > 0 && <div className="recent-events"><span>Recent durable events</span>{latestEvents.map((event) => <div key={event.event_id ?? `${event.sequence}-${event.event_type}`}><b>#{event.sequence}</b><p>{event.event_type.replaceAll("_", " ")}</p><small>{event.stage?.replaceAll("_", " ") ?? "run"} · {formatTime(event.occurred_at)}</small></div>)}</div>}
+    {latestEvents.length > 0 && <div className="recent-events"><span>最近的持久化事件</span>{latestEvents.map((event) => <div key={event.event_id ?? `${event.sequence}-${event.event_type}`}><b>#{event.sequence}</b><p>{zhLabel(event.event_type)}</p><small>{zhLabel(event.stage ?? "run")} · {formatTime(event.occurred_at)}</small></div>)}</div>}
   </section>;
 }
 
@@ -71,5 +78,5 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function formatTime(value: string) {
-  return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return zhDate(value, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }

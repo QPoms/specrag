@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from specrag.models import (
     CandidateEvidence,
     EvidenceSynthesis,
+    EvidenceSynthesisDraft,
     ResearchTask,
     TaskSufficiencyAssessment,
 )
@@ -60,6 +62,11 @@ class StructuredEvidenceSynthesisGenerator:
         question: str,
         tasks: tuple[ResearchTask, ...],
         evidence: tuple[CandidateEvidence, ...],
+        *,
+        mode: Literal["complete", "partial"],
+        covered_task_ids: tuple[str, ...],
+        unresolved_task_ids: tuple[str, ...],
+        conflicting_task_ids: tuple[str, ...],
     ) -> EvidenceSynthesis:
         response = self.agent.parse(
             purpose="synthesize an evidence-grounded technical answer",
@@ -67,6 +74,10 @@ class StructuredEvidenceSynthesisGenerator:
             instructions=SYNTHESIS_INSTRUCTIONS,
             input_payload={
                 "question": question,
+                "synthesis_mode": mode,
+                "covered_task_ids": covered_task_ids,
+                "unresolved_task_ids": unresolved_task_ids,
+                "conflicting_task_ids": conflicting_task_ids,
                 "presentation": {
                     "answer_language": self.answer_language,
                     "detail_level": self.detail_level,
@@ -84,9 +95,16 @@ class StructuredEvidenceSynthesisGenerator:
                     for task in tasks
                 ],
             },
-            output_type=EvidenceSynthesis,
+            output_type=EvidenceSynthesisDraft,
         )
-        return response.output
+        return EvidenceSynthesis(
+            answer=response.output.answer,
+            evidence_ids=response.output.evidence_ids,
+            mode=mode,
+            covered_task_ids=covered_task_ids,
+            unresolved_task_ids=unresolved_task_ids,
+            conflicting_task_ids=conflicting_task_ids,
+        )
 
 
 __all__ = [

@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from threading import Event, Thread
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from specrag.models import ActorContext, ResearchRequest, ResearchRun
+from specrag.models import (
+    ActorContext,
+    ResearchRequest,
+    ResearchRun,
+)
 
 from .harness import RunHarness, RunInspection
 
 
 RunJobAction = Literal["execute", "resume"]
+_LOGGER = logging.getLogger(__name__)
 
 
 class RunQueue(Protocol):
@@ -140,7 +146,7 @@ class RunWorker:
         context: ActorContext,
         run_id: str,
         *,
-        elapsed_time_seconds: int = 900,
+        elapsed_time_seconds: int | None = None,
     ) -> RunInspection:
         inspection = self.harness.queue_resume(
             context,
@@ -156,7 +162,7 @@ class RunWorker:
         context: ActorContext,
         run_id: str,
         *,
-        elapsed_time_seconds: int = 900,
+        elapsed_time_seconds: int | None = None,
     ) -> RunInspection:
         inspection = self.harness.retry(
             context,
@@ -206,8 +212,17 @@ class RunWorker:
             if current is not None and current.status in {
                 "completed", "failed", "cancelled", "timed_out"
             }:
+                _LOGGER.warning(
+                    "Research Run %s stopped after an execution exception (%s).",
+                    job.run_id,
+                    current.status,
+                )
                 self.queue.complete(job.run_id, self.worker_id)
             else:
+                _LOGGER.exception(
+                    "Research Run %s failed before terminal persistence; retrying.",
+                    job.run_id,
+                )
                 self.queue.release(
                     job.run_id,
                     self.worker_id,

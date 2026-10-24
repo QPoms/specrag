@@ -50,6 +50,7 @@ CorpusSnapshot = Callable[[SpecificationScope], tuple[CorpusVersionRef, ...]]
 CorpusBindingWriter = Callable[[ResearchRun], None]
 ContextWriter = Callable[[ActorContext, ResearchRun], None]
 ResultLookup = Callable[[str], str | None]
+CheckpointReader = Callable[[str], dict[str, Any] | None]
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,8 @@ class RunInspection:
     events: tuple[RunEvent, ...]
     checkpoint: dict[str, Any] | None
     stage_latency_ms: dict[str, float]
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int | None
+    output_tokens: int | None
     result_id: str | None = None
 
 
@@ -71,6 +72,7 @@ __all__ = [
     "ContextWriter",
     "CorpusBindingWriter",
     "CorpusSnapshot",
+    "CheckpointReader",
     "ProposalWriter",
     "ResultLookup",
     "RunInspection",

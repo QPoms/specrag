@@ -55,8 +55,8 @@ export type RunInspection = {
   run: Run;
   events: RunEvent[];
   stage_latency_ms: Record<string, number>;
-  input_tokens: number;
-  output_tokens: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
   checkpoint_available: boolean;
   answer: string | null;
   evidence_ids: string[];
@@ -214,6 +214,20 @@ export type ConversationStatusResponse = {
   event_cursor: number;
 };
 
+export type NativeToolCapability = {
+  status: "ready" | "unavailable" | "disabled";
+  api_mode: "responses" | "chat_completions" | null;
+  failure_kind: string | null;
+  status_code: number | null;
+  retryable: boolean;
+  message: string;
+};
+
+export type HealthStatus = {
+  status: "ok" | "degraded";
+  conversation_agent: NativeToolCapability;
+};
+
 export type MemoryEntry = {
   memory_id: string;
   scope: "user" | "workspace";
@@ -336,7 +350,7 @@ function formatApiError(payload: ApiErrorPayload, fallback: string): string {
       const record = item as { loc?: unknown; msg?: unknown };
       const location = Array.isArray(record.loc)
         ? record.loc.filter((part) => typeof part === "string" || typeof part === "number").join(".")
-        : "request";
+        : "请求";
       return typeof record.msg === "string" ? `${location}: ${record.msg}` : location;
     }).filter(Boolean);
     if (messages.length) return messages.join("; ");
@@ -359,6 +373,10 @@ export class SpecRagApi {
     this.token = token;
     if (token) sessionStorage.setItem("specrag.access_token", token);
     else sessionStorage.removeItem("specrag.access_token");
+  }
+
+  health(): Promise<HealthStatus> {
+    return this.request<HealthStatus>("/healthz", { authenticated: false });
   }
 
   async login(username: string, password: string): Promise<SessionResponse> {
@@ -479,7 +497,7 @@ export class SpecRagApi {
   submitRun(workspaceId: string, question: string, release: number): Promise<RunInspection> {
     return this.request<RunInspection>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/runs`, {
       method: "POST",
-      body: { question, release, answer_language: "English", detail_level: "standard" },
+      body: { question, release, answer_language: "Chinese", detail_level: "standard" },
     });
   }
 
@@ -499,14 +517,14 @@ export class SpecRagApi {
   resumeRun(workspaceId: string, runId: string): Promise<RunInspection> {
     return this.request<RunInspection>(
       `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/resume`,
-      { method: "POST", body: { elapsed_time_seconds: 900 } },
+      { method: "POST", body: {} },
     );
   }
 
   retryRun(workspaceId: string, runId: string): Promise<RunInspection> {
     return this.request<RunInspection>(
       `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/retry`,
-      { method: "POST", body: { elapsed_time_seconds: 900 } },
+      { method: "POST", body: {} },
     );
   }
 
@@ -552,7 +570,7 @@ export class SpecRagApi {
     onEvent: (event: RunEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (!this.token) throw new ApiError(401, "authentication required", "authentication_required");
+    if (!this.token) throw new ApiError(401, "需要登录后才能继续", "authentication_required");
     const path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events?since=0&wait_seconds=300`;
     const response = await fetch(`${API_BASE}${path}`, {
       headers: { Accept: "text/event-stream", Authorization: `Bearer ${this.token}` },
@@ -560,7 +578,7 @@ export class SpecRagApi {
     });
     if (!response.ok) {
       if (response.status === 401) this.setToken(null);
-      const fallback = `Event stream failed (${response.status})`;
+      const fallback = `研究事件流连接失败（${response.status}）`;
       let message = fallback;
       let code = "http_error";
       try {
@@ -572,7 +590,7 @@ export class SpecRagApi {
       }
       throw new ApiError(response.status, message, code);
     }
-    if (!response.body) throw new Error("Event stream has no response body");
+    if (!response.body) throw new Error("研究事件流没有返回响应内容");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -605,7 +623,7 @@ export class SpecRagApi {
     onEvent: (event: ConversationEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (!this.token) throw new ApiError(401, "authentication required", "authentication_required");
+    if (!this.token) throw new ApiError(401, "需要登录后才能继续", "authentication_required");
     const path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/events?since=${since}&wait_seconds=30`;
     const response = await fetch(`${API_BASE}${path}`, {
       headers: {
@@ -615,8 +633,8 @@ export class SpecRagApi {
       },
       signal,
     });
-    if (!response.ok) throw new ApiError(response.status, `Conversation stream failed (${response.status})`);
-    if (!response.body) throw new Error("Conversation stream has no response body");
+    if (!response.ok) throw new ApiError(response.status, `会话事件流连接失败（${response.status}）`);
+    if (!response.body) throw new Error("会话事件流没有返回响应内容");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -650,7 +668,7 @@ export class SpecRagApi {
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     if (!response.ok) {
-      const fallback = `Request failed (${response.status})`;
+      const fallback = `请求失败（${response.status}）`;
       let message = fallback;
       let code = "http_error";
       try {

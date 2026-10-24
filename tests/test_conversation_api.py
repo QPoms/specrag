@@ -21,6 +21,33 @@ def _login(client: TestClient, username: str, password: str) -> str:
     return response.json()["access_token"]
 
 
+def test_health_reports_disabled_conversation_agent_without_secret(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.delenv("SPECRAG_MCP_DELEGATION_SECRET", raising=False)
+    services = WorkspaceServices.create(tmp_path / "health.sqlite3")
+    try:
+        with TestClient(create_app(services, worker_mode="external")) as client:
+            response = client.get("/healthz")
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "degraded",
+            "conversation_agent": {
+                "status": "disabled",
+                "api_mode": None,
+                "failure_kind": None,
+                "status_code": None,
+                "retryable": False,
+                "message": (
+                    "Conversation Agent is disabled because the MCP delegation "
+                    "secret is not configured in the API process."
+                ),
+            },
+        }
+    finally:
+        services.close()
+
+
 def test_conversation_crud_idempotency_events_and_restart(tmp_path: Path) -> None:
     path = tmp_path / "api.sqlite3"
     services = WorkspaceServices.create(path)

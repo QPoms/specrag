@@ -11,14 +11,19 @@ from .access import Membership, User, Workspace
 from .context import ContextMessage
 from .conversation import (
     Conversation,
-    ConversationEvent,
     ConversationResearchLink,
     ConversationToolCall,
     ConversationTurn,
 )
 from .memory import MemoryEntry, MemoryProposal, MemoryTopic
-from .research import CandidateEvidence, ResearchBudget
-from .runtime import ResearchRun, RunEvent, RunFailureKind, RunStatus, RunStopReason
+from .research import CandidateEvidence
+from .runtime import (
+    ResearchRun,
+    RunEvent,
+    RunFailureKind,
+    RunStatus,
+    RunStopReason,
+)
 from .specfacts import SpecFact, SpecFactProposal
 
 
@@ -89,7 +94,7 @@ class RunCreateRequest(_StrictTransport):
     answer_language: str = Field(default="English", min_length=1, max_length=64)
     detail_level: str = Field(default="standard", min_length=1, max_length=64)
     budget: "RunBudgetRequest" = Field(default_factory=lambda: RunBudgetRequest())
-    elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
+    elapsed_time_seconds: int | None = Field(default=None, ge=1, le=86400)
     development_question_id: str | None = Field(default=None, max_length=128)
 
 
@@ -101,7 +106,7 @@ class RunBudgetRequest(_StrictTransport):
 
 
 class RunRestartRequest(_StrictTransport):
-    elapsed_time_seconds: int = Field(default=900, ge=1, le=86400)
+    elapsed_time_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
 class WorkspaceContextResponse(_StrictTransport):
@@ -140,12 +145,10 @@ class RunInspectionResponse(_StrictTransport):
     run: ResearchRun
     events: tuple[RunEvent, ...]
     stage_latency_ms: dict[str, float]
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
     checkpoint_available: bool
-    result_id: str | None = Field(
-        default=None, pattern=r"^RESULT-[0-9A-F]{32}$"
-    )
+    result_id: str | None = Field(default=None, pattern=r"^RESULT-[0-9A-F]{32}$")
     answer: str | None = None
     evidence_ids: tuple[str, ...] = ()
     evidence: tuple[CandidateEvidence, ...] = ()
@@ -165,11 +168,11 @@ class RunMetadataResponse(_StrictTransport):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    research_deadline_at: datetime | None = None
+    finalization_deadline_at: datetime | None = None
     deadline_at: datetime | None = None
     cancel_requested_at: datetime | None = None
-    retry_of_run_id: str | None = Field(
-        default=None, pattern=r"^RUN-[0-9A-F]{32}$"
-    )
+    retry_of_run_id: str | None = Field(default=None, pattern=r"^RUN-[0-9A-F]{32}$")
     run_attempt: int = Field(default=0, ge=0)
 
 

@@ -211,3 +211,61 @@ def test_materializer_never_promotes_non_sufficient_evidence(
     assert "must not be promoted" not in first.answer
     if validation_status == "rejected":
         assert first.evidence == ()
+
+
+def test_materializer_publishes_explicit_partial_synthesis() -> None:
+    run = ResearchRun(
+        run_id=RUN_ID,
+        thread_id="THREAD-" + "A" * 32,
+        workspace_id="workspace-a",
+        owner_user_id="alice",
+        question="What does the UE do and under which exception?",
+        release=17,
+        status="completed",
+        stop_reason="iteration_budget",
+        created_at=NOW,
+        started_at=NOW,
+        finished_at=NOW,
+        corpus_version_policy="exact_version",
+        corpus_versions=_scope().versions,
+    )
+    candidate = _candidate()
+    answer = "The available clause establishes the UE action. [evidence-1]"
+    outcome = ResearchOutcome(
+        run_id=run.run_id,
+        question=run.question,
+        objective="Establish the action and exception.",
+        requested_scope=_scope(),
+        corpus_versions=_scope().versions,
+        synthesis=EvidenceSynthesis(
+            answer=answer,
+            evidence_ids=(candidate.evidence_id,),
+            mode="partial",
+            covered_task_ids=(candidate.task_id,),
+            unresolved_task_ids=(candidate.task_id,),
+        ),
+        candidate_evidence=(candidate,),
+        validated_evidence=(ValidatedEvidence(
+            evidence_id=candidate.evidence_id,
+            task_id=candidate.task_id,
+            source_valid=True,
+            supports_target=True,
+            validation_status="partial",
+            rationale="The action is supported but the exception is unresolved.",
+        ),),
+        assessments=(TaskSufficiencyAssessment(
+            task_id=candidate.task_id,
+            status="partial",
+            supporting_evidence_ids=(candidate.evidence_id,),
+            missing_relation="The exception remains unresolved.",
+            rationale="The action is supported but the exception is unresolved.",
+        ),),
+        stop_reason="iteration_budget",
+        created_at=NOW,
+    )
+
+    result = ResearchResultMaterializer().materialize(run, outcome)
+
+    assert result.evidence_status == "partial"
+    assert result.answer == answer
+    assert result.evidence_ids == (candidate.evidence_id,)

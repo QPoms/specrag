@@ -21,6 +21,7 @@ from .conversation_lifecycle_store import (
 from .context_summary import StructuredContextSummarizer
 from .threegpp import ThreeGppArchiveProvider, ThreeGppSourceMaterializer
 from .identity_store import SQLiteIdentityStore
+from .model_capabilities import probe_native_tool_capability
 from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
 from .run_queue import SQLiteRunQueue
 from .result_store import SQLiteResearchResultStore
@@ -55,6 +56,7 @@ __all__ = [
     "ThreeGppArchiveProvider",
     "ThreeGppSourceMaterializer",
     "SQLiteIdentityStore",
+    "probe_native_tool_capability",
     "SQLiteRunStore",
     "SQLiteRunQueue",
     "SQLiteResearchResultStore",

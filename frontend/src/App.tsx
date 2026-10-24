@@ -4,6 +4,7 @@ import { KnowledgePanel } from "./KnowledgePanel";
 import { MemberPanel } from "./MemberPanel";
 import { RunLifecyclePanel } from "./RunLifecyclePanel";
 import { ConversationDesk } from "./ConversationDesk";
+import { zhDate, zhLabel } from "./locale";
 
 const api = new SpecRagApi();
 
@@ -37,7 +38,7 @@ function Login({ onLogin }: { onLogin: (username: string, password: string) => P
     try {
       await onLogin(username.trim(), password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to sign in");
+      setError(err instanceof Error ? err.message : "无法登录");
     } finally {
       setBusy(false);
     }
@@ -47,25 +48,25 @@ function Login({ onLogin }: { onLogin: (username: string, password: string) => P
     <section className="login-story">
       <div className="brand-mark"><span className="brand-orbit" /><span>SpecRAG</span></div>
       <div className="story-copy">
-        <p className="eyebrow">Evidence intelligence / 01</p>
-        <h1>Research that<br /><em>keeps its receipts.</em></h1>
-        <p className="story-lede">A quiet, source-grounded workspace for exploring technical specifications, validating evidence, and turning hard questions into decisions.</p>
+        <p className="eyebrow">证据智能 / 01</p>
+        <h1>让每一项研究<br /><em>都有据可查。</em></h1>
+        <p className="story-lede">一个以规范原文为依据的研究工作台，用于探索技术规范、验证证据，并将复杂问题转化为可靠结论。</p>
       </div>
-      <div className="story-footer"><span className="status-dot" /> Local API boundary protected <span className="footer-rule" /> <span>v0.1 workspace</span></div>
+      <div className="story-footer"><span className="status-dot" /> 本地 API 边界已保护 <span className="footer-rule" /> <span>v0.1 工作台</span></div>
     </section>
     <section className="login-panel">
       <div className="login-card">
         <div className="mobile-brand"><div className="brand-mark"><span className="brand-orbit" /><span>SpecRAG</span></div></div>
-        <p className="eyebrow">Welcome back</p>
-        <h2>Enter your workspace</h2>
-        <p className="muted">Sign in to continue to your research desk.</p>
+        <p className="eyebrow">欢迎回来</p>
+        <h2>进入你的工作空间</h2>
+        <p className="muted">登录后继续进行规范研究。</p>
         <form onSubmit={submit} className="auth-form">
-          <label>Username<input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="you@example.com" required /></label>
-          <label>Password<input autoComplete="current-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" required /></label>
+          <label>用户名<input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="请输入用户名" required /></label>
+          <label>密码<input autoComplete="current-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="请输入密码" required /></label>
           {error && <div className="form-error" role="alert">{error}</div>}
-          <button className="primary-button full-button" disabled={busy}>{busy ? "Signing in…" : <>Sign in <Icon name="arrow" size={17} /></>}</button>
+          <button className="primary-button full-button" disabled={busy}>{busy ? "登录中…" : <>登录 <Icon name="arrow" size={17} /></>}</button>
         </form>
-        <p className="security-note"><span className="mini-lock">⊙</span> Your session is scoped to the workspaces you belong to.</p>
+        <p className="security-note"><span className="mini-lock">⊙</span> 当前会话仅能访问你所属的工作空间。</p>
       </div>
     </section>
   </main>;
@@ -86,7 +87,7 @@ function App() {
       setWorkspaces(items);
       setSelectedId((current) => current ?? items[0]?.workspace.workspace_id ?? null);
     }).catch((err) => {
-      setFatalError(err instanceof Error ? err.message : "Could not load workspaces");
+      setFatalError(err instanceof Error ? err.message : "无法加载工作空间");
       setAuthenticated(false);
     }).finally(() => setLoading(false));
   }, [authenticated]);
@@ -107,7 +108,7 @@ function App() {
     }).catch((err) => {
       if (!active) return;
       if (err instanceof ApiError && err.status === 401) setAuthenticated(false);
-      setFatalError(err instanceof Error ? err.message : "Could not load workspace");
+      setFatalError(err instanceof Error ? err.message : "无法加载工作空间");
     });
     return () => { active = false; };
   }, [selectedId]);
@@ -136,7 +137,7 @@ function App() {
   }
 
   if (!authenticated) return <Login onLogin={login} />;
-  if (loading) return <div className="loading-screen"><span className="loader" /> Loading your workspaces…</div>;
+  if (loading) return <div className="loading-screen"><span className="loader" /> 正在加载工作空间…</div>;
   if (!workspaces.length) return <EmptyWorkspace onCreated={(item) => { setWorkspaces([{ workspace: item, membership: { workspace_id: item.workspace_id, user_id: "", role: "admin", created_at: item.created_at } }]); setSelectedId(item.workspace_id); }} />;
 
   return <Dashboard context={context} selected={selected} workspaces={workspaces} selectedId={selectedId} runs={runs} onSelect={selectWorkspace} onRuns={setRuns} onLogout={logout} error={fatalError} />;
@@ -148,9 +149,9 @@ function EmptyWorkspace({ onCreated }: { onCreated: (workspace: WorkspaceMembers
   const [error, setError] = useState<string | null>(null);
   async function create(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(null);
-    try { onCreated(await api.createWorkspace(name.trim())); } catch (err) { setError(err instanceof Error ? err.message : "Unable to create workspace"); } finally { setBusy(false); }
+    try { onCreated(await api.createWorkspace(name.trim())); } catch (err) { setError(err instanceof Error ? err.message : "无法创建工作空间"); } finally { setBusy(false); }
   }
-  return <main className="empty-shell"><div className="empty-card"><div className="brand-mark"><span className="brand-orbit" /><span>SpecRAG</span></div><p className="eyebrow">First, a place to think</p><h1>Create your first workspace</h1><p className="muted">Workspaces keep research, evidence, and reviewed knowledge together.</p><form onSubmit={create} className="auth-form"><label>Workspace name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Protocol intelligence" required /></label>{error && <div className="form-error">{error}</div>}<button className="primary-button full-button" disabled={busy}>{busy ? "Creating…" : <>Create workspace <Icon name="arrow" size={17} /></>}</button></form></div></main>;
+  return <main className="empty-shell"><div className="empty-card"><div className="brand-mark"><span className="brand-orbit" /><span>SpecRAG</span></div><p className="eyebrow">先创建一个研究空间</p><h1>创建你的第一个工作空间</h1><p className="muted">工作空间集中管理研究、证据和已审核知识。</p><form onSubmit={create} className="auth-form"><label>工作空间名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：协议智能研究" required /></label>{error && <div className="form-error">{error}</div>}<button className="primary-button full-button" disabled={busy}>{busy ? "创建中…" : <>创建工作空间 <Icon name="arrow" size={17} /></>}</button></form></div></main>;
 }
 
 function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, onRuns, onLogout, error }: { context: WorkspaceContext | null; selected?: WorkspaceMembership; workspaces: WorkspaceMembership[]; selectedId: string | null; runs: Run[]; onSelect: (id: string) => void; onRuns: Dispatch<SetStateAction<Run[]>>; onLogout: () => Promise<void>; error: string | null }) {
@@ -181,7 +182,7 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
       onRuns((current) => current.map((run) => run.run_id === runId ? inspection.run : run));
     }).catch((err) => {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        setSubmitError(err instanceof Error ? err.message : "Unable to follow run events");
+        setSubmitError(err instanceof Error ? err.message : "无法持续接收研究事件");
       }
     }).finally(() => {
       watchedRuns.current.delete(runId);
@@ -218,7 +219,7 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
       onRuns((current) => [inspection.run, ...current.filter((run) => run.run_id !== inspection.run.run_id)]);
       setQuestion("");
       watchRun(inspection.run.run_id);
-    } catch (err) { setSubmitError(err instanceof Error ? err.message : "Unable to start run"); }
+    } catch (err) { setSubmitError(err instanceof Error ? err.message : "无法启动研究任务"); }
     finally { setSubmitting(false); }
   }
 
@@ -227,7 +228,7 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
     try {
       setSelectedInspection(await api.inspectRun(selectedId, runId));
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Unable to load research result");
+      setSubmitError(err instanceof Error ? err.message : "无法加载研究结果");
     }
   }
 
@@ -238,8 +239,8 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
       const run = await api.cancelRun(selectedId, selectedInspection.run.run_id);
       setSelectedInspection((current) => current ? { ...current, run } : current);
       onRuns((current) => current.map((item) => item.run_id === run.run_id ? run : item));
-      setRunActionNotice("Cancellation has been recorded. The worker will stop at the next safe boundary.");
-    } catch (err) { setSubmitError(err instanceof Error ? err.message : "Unable to cancel Run"); }
+      setRunActionNotice("取消请求已记录，工作进程将在下一个安全边界停止。");
+    } catch (err) { setSubmitError(err instanceof Error ? err.message : "无法取消研究任务"); }
     finally { setRunAction(null); }
   }
 
@@ -250,9 +251,9 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
       const inspection = await api.resumeRun(selectedId, selectedInspection.run.run_id);
       setSelectedInspection(inspection);
       onRuns((current) => current.map((item) => item.run_id === inspection.run.run_id ? inspection.run : item));
-      setRunActionNotice("Checkpoint resume is queued and will continue on the same Run.");
+      setRunActionNotice("断点恢复已进入队列，将继续执行同一个研究任务。");
       watchRun(inspection.run.run_id);
-    } catch (err) { setSubmitError(err instanceof Error ? err.message : "Unable to resume Run"); }
+    } catch (err) { setSubmitError(err instanceof Error ? err.message : "无法恢复研究任务"); }
     finally { setRunAction(null); }
   }
 
@@ -263,9 +264,9 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
       const inspection = await api.retryRun(selectedId, selectedInspection.run.run_id);
       setSelectedInspection(inspection);
       onRuns((current) => [inspection.run, ...current.filter((item) => item.run_id !== inspection.run.run_id)]);
-      setRunActionNotice(`A fresh Run was created from ${inspection.run.retry_of_run_id}.`);
+      setRunActionNotice(`已基于 ${inspection.run.retry_of_run_id} 创建新的研究任务。`);
       watchRun(inspection.run.run_id);
-    } catch (err) { setSubmitError(err instanceof Error ? err.message : "Unable to retry Run"); }
+    } catch (err) { setSubmitError(err instanceof Error ? err.message : "无法重试研究任务"); }
     finally { setRunAction(null); }
   }
 
@@ -274,24 +275,24 @@ function Dashboard({ context, selected, workspaces, selectedId, runs, onSelect, 
     <aside className="sidebar">
       <div className="brand-mark"><span className="brand-orbit" /><span>SpecRAG</span></div>
       <div className="workspace-switcher">
-        <button className="workspace-button" onClick={() => setWorkspaceMenu(!workspaceMenu)} aria-expanded={workspaceMenu}><span className="workspace-avatar">{selected?.workspace.name.slice(0, 1).toUpperCase()}</span><span className="workspace-label"><small>WORKSPACE</small><strong>{selected?.workspace.name ?? "Loading…"}</strong></span><Icon name="chevron" size={16} /></button>
-        {workspaceMenu && <div className="workspace-menu">{workspaces.map((item) => <button key={item.workspace.workspace_id} onClick={() => { onSelect(item.workspace.workspace_id); setWorkspaceMenu(false); }} className={item.workspace.workspace_id === selectedId ? "active" : ""}><span>{item.workspace.name}</span><small>{item.membership.role}</small></button>)}</div>}
+        <button className="workspace-button" onClick={() => setWorkspaceMenu(!workspaceMenu)} aria-expanded={workspaceMenu}><span className="workspace-avatar">{selected?.workspace.name.slice(0, 1).toUpperCase()}</span><span className="workspace-label"><small>工作空间</small><strong>{selected?.workspace.name ?? "加载中…"}</strong></span><Icon name="chevron" size={16} /></button>
+        {workspaceMenu && <div className="workspace-menu">{workspaces.map((item) => <button key={item.workspace.workspace_id} onClick={() => { onSelect(item.workspace.workspace_id); setWorkspaceMenu(false); }} className={item.workspace.workspace_id === selectedId ? "active" : ""}><span>{item.workspace.name}</span><small>{zhLabel(item.membership.role)}</small></button>)}</div>}
       </div>
-      <nav className="main-nav"><span className="nav-section">Workspace</span><a className="active" href="#research"><Icon name="spark" />Research desk</a><a href="#runs"><Icon name="clock" />Run history</a><a href="#evidence"><Icon name="book" />Evidence library</a><span className="nav-section second">Knowledge</span><a href="#knowledge"><Icon name="grid" />Memory &amp; SpecFacts</a><span className="nav-section second">Manage</span><a href="#members"><Icon name="users" />Members</a></nav>
-      <div className="sidebar-bottom"><div className="api-status"><span className="status-dot" /><div><strong>API connected</strong><small>Local secure boundary</small></div></div><button className="user-row" onClick={() => void onLogout()}><span className="user-avatar">{initials}</span><span><strong>{context?.user_id ?? "Signed in"}</strong><small>{context?.role ?? "member"}</small></span><Icon name="logout" size={17} /></button></div>
+      <nav className="main-nav"><span className="nav-section">工作空间</span><a className="active" href="#research"><Icon name="spark" />研究工作台</a><a href="#runs"><Icon name="clock" />任务历史</a><a href="#evidence"><Icon name="book" />证据库</a><span className="nav-section second">知识</span><a href="#knowledge"><Icon name="grid" />记忆与规范事实</a><span className="nav-section second">管理</span><a href="#members"><Icon name="users" />成员</a></nav>
+      <div className="sidebar-bottom"><div className="api-status"><span className="status-dot" /><div><strong>API 已连接</strong><small>本地安全边界</small></div></div><button className="user-row" onClick={() => void onLogout()}><span className="user-avatar">{initials}</span><span><strong>{context?.user_id ?? "已登录"}</strong><small>{zhLabel(context?.role ?? "member")}</small></span><Icon name="logout" size={17} /></button></div>
     </aside>
     <main className="content">
-      <header className="topbar"><div><p className="eyebrow">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</p><h1>Good to see you, researcher.</h1></div><div className="topbar-actions"><button className="icon-button" aria-label="Search"><Icon name="search" /></button><button className="avatar-button">{initials}</button></div></header>
+      <header className="topbar"><div><p className="eyebrow">{zhDate(new Date(), { weekday: "long", month: "long", day: "numeric" })}</p><h1>你好，研究者。</h1></div><div className="topbar-actions"><button className="icon-button" aria-label="搜索"><Icon name="search" /></button><button className="avatar-button">{initials}</button></div></header>
       {error && <div className="notice error"><span>!</span>{error}</div>}
       {selectedId && <ConversationDesk api={api} workspaceId={selectedId} onOpenRun={(runId) => void loadInspection(runId)} />}
-      <section className="hero-grid" id="research"><div className="hero-card"><div className="hero-glow" /><div className="hero-content"><span className="pill"><span className="status-dot" /> Workspace ready</span><h2>What are you<br /><em>trying to understand?</em></h2><p>Ask a question and SpecRAG will trace the answer back to the source.</p></div><div className="hero-index">01 <span>/</span> 04</div></div><div className="stat-card"><span className="stat-icon"><Icon name="clock" /></span><span className="stat-label">Active runs</span><strong>{runs.filter((run) => run.status === "queued" || run.status === "running").length.toString().padStart(2, "0")}</strong><small>in this workspace</small><div className="stat-line"><span style={{ width: runs.length ? "42%" : "8%" }} /></div></div><div className="stat-card accent-card"><span className="stat-icon"><Icon name="book" /></span><span className="stat-label">Source corpus</span><strong>3GPP</strong><small>versioned &amp; pinned</small><div className="corpus-dots"><i /><i /><i /><i /><i /><i /><i /></div></div></section>
-      <section className="research-panel"><div className="section-heading"><div><p className="eyebrow">New research run</p><h2>Start with a sharp question</h2></div><span className="shortcut">⌘ ↵ <small>to run</small></span></div><form onSubmit={submit}><div className="question-wrap"><span className="question-number">01</span><textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="e.g. How does the 5G registration procedure handle an authentication failure?" rows={3} /><span className="question-hint">Be specific. Source-grounded answers are better questions.</span></div><div className="form-toolbar"><label className="select-label">RELEASE<select value={release} onChange={(e) => setRelease(Number(e.target.value))}><option value={17}>Release 17</option><option value={18}>Release 18</option><option value={19}>Release 19</option></select><Icon name="chevron" size={14} /></label><span className="toolbar-divider" /><span className="budget-hint"><span className="status-dot" /> Standard depth · 4 iterations</span><button className="primary-button run-button" disabled={submitting || !question.trim()}>{submitting ? "Queueing…" : <>Run research <Icon name="arrow" size={17} /></>}</button></div>{submitError && <div className="form-error inline-error">{submitError}</div>}</form></section>
-      <section className="lower-grid" id="runs"><div className="activity-panel"><div className="section-heading compact"><div><p className="eyebrow">Your desk</p><h2>{showAllRuns ? "Run history" : "Recent research"}</h2></div>{runs.length > 4 && <button className="text-button" onClick={() => setShowAllRuns(!showAllRuns)}>{showAllRuns ? "Show recent" : "View all"} <Icon name="arrow" size={15} /></button>}</div>{liveEvent && <div className="live-event"><span className="live-pulse" /><span><strong>Live research stream</strong><small>{liveEvent.stage ?? liveEvent.event_type.replaceAll("_", " ")}</small></span><time>#{liveEvent.sequence}</time></div>}{runs.length === 0 ? <div className="empty-activity"><div className="empty-icon"><Icon name="spark" /></div><p>No research runs yet.</p><small>Your first question will appear here.</small></div> : <div className={`run-list ${showAllRuns ? "expanded" : ""}`}>{runs.slice(0, showAllRuns ? runs.length : 4).map((run) => <div className="run-row" key={run.run_id} role="button" tabIndex={0} onClick={() => void loadInspection(run.run_id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") void loadInspection(run.run_id); }}><span className={`run-status ${run.status}`} /><div className="run-info"><strong>{run.question}</strong><small>{new Date(run.created_at).toLocaleString()} · Release {run.release}</small></div><span className={`run-badge ${run.status}`}>{run.status}</span><Icon name="arrow" size={15} /></div>)}</div>}</div><aside className="tip-card"><span className="tip-kicker"><Icon name="spark" size={15} /> A better question</span><h3>Start with the decision, not the document.</h3><p>Frame what you need to decide. The retrieval plan will find the relevant clauses for you.</p><span className="tip-rule" /><small>Research note / 001</small></aside></section>
+      <section className="hero-grid" id="research"><div className="hero-card"><div className="hero-glow" /><div className="hero-content"><span className="pill"><span className="status-dot" /> 工作空间已就绪</span><h2>你想研究和理解<br /><em>什么问题？</em></h2><p>提出问题，SpecRAG 会将答案追溯到规范原文。</p></div><div className="hero-index">01 <span>/</span> 04</div></div><div className="stat-card"><span className="stat-icon"><Icon name="clock" /></span><span className="stat-label">正在执行</span><strong>{runs.filter((run) => run.status === "queued" || run.status === "running").length.toString().padStart(2, "0")}</strong><small>当前工作空间</small><div className="stat-line"><span style={{ width: runs.length ? "42%" : "8%" }} /></div></div><div className="stat-card accent-card"><span className="stat-icon"><Icon name="book" /></span><span className="stat-label">规范语料库</span><strong>3GPP</strong><small>版本固定且可追溯</small><div className="corpus-dots"><i /><i /><i /><i /><i /><i /><i /></div></div></section>
+      <section className="research-panel"><div className="section-heading"><div><p className="eyebrow">新建研究任务</p><h2>从一个明确的问题开始</h2></div><span className="shortcut">⌘ ↵ <small>开始研究</small></span></div><form onSubmit={submit}><div className="question-wrap"><span className="question-number">01</span><textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="例如：5G 注册流程如何处理鉴权失败？" rows={3} /><span className="question-hint">问题越具体，基于规范证据的回答越准确。</span></div><div className="form-toolbar"><label className="select-label">版本范围<select value={release} onChange={(e) => setRelease(Number(e.target.value))}><option value={17}>Release 17</option><option value={18}>Release 18</option><option value={19}>Release 19</option></select><Icon name="chevron" size={14} /></label><span className="toolbar-divider" /><span className="budget-hint"><span className="status-dot" /> 标准深度 · 4 次迭代</span><button className="primary-button run-button" disabled={submitting || !question.trim()}>{submitting ? "正在提交…" : <>开始研究 <Icon name="arrow" size={17} /></>}</button></div>{submitError && <div className="form-error inline-error">{submitError}</div>}</form></section>
+      <section className="lower-grid" id="runs"><div className="activity-panel"><div className="section-heading compact"><div><p className="eyebrow">你的研究台</p><h2>{showAllRuns ? "任务历史" : "最近研究"}</h2></div>{runs.length > 4 && <button className="text-button" onClick={() => setShowAllRuns(!showAllRuns)}>{showAllRuns ? "仅看最近" : "查看全部"} <Icon name="arrow" size={15} /></button>}</div>{liveEvent && <div className="live-event"><span className="live-pulse" /><span><strong>实时研究进度</strong><small>{zhLabel(liveEvent.stage ?? liveEvent.event_type)}</small></span><time>#{liveEvent.sequence}</time></div>}{runs.length === 0 ? <div className="empty-activity"><div className="empty-icon"><Icon name="spark" /></div><p>还没有研究任务。</p><small>提交第一个问题后，它会显示在这里。</small></div> : <div className={`run-list ${showAllRuns ? "expanded" : ""}`}>{runs.slice(0, showAllRuns ? runs.length : 4).map((run) => <div className="run-row" key={run.run_id} role="button" tabIndex={0} onClick={() => void loadInspection(run.run_id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") void loadInspection(run.run_id); }}><span className={`run-status ${run.status}`} /><div className="run-info"><strong>{run.question}</strong><small>{zhDate(run.created_at)} · Release {run.release}</small></div><span className={`run-badge ${run.status}`}>{zhLabel(run.status)}</span><Icon name="arrow" size={15} /></div>)}</div>}</div><aside className="tip-card"><span className="tip-kicker"><Icon name="spark" size={15} /> 怎样提出更好的问题</span><h3>从要做的判断出发，而不是从文档名称出发。</h3><p>清楚说明你需要判断什么，检索计划会寻找相关条款。</p><span className="tip-rule" /><small>研究提示 / 001</small></aside></section>
       {selectedInspection && <RunLifecyclePanel inspection={selectedInspection} busy={runAction} notice={runActionNotice} onCancel={cancelSelectedRun} onResume={resumeSelectedRun} onRetry={retrySelectedRun} />}
       {selectedInspection && <EvidencePanel inspection={selectedInspection} />}
       {selectedId && context && <KnowledgePanel api={api} workspaceId={selectedId} role={context.role} />}
       {selectedId && context && <MemberPanel api={api} workspaceId={selectedId} currentUserId={context.user_id} role={context.role} />}
-      <footer className="content-footer"><span>SpecRAG research workspace</span><span><span className="status-dot" /> All systems local</span></footer>
+      <footer className="content-footer"><span>SpecRAG 规范智能研究工作台</span><span><span className="status-dot" /> 所有服务均在本地运行</span></footer>
     </main>
   </div>;
 }
@@ -301,11 +302,11 @@ function EvidencePanel({ inspection }: { inspection: RunInspection }) {
   const active = inspection.run.status === "queued" || inspection.run.status === "running";
   const answer = inspection.answer?.trim();
   return <section className="evidence-panel" id="evidence">
-    <div className="section-heading evidence-heading"><div><p className="eyebrow">Source-backed result</p><h2>{completed ? "The answer, with receipts" : "Research result"}</h2><p className="result-meta">{inspection.run.run_id} · Release {inspection.run.release} · {inspection.run.status}</p></div><span className={`result-status ${inspection.run.status}`}><span className="status-dot" /> {inspection.run.status}</span></div>
-    {!answer ? <div className="result-empty"><div className="empty-icon"><Icon name="clock" /></div><p>{completed ? "No final synthesis was returned." : active ? "This Run is still gathering evidence." : "This Run stopped before producing a final synthesis."}</p><small>{active ? "Open the Run again after its terminal event to refresh the result." : "Review the lifecycle diagnostics above, then resume or create a fresh retry."}</small></div> : <>
-      <div className="answer-block"><span className="answer-label">Synthesis</span><p>{answer}</p></div>
-      <div className="evidence-heading-row"><span className="answer-label">Supporting evidence</span><span>{inspection.evidence.length} validated source{inspection.evidence.length === 1 ? "" : "s"}</span></div>
-      {inspection.evidence.length === 0 ? <div className="result-empty compact-empty"><p>No evidence cards were returned for this synthesis.</p></div> : <div className="evidence-list">{inspection.evidence.map((item, index) => <article className="evidence-card" key={item.evidence_id}><div className="evidence-card-top"><span className="evidence-number">E{String(index + 1).padStart(2, "0")}</span><span className="evidence-spec">TS {item.specification} · Rel-{item.release}</span><span className="evidence-version">v{item.version}</span></div><div className="evidence-id"><code>[{item.evidence_id}]</code></div><h3>{item.heading_path.length ? item.heading_path.join(" / ") : "Specification excerpt"}</h3><blockquote>{item.excerpt}</blockquote><div className="evidence-source"><span>{item.source_path}</span><span>lines {item.line_start}–{item.line_end}</span></div><div className="evidence-hash">SHA-256 <code>{item.document_sha256.slice(0, 16)}…</code></div></article>)}</div>}
+    <div className="section-heading evidence-heading"><div><p className="eyebrow">规范证据支持的结果</p><h2>{completed ? "有据可查的研究答案" : "研究结果"}</h2><p className="result-meta">{inspection.run.run_id} · Release {inspection.run.release} · {zhLabel(inspection.run.status)}</p></div><span className={`result-status ${inspection.run.status}`}><span className="status-dot" /> {zhLabel(inspection.run.status)}</span></div>
+    {!answer ? <div className="result-empty"><div className="empty-icon"><Icon name="clock" /></div><p>{completed ? "本次研究没有返回最终综合答案。" : active ? "此任务仍在收集和验证证据。" : "此任务在生成最终综合答案前已经停止。"}</p><small>{active ? "任务结束后再次打开即可刷新结果。" : "请查看上方的生命周期诊断，然后恢复任务或创建一次全新重试。"}</small></div> : <>
+      <div className="answer-block"><span className="answer-label">综合结论</span><p>{answer}</p></div>
+      <div className="evidence-heading-row"><span className="answer-label">支持证据</span><span>{inspection.evidence.length} 条已验证来源</span></div>
+      {inspection.evidence.length === 0 ? <div className="result-empty compact-empty"><p>本次综合答案没有返回证据卡片。</p></div> : <div className="evidence-list">{inspection.evidence.map((item, index) => <article className="evidence-card" key={item.evidence_id}><div className="evidence-card-top"><span className="evidence-number">E{String(index + 1).padStart(2, "0")}</span><span className="evidence-spec">TS {item.specification} · Rel-{item.release}</span><span className="evidence-version">v{item.version}</span></div><div className="evidence-id"><code>[{item.evidence_id}]</code></div><h3>{item.heading_path.length ? item.heading_path.join(" / ") : "规范摘录"}</h3><blockquote>{item.excerpt}</blockquote><div className="evidence-source"><span>{item.source_path}</span><span>第 {item.line_start}–{item.line_end} 行</span></div><div className="evidence-hash">SHA-256 <code>{item.document_sha256.slice(0, 16)}…</code></div></article>)}</div>}
     </>}
   </section>;
 }

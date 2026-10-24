@@ -74,9 +74,9 @@ class ConversationToolExecution:
 
 
 _NORMATIVE = re.compile(
-    r"(?:\b3gpp\b|\bts\s*\d{2}\.|\brelease\s*\d+\b|\bshall\b|\bmust\b|"
-    r"规范(?:规定|要求|定义)|协议(?:规定|要求|行为)|字段(?:含义|定义)|"
-    r"消息(?:定义|流程)|状态(?:转换|变化)|技术要求)",
+    r"(?:\b(?:shall|must|requires?|required|mandates?|prohibits?|"
+    r"specifies?|defines?)\b|应当|必须|不得|仅当|"
+    r"规范(?:规定|要求)|协议(?:规定|要求))",
     re.IGNORECASE,
 )
 
@@ -173,7 +173,7 @@ class ConversationAgent:
                 if tool_calls >= budget.max_tool_calls:
                     raise RuntimeError("conversation turn tool-call budget exhausted")
                 if call.name == "start_research":
-                    ResearchToolRequest.model_validate(call.arguments)
+                    research_request = ResearchToolRequest.model_validate(call.arguments)
                     research_submissions += 1
                     if research_submissions > budget.max_research_submissions:
                         raise RuntimeError("research-submission budget exhausted")
@@ -189,6 +189,16 @@ class ConversationAgent:
                     output, execution.results, available,
                     current_result_ids, observed_run_ids,
                 )
+                if call.name == "start_research" and self._is_pending_run(output):
+                    return ConversationAgentOutcome(
+                        message=self._pending_run_message(
+                            output, research_request.answer_language,
+                        ),
+                        stop_reason="research_submitted",
+                        model_steps=model_step,
+                        tool_calls=tool_calls,
+                        research_submissions=research_submissions,
+                    )
                 outputs.append(NativeFunctionCallOutput(
                     call_id=call.call_id,
                     output=output,
@@ -197,6 +207,39 @@ class ConversationAgent:
             prior_outputs = tuple(outputs)
 
         raise RuntimeError("conversation turn model-step budget exhausted")
+
+    @staticmethod
+    def _is_pending_run(output: Mapping[str, Any]) -> bool:
+        return (
+            output.get("disposition") == "accepted"
+            and output.get("status") in {"queued", "running"}
+            and isinstance(output.get("run_id"), str)
+        )
+
+    @staticmethod
+    def _pending_run_message(
+        output: Mapping[str, Any], answer_language: str,
+    ) -> ConversationMessageContent:
+        run_id = str(output["run_id"])
+        status = str(output["status"])
+        language = answer_language.strip().casefold()
+        chinese = (
+            language.startswith("zh")
+            or "中文" in answer_language
+            or "chinese" in language
+        )
+        text = (
+            "研究任务已提交，正在后台执行。完成后，结果会自动返回到当前会话。"
+            if chinese else
+            "The research task is running in the background. Its result will "
+            "be returned to this conversation when it is ready."
+        )
+        return ConversationMessageContent(
+            text=text,
+            source_kind="direct_conversation",
+            run_ids=(run_id,),
+            status_kind=status,  # type: ignore[arg-type]
+        )
 
     @staticmethod
     def _observe(

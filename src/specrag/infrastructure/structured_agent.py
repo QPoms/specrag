@@ -11,12 +11,13 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Generic, Literal, Mapping, Sequence, TypeVar
 from pydantic import BaseModel
 from .llm import LLMApiMode, LLMCallReceipt, NativeToolLLMResponse, OpenAIStructuredClient
 from .llm_budget import build_token_budget_manager
-from .agent_errors import CodexAgentError
+from .agent_errors import CodexAgentError, public_error_fields
 from .receipt_capture import (
     CodexAgentReceipt,
     capture_agent_receipts,
@@ -377,7 +378,6 @@ class CodexStructuredAgent:
 
 class LLMApiStructuredAgent:
     """API-backed implementation with the same parse interface as Codex.
-
     This backend is deliberately limited to structured LLM calls.  It cannot
     inspect local files or execute tools, so the deterministic retrieval code
     remains in control of all corpus access and candidate selection.
@@ -391,7 +391,7 @@ class LLMApiStructuredAgent:
         reasoning_effort: str = "high",
         timeout_seconds: int = 600,
         api_mode: LLMApiMode = LLMApiMode.RESPONSES,
-        config: AppConfig | None = None,
+        config: AppConfig | None = None, deadline_at: datetime | None = None,
     ) -> None:
         if timeout_seconds < 1:
             raise ValueError("timeout_seconds must be positive")
@@ -422,12 +422,13 @@ class LLMApiStructuredAgent:
             reasoning_effort=self._reasoning_effort,
             timeout_seconds=float(timeout_seconds),
             max_retries=settings.llm.api_max_retries,
-            fallback_models=tuple(candidate for candidate in
-                settings.llm.api_fallback_models if candidate != selected_model),
-            retry_initial_delay_seconds=(
-                settings.llm.api_retry_initial_delay_seconds
+            fallback_models=tuple(
+                value for value in settings.llm.api_fallback_models
+                if value != selected_model
             ),
+            retry_initial_delay_seconds=settings.llm.api_retry_initial_delay_seconds,
             retry_max_delay_seconds=settings.llm.api_retry_max_delay_seconds,
+            deadline_at=deadline_at,
             budget_manager=build_token_budget_manager(settings),
         )
 
@@ -497,6 +498,7 @@ class LLMApiStructuredAgent:
                 retryable=bool(getattr(exc, "retryable", False)),
                 status_code=getattr(exc, "status_code", None),
                 attempt_count=getattr(exc, "attempt_count", None),
+                **public_error_fields(exc),
             ) from None
 
         result = CodexAgentResponse(
@@ -543,6 +545,7 @@ class LLMApiStructuredAgent:
                 retryable=bool(getattr(exc, "retryable", False)),
                 status_code=getattr(exc, "status_code", None),
                 attempt_count=getattr(exc, "attempt_count", None),
+                **public_error_fields(exc),
             ) from None
 
         result = CodexAgentToolResponse(

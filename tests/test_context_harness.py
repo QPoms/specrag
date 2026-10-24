@@ -214,6 +214,45 @@ class _Responses:
         )
 
 
+class _CorrectingResponses:
+    def __init__(self) -> None:
+        self.requests = 0
+
+    def parse(self, **kwargs):
+        self.requests += 1
+        parsed = {} if self.requests == 1 else {"value": "corrected"}
+        return SimpleNamespace(
+            status="completed",
+            output_parsed=parsed,
+            usage=SimpleNamespace(input_tokens=4, output_tokens=2),
+            id=f"response-{self.requests}",
+        )
+
+
+def test_structured_schema_failure_gets_bounded_correction_retry() -> None:
+    responses = _CorrectingResponses()
+    client = OpenAIStructuredClient(
+        api_key="test",
+        model="primary",
+        max_retries=2,
+        retry_initial_delay_seconds=0,
+        retry_max_delay_seconds=0,
+        client=SimpleNamespace(responses=responses),
+    )
+
+    response = client.parse(
+        purpose="test",
+        prompt_version="test/v1",
+        instructions="Return the requested schema.",
+        input_payload={"question": "q"},
+        output_type=_Output,
+    )
+
+    assert response.output.value == "corrected"
+    assert response.receipt.attempt_count == 2
+    assert responses.requests == 2
+
+
 def test_fallback_model_gets_its_own_preflight() -> None:
     responses = _Responses()
     profiles = ModelProfileResolver(

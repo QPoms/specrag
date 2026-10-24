@@ -1,5 +1,4 @@
 """Authenticated HTTP boundary for the existing workspace services."""
-
 from __future__ import annotations
 
 import argparse
@@ -103,8 +102,8 @@ def create_app(
     conversation_worker: ConversationTurnWorker | None = None, *,
     worker_mode: str = "embedded",
 ) -> FastAPI:
-    if worker_mode not in {"embedded", "external"}:
-        raise ValueError("worker_mode must be 'embedded' or 'external'")
+    if worker_mode not in {"embedded", "conversation", "external"}:
+        raise ValueError("worker_mode must be embedded, conversation, or external")
     owns_services = services is None
 
     @asynccontextmanager
@@ -116,22 +115,24 @@ def create_app(
         app.state.worker = runtime.run
         app.state.lifecycle_worker = runtime.lifecycle
         app.state.conversation_worker = runtime.conversation
-        if worker_mode == "embedded":
-            runtime.start()
+        app.state.conversation_capability = runtime.conversation_capability
+        runtime.start(
+            research=worker_mode == "embedded",
+            lifecycle=worker_mode == "embedded",
+            conversation=worker_mode in {"embedded", "conversation"},
+        )
         try:
             yield
         finally:
-            if worker_mode == "embedded":
-                runtime.stop()
+            runtime.stop(
+                research=worker_mode == "embedded",
+                lifecycle=worker_mode == "embedded",
+                conversation=worker_mode in {"embedded", "conversation"},
+            )
             if owns_services:
                 app.state.services.close()
 
-    app = FastAPI(
-        title="SpecRAG API",
-        version="0.1.0",
-        lifespan=lifespan,
-    )
-
+    app = FastAPI(title="SpecRAG API", version="0.1.0", lifespan=lifespan)
     install_error_handlers(app)
 
     @app.middleware("http")
@@ -145,8 +146,12 @@ def create_app(
         return response
 
     @app.get("/healthz", include_in_schema=False)
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health(request: Request) -> dict[str, object]:
+        capability = request.app.state.conversation_capability
+        return {
+            "status": "ok" if capability.status == "ready" else "degraded",
+            "conversation_agent": capability.model_dump(mode="json"),
+        }
 
     @app.post("/api/v1/auth/login", response_model=SessionResponse)
     def login(payload: LoginRequest, services: Services) -> SessionResponse:
@@ -577,9 +582,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
         "--worker-mode",
-        choices=("embedded", "external"),
-        default="embedded",
-        help="run the durable Worker in this process or separately",
+        choices=("embedded", "conversation", "external"),
+        default="conversation",
+        help="run all Workers, only Conversation Worker, or none in API process",
     )
     arguments = parser.parse_args()
     uvicorn.run(

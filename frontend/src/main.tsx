@@ -14,7 +14,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryS
 
   render() {
     if (this.state.error) {
-      return <main className="runtime-error"><div><p className="eyebrow">Frontend runtime error</p><h1>The research desk could not render.</h1><p>{this.state.error.message}</p><button onClick={() => window.location.reload()}>Reload preview</button><small>If this appears after login, retry in an InPrivate window with browser translation/extensions disabled.</small></div></main>;
+      return <main className="runtime-error"><div><p className="eyebrow">前端运行错误</p><h1>研究工作台无法正常显示。</h1><p>{this.state.error.message}</p><button onClick={() => window.location.reload()}>重新加载页面</button><small>如果登录后出现此问题，请尝试使用隐私窗口，并关闭浏览器自动翻译和扩展后重试。</small></div></main>;
     }
     return this.props.children;
   }

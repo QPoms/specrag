@@ -1,6 +1,6 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,500;0,600;1,500;1,600&display=swap");
 
-:root { color: #e8e6df; background: #111413; font-family: "DM Sans", sans-serif; font-synthesis: none; --ink: #111413; --ink-2: #171b19; --line: rgba(230, 231, 220, .12); --muted: #9ba19a; --paper: #f1efe7; --copper: #d47a55; --sage: #a9c5ae; }
+:root { color: #e8e6df; background: #111413; font-family: "DM Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; font-synthesis: none; --ink: #111413; --ink-2: #171b19; --line: rgba(230, 231, 220, .12); --muted: #9ba19a; --paper: #f1efe7; --copper: #d47a55; --sage: #a9c5ae; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: var(--ink); }
 button, input, textarea, select { font: inherit; }
@@ -16,7 +16,7 @@ button { cursor: pointer; }
 .login-story::before { content: ""; position: absolute; width: 530px; height: 530px; border: 1px solid rgba(214, 122, 85, .16); border-radius: 50%; right: -245px; top: 18%; box-shadow: 0 0 0 34px rgba(214, 122, 85, .025), 0 0 0 90px rgba(214, 122, 85, .02); }
 .story-copy { position: relative; margin: auto 0; max-width: 590px; }
 .story-copy h1 { margin: 0; color: #efeee9; font-size: clamp(48px, 5vw, 78px); font-weight: 500; letter-spacing: -.065em; line-height: .98; }
-.story-copy h1 em, .hero-content h2 em { color: #d49373; font-family: "Playfair Display", serif; font-weight: 500; }
+.story-copy h1 em, .hero-content h2 em { color: #d49373; font-family: "Playfair Display", "STKaiti", "KaiTi", serif; font-weight: 500; }
 .story-lede { max-width: 390px; margin: 30px 0 0; color: #aeb7af; font-size: 15px; line-height: 1.75; }
 .story-footer { display: flex; align-items: center; gap: 10px; color: #737c75; font: 11px "DM Mono", monospace; }
 .footer-rule { width: 50px; height: 1px; background: #3d4641; }
@@ -28,7 +28,7 @@ button { cursor: pointer; }
 .mobile-brand { display: none; }
 .auth-form { display: grid; gap: 18px; }
 .auth-form label { display: grid; gap: 8px; color: #667069; font: 500 10px "DM Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
-.auth-form input { width: 100%; border: 1px solid #d7d9d1; border-radius: 3px; padding: 14px 13px; color: #19201c; background: rgba(255,255,255,.6); outline: none; font: 14px "DM Sans", sans-serif; text-transform: none; letter-spacing: 0; transition: border .2s, box-shadow .2s; }
+.auth-form input { width: 100%; border: 1px solid #d7d9d1; border-radius: 3px; padding: 14px 13px; color: #19201c; background: rgba(255,255,255,.6); outline: none; font: 14px "DM Sans", "PingFang SC", "Microsoft YaHei", sans-serif; text-transform: none; letter-spacing: 0; transition: border .2s, box-shadow .2s; }
 .auth-form input:focus { border-color: #78907f; box-shadow: 0 0 0 3px rgba(120, 144, 127, .14); }
 .primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 13px; border: 0; border-radius: 3px; background: var(--copper); color: #fff8f0; padding: 14px 18px; font-weight: 600; transition: transform .2s, background .2s; }
 .primary-button:hover:not(:disabled) { background: #be6541; transform: translateY(-1px); }

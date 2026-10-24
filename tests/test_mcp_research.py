@@ -11,7 +11,11 @@ import pytest
 from specrag.access import AuthorizationError, ServiceDelegationSigner
 from specrag.interfaces.mcp import SpecRAGMCPClient, create_mcp_server
 from specrag.interfaces.workspace_services import WorkspaceServices
-from specrag.models import CorpusVersionRef, ResearchToolRequest
+from specrag.models import (
+    CorpusVersionRef,
+    ResearchToolRequest,
+    SpecificationScope,
+)
 from specrag.orchestration import (
     ResearchLifecycleWorker,
     ResearchToolService,
@@ -206,6 +210,43 @@ def test_wait_timeout_keeps_one_queued_run(tmp_path: Path) -> None:
         assert first.run_id == replay.run_id
         assert first.status == replay.status == "queued"
         assert services.run_queue.pending_count() == 1
+        run = services.runs.get(first.run_id)
+        assert run is not None
+        assert run.input_snapshot is not None
+        assert run.input_snapshot.requested_scope == SpecificationScope(
+            policy="highest_version_within_release", release=17
+        )
+        assert run.deadline_at is None
+    finally:
+        services.close()
+
+
+def test_research_service_rejects_an_explicit_non_release17_scope(
+    tmp_path: Path,
+) -> None:
+    services, actor, conversation, accepted, harness, run_worker, _ = _setup(
+        tmp_path / "release-policy.sqlite3"
+    )
+    signer = ServiceDelegationSigner(SECRET)
+    claim = signer.verify(_delegation(signer, actor, conversation, accepted))
+    service = ResearchToolService(
+        harness,
+        run_worker,
+        services.research_results,
+        services.conversations,
+        services.conversation_lifecycle_store,
+        wait_seconds=0,
+    )
+    try:
+        request = ResearchToolRequest(
+            question="Compare Release 18 behavior.",
+            requested_scope=SpecificationScope(
+                policy="highest_version_within_release", release=18
+            ),
+        )
+        with pytest.raises(ValueError, match="only Release 17"):
+            asyncio.run(service.start_research(actor, claim, request))
+        assert services.run_queue.pending_count() == 0
     finally:
         services.close()
 

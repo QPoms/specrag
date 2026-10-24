@@ -1,6 +1,10 @@
 from collections.abc import Mapping
 
-from specrag.models import ResearchTask, ResearchWorkerResult
+from specrag.models import (
+    ResearchTask,
+    ResearchTaskExecution,
+    ResearchWorkerResult,
+)
 from specrag.orchestration.parallel import build_parallel_research_workflow
 from specrag.orchestration.state import ResearchState
 from specrag.orchestration.workflow import (
@@ -18,6 +22,7 @@ def _test_node_handler(_state: ResearchState) -> Mapping[str, object]:
 def _test_parallel_researcher(
     _state: ResearchState,
     _task: ResearchTask,
+    _execution: ResearchTaskExecution,
     *,
     max_tool_calls: int,
 ) -> ResearchWorkerResult:
@@ -92,6 +97,7 @@ def test_parallel_research_workflow_static_topology() -> None:
         "__start__",
         "router",
         "planner",
+        "prepare_executions",
         "dispatch",
         "researcher_worker",
         "fan_in",
@@ -99,23 +105,26 @@ def test_parallel_research_workflow_static_topology() -> None:
         "sufficiency_judge",
         "budget_guard",
         "replanner",
+        "terminalize_tasks",
         "synthesizer",
         "__end__",
     }
     assert edges == {
         ("__start__", "router", False),
         ("router", "planner", False),
-        ("planner", "dispatch", False),
+        ("planner", "prepare_executions", False),
+        ("prepare_executions", "dispatch", False),
         ("dispatch", "researcher_worker", True),
         ("dispatch", "budget_guard", True),
         ("researcher_worker", "fan_in", False),
         ("fan_in", "source_validator", False),
         ("source_validator", "sufficiency_judge", False),
         ("sufficiency_judge", "budget_guard", False),
-        ("budget_guard", "dispatch", True),
+        ("budget_guard", "prepare_executions", True),
         ("budget_guard", "replanner", True),
-        ("budget_guard", "synthesizer", True),
-        ("budget_guard", "__end__", True),
-        ("replanner", "dispatch", False),
+        ("budget_guard", "terminalize_tasks", True),
+        ("replanner", "prepare_executions", False),
+        ("terminalize_tasks", "synthesizer", True),
+        ("terminalize_tasks", "__end__", True),
         ("synthesizer", "__end__", False),
     }

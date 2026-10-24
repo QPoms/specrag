@@ -16,6 +16,7 @@ from specrag.models import (
     ConversationTurnBudget,
     MCPResearchStartResponse,
     NativeFunctionCall,
+    NativeToolCapability,
     ResearchResult,
     SpecificationScope,
 )
@@ -111,6 +112,27 @@ def test_agent_answers_ordinary_conversation_without_research() -> None:
     assert executor.calls == []
 
 
+def test_agent_can_describe_its_3gpp_research_role_without_evidence() -> None:
+    model = _Model([[ _call("respond", {
+        "text": (
+            "我是面向 3GPP 规范研究的助手，可以解释协议流程，并比较 "
+            "Release 17 与 Release 18。"
+        ),
+        "source_kind": "direct_conversation",
+        "research_result_ids": [],
+        "run_ids": [],
+        "citations": [],
+    }) ]])
+    outcome = _agent(model).run(
+        {"recent_messages": []},
+        budget=ConversationTurnBudget(),
+        executor=_Executor(),
+        operation_prefix="role-description",
+    )
+    assert outcome.message.source_kind == "direct_conversation"
+    assert "3GPP" in outcome.message.text
+
+
 def test_direct_response_is_available_with_zero_external_tool_budget() -> None:
     model = _Model([[ _call("respond", {
         "text": "请补充你的研究条件。",
@@ -158,6 +180,41 @@ def test_agent_uses_one_research_run_and_validates_current_result() -> None:
     )
     assert outcome.research_submissions == 1
     assert outcome.message.research_result_ids == (result.result_id,)
+    assert len(executor.calls) == 1
+
+
+def test_agent_stops_after_asynchronous_research_submission() -> None:
+    run_id = "RUN-" + "E" * 32
+    model = _Model([[
+        _call("start_research", {
+            "question": "What is required?",
+            "answer_language": "zh-CN",
+        }),
+    ]])
+    executor = _Executor([ConversationToolExecution(
+        output=MCPResearchStartResponse(
+            disposition="accepted",
+            run_id=run_id,
+            status="running",
+        ).model_dump(mode="json"),
+    )])
+
+    outcome = _agent(model).run(
+        {"recent_messages": []},
+        budget=ConversationTurnBudget(),
+        executor=executor,
+        operation_prefix="async-research",
+    )
+
+    assert outcome.stop_reason == "research_submitted"
+    assert outcome.model_steps == 1
+    assert outcome.tool_calls == 1
+    assert outcome.research_submissions == 1
+    assert outcome.message.source_kind == "direct_conversation"
+    assert outcome.message.status_kind == "running"
+    assert outcome.message.run_ids == (run_id,)
+    assert "后台执行" in outcome.message.text
+    assert len(model.requests) == 1
     assert len(executor.calls) == 1
 
 
@@ -239,6 +296,116 @@ def test_turn_worker_persists_direct_reply_and_releases_conversation(
         assert {event.event_type for event in services.conversation_store.events(
             conversation.conversation_id
         )} >= {"turn_started", "message_appended", "turn_stopped"}
+    finally:
+        services.close()
+
+
+def test_turn_worker_fails_with_startup_capability_diagnostic(
+    tmp_path: Path,
+) -> None:
+    services = WorkspaceServices.create(tmp_path / "capability.sqlite3")
+    services.identity.bootstrap("alice", "correct horse battery")
+    token, _ = services.identity.login("alice", "correct horse battery")
+    workspace = services.identity.create_workspace(token, "Capability Workspace")
+    actor = services.identity.context(token, workspace.workspace_id)
+    conversation = services.conversations.create(actor).conversation
+    accepted = services.conversations.append_user_message(
+        actor,
+        conversation.conversation_id,
+        text="What does the specification require?",
+        operation_key="capability-message-1",
+        expected_revision=0,
+    )
+    model = _Model([])
+    worker = ConversationTurnWorker(
+        queue=services.conversation_turn_queue,
+        store=services.conversation_agent_store,
+        conversations=services.conversation_store,
+        lifecycle=services.conversation_lifecycle_store,
+        identity=services.identity,
+        context_harness=services.context_harness,
+        memory_recall=services.memory_recall,
+        memory=services.memory,
+        results=services.research_results,
+        agent=_agent(model),
+        mcp_client=_UnusedMCP(),
+        delegation_signer=ServiceDelegationSigner(SECRET),
+        model_capability=NativeToolCapability(
+            status="unavailable",
+            api_mode="responses",
+            failure_kind="invalid_request",
+            status_code=400,
+            message=(
+                "The model gateway rejected native tool calling "
+                "(HTTP 400; mode=responses)."
+            ),
+        ),
+    )
+    try:
+        assert worker.process_one()
+        turn = services.conversation_agent_store.turn(accepted.turn.turn_id)
+        assert turn is not None
+        assert turn.status == "failed"
+        assert turn.failure_kind == "invalid_request"
+        assert turn.failure_message == (
+            "The model gateway rejected native tool calling "
+            "(HTTP 400; mode=responses)."
+        )
+        assert model.requests == []
+        assert services.conversation_turn_queue.pending_count() == 0
+        stored = services.conversation_store.get(conversation.conversation_id)
+        assert stored is not None and stored.active_turn_id is None
+    finally:
+        services.close()
+
+
+def test_turn_worker_persists_safe_model_response_rejection(
+    tmp_path: Path,
+) -> None:
+    services = WorkspaceServices.create(tmp_path / "response-rejection.sqlite3")
+    services.identity.bootstrap("alice", "correct horse battery")
+    token, _ = services.identity.login("alice", "correct horse battery")
+    workspace = services.identity.create_workspace(token, "Rejection Workspace")
+    actor = services.identity.context(token, workspace.workspace_id)
+    conversation = services.conversations.create(actor).conversation
+    accepted = services.conversations.append_user_message(
+        actor,
+        conversation.conversation_id,
+        text="State a requirement without research.",
+        operation_key="rejection-message-1",
+        expected_revision=0,
+    )
+    model = _Model([[ _call("respond", {
+        "text": "The protocol shall require this behavior.",
+        "source_kind": "direct_conversation",
+        "research_result_ids": [],
+        "run_ids": [],
+        "citations": [],
+    }) ]])
+    worker = ConversationTurnWorker(
+        queue=services.conversation_turn_queue,
+        store=services.conversation_agent_store,
+        conversations=services.conversation_store,
+        lifecycle=services.conversation_lifecycle_store,
+        identity=services.identity,
+        context_harness=services.context_harness,
+        memory_recall=services.memory_recall,
+        memory=services.memory,
+        results=services.research_results,
+        agent=_agent(model),
+        mcp_client=_UnusedMCP(),
+        delegation_signer=ServiceDelegationSigner(SECRET),
+    )
+    try:
+        assert worker.process_one()
+        turn = services.conversation_agent_store.turn(accepted.turn.turn_id)
+        assert turn is not None
+        assert turn.status == "failed"
+        assert turn.failure_kind == "structured_output"
+        assert turn.failure_message == (
+            "The model attempted to publish a specification-backed claim as "
+            "direct conversation without an applicable Research Result."
+        )
     finally:
         services.close()
 

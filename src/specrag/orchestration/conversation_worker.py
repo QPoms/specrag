@@ -16,11 +16,37 @@ from specrag.models import (
     Conversation,
     ConversationScopeRevision,
     ConversationTurn,
+    NativeToolCapability,
     ResearchResult,
 )
 
 from .conversation_tools import MCPConversationToolExecutor, ResearchMCPClient
 from .results import ResearchResultService
+
+
+_SAFE_AGENT_REJECTIONS = {
+    "specification-backed claim requires a Research Result": (
+        "The model attempted to publish a specification-backed claim as direct "
+        "conversation without an applicable Research Result."
+    ),
+    "respond must be the only call in its model step": (
+        "The model returned a final response together with another tool call; "
+        "the Conversation Agent rejected the ambiguous output."
+    ),
+    "conversation model returned no native call": (
+        "The model returned no required Conversation Agent tool call."
+    ),
+}
+
+
+def _turn_failure(exc: Exception) -> tuple[str, str]:
+    public_message = getattr(exc, "public_message", None)
+    if isinstance(public_message, str) and public_message.strip():
+        return getattr(exc, "failure_kind", "internal_error"), public_message[:1000]
+    rejection = _SAFE_AGENT_REJECTIONS.get(str(exc))
+    if rejection is not None:
+        return "structured_output", rejection
+    return "internal_error", "Conversation Agent execution failed."
 
 
 class ConversationQueue(Protocol):
@@ -81,6 +107,7 @@ class ConversationTurnWorker:
         agent: ConversationAgent,
         mcp_client: ResearchMCPClient,
         delegation_signer: ServiceDelegationSigner,
+        model_capability: NativeToolCapability | None = None,
         poll_seconds: float = 0.1,
         lease_seconds: float = 120.0,
     ) -> None:
@@ -98,6 +125,7 @@ class ConversationTurnWorker:
         self.agent = agent
         self.mcp_client = mcp_client
         self.delegation_signer = delegation_signer
+        self.model_capability = model_capability
         self.poll_seconds = poll_seconds
         self.lease_seconds = lease_seconds
         self.worker_id = "CONVERSATION-" + uuid4().hex.upper()
@@ -142,6 +170,19 @@ class ConversationTurnWorker:
         try:
             try:
                 turn = self.store.start_turn(turn_id)
+                if (
+                    self.model_capability is not None
+                    and self.model_capability.status != "ready"
+                ):
+                    self.store.fail_turn(
+                        turn_id,
+                        failure_kind=(
+                            self.model_capability.failure_kind or "internal_error"
+                        ),
+                        safe_message=self.model_capability.message,
+                    )
+                    self.queue.complete(turn_id, self.worker_id)
+                    return True
                 conversation = self.conversations.get(turn.conversation_id)
                 if conversation is None:
                     raise KeyError(turn.conversation_id)
@@ -201,10 +242,11 @@ class ConversationTurnWorker:
                 )
             except Exception as exc:
                 try:
+                    failure_kind, safe_message = _turn_failure(exc)
                     self.store.fail_turn(
                         turn_id,
-                        failure_kind=getattr(exc, "failure_kind", type(exc).__name__),
-                        safe_message="Conversation Agent execution failed",
+                        failure_kind=failure_kind,
+                        safe_message=safe_message,
                     )
                 except Exception:
                     self.queue.release(

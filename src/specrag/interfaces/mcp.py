@@ -217,6 +217,11 @@ def main() -> None:
     if arguments.host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("the first MCP release is restricted to a loopback host")
     services = WorkspaceServices.create(arguments.database)
+    try:
+        services.prewarm_research_runtime(17)
+    except Exception:
+        services.close()
+        raise
     run_worker = RunWorker(services.harness, services.run_queue)
     lifecycle_worker = ResearchLifecycleWorker(
         services.runs,

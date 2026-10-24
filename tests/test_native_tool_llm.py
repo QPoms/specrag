@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,11 +16,18 @@ from specrag.infrastructure.llm import (
     StructuredLLMError,
     classify_provider_error,
 )
+from specrag.infrastructure.api_errors import (
+    ProviderFailure,
+    provider_public_message,
+    safe_provider_field,
+)
+from specrag.infrastructure.model_capabilities import probe_native_tool_capability
 from specrag.models import (
     NativeFunctionCallOutput,
     NativeFunctionDefinition,
     RUN_FAILURE_KINDS,
 )
+from specrag.tools.research import conversation_research_tool_definitions
 
 
 class _FunctionItem:
@@ -98,6 +106,31 @@ def _tool() -> NativeFunctionDefinition:
             "additionalProperties": False,
         },
     )
+
+
+def test_native_call_rejects_expired_run_deadline_before_provider_request() -> None:
+    responses = _Responses([[
+        _FunctionItem("call-search", "semantic_search", {"semantic_query": "x"})
+    ]])
+    client = OpenAIStructuredClient(
+        api_key="test-key",
+        model="test-model",
+        max_retries=0,
+        deadline_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        client=SimpleNamespace(responses=responses),
+    )
+
+    with pytest.raises(StructuredLLMError) as error:
+        client.call_tools(
+            purpose="researcher",
+            prompt_version="test/v1",
+            instructions="Use functions.",
+            input_payload={"round": 1},
+            tools=(_tool(),),
+        )
+
+    assert error.value.failure_kind == "timeout"
+    assert responses.requests == []
 
 
 def test_native_call_parses_multiple_calls_and_replays_outputs() -> None:
@@ -231,3 +264,70 @@ def test_chat_refusal_is_projected_as_model_refusal() -> None:
 
     assert caught.value.failure_kind == "model_refusal"
     assert caught.value.retryable is False
+
+
+def test_conversation_tools_use_provider_valid_strict_object_schemas() -> None:
+    def check(schema: dict[str, Any]) -> None:
+        if schema.get("type") == "object":
+            properties = schema.get("properties", {})
+            assert set(schema.get("required", ())) == set(properties)
+            assert schema.get("additionalProperties") is False
+            for value in properties.values():
+                check(value)
+        if schema.get("type") == "array":
+            check(schema["items"])
+        for branch in schema.get("anyOf", ()):  # nullable object branches
+            check(branch)
+        assert "uniqueItems" not in schema
+
+    tools = conversation_research_tool_definitions()
+    assert {tool.name for tool in tools} == {
+        "start_research", "get_research_status", "get_research_result", "respond",
+    }
+    for tool in tools:
+        assert tool.strict is True
+        check(tool.parameters)
+
+
+def test_provider_diagnostic_exposes_only_allowlisted_metadata() -> None:
+    error = SimpleNamespace(
+        param="tools[0].parameters",
+        code="invalid_function_parameters",
+        body={"error": {"message": "secret provider prose must not escape"}},
+    )
+    message = provider_public_message(
+        ProviderFailure("invalid_request", False, 400),
+        operation="native_tool_calling",
+        api_mode="responses",
+        provider_code=safe_provider_field(error, "code"),
+        provider_parameter=safe_provider_field(error, "param"),
+    )
+    assert "HTTP 400" in message
+    assert "tools[0].parameters" in message
+    assert "secret provider prose" not in message
+
+
+def test_native_tool_probe_returns_ready_or_safe_failure() -> None:
+    class Ready:
+        def call_tools(self, **_: Any):
+            return SimpleNamespace(receipt=SimpleNamespace(api_mode="responses"))
+
+    class Rejected:
+        def call_tools(self, **_: Any):
+            error = RuntimeError("raw provider payload")
+            error.failure_kind = "invalid_request"
+            error.status_code = 400
+            error.retryable = False
+            error.api_mode = "responses"
+            error.public_message = "Safe native tool diagnostic."
+            raise error
+
+    ready = probe_native_tool_capability(Ready(), conversation_research_tool_definitions())
+    rejected = probe_native_tool_capability(
+        Rejected(), conversation_research_tool_definitions()
+    )
+    assert ready.status == "ready" and ready.api_mode == "responses"
+    assert rejected.status == "unavailable"
+    assert rejected.status_code == 400
+    assert rejected.message == "Safe native tool diagnostic."
+    assert "raw provider payload" not in rejected.message

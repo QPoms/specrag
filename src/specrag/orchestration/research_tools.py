@@ -78,12 +78,13 @@ class ResearchToolService:
             stored = self.results.get(context, dependency.result_id)
             if stored.content_sha256 != dependency.content_sha256:
                 raise ValueError("prior Research Result hash does not match")
-        release = self._release(request)
+        scope = self._scope(request)
+        release = self.default_release
         inspection = self.worker.submit(context, ResearchRequest(
             question=request.question,
             objective=request.objective,
             conditions=request.conditions,
-            requested_scope=request.requested_scope,
+            requested_scope=scope,
             prior_results=request.prior_results,
             release=release,
             answer_language=request.answer_language,
@@ -114,9 +115,7 @@ class ResearchToolService:
                 owner_user_id=context.user_id,
                 objective=request.objective or request.question,
                 conditions=request.conditions,
-                scope=request.requested_scope or SpecificationScope(
-                    policy="highest_version_within_release", release=release
-                ),
+                scope=scope,
                 source_message_id=delegation.origin_message_id,
             )
         deadline = asyncio.get_running_loop().time() + self.wait_seconds
@@ -186,13 +185,23 @@ class ResearchToolService:
             disposition="accepted", run_id=run_id, status=run.status
         )
 
-    def _release(self, request: ResearchToolRequest) -> int:
+    def _scope(self, request: ResearchToolRequest) -> SpecificationScope:
         scope = request.requested_scope
         if scope is None or scope.policy == "latest_per_spec":
-            return self.default_release
-        if scope.release is not None:
-            return scope.release
-        return max(item.release for item in scope.versions)
+            return SpecificationScope(
+                policy="highest_version_within_release",
+                release=self.default_release,
+            )
+        releases = (
+            {scope.release}
+            if scope.release is not None
+            else {item.release for item in scope.versions}
+        )
+        if releases != {self.default_release}:
+            raise ValueError(
+                f"only Release {self.default_release} research is currently supported"
+            )
+        return scope
 
     @staticmethod
     def _validate_delegation(

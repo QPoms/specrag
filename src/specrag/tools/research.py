@@ -2,7 +2,80 @@
 
 from __future__ import annotations
 
-from specrag.models import NativeFunctionDefinition, ResearchToolRequest
+from specrag.models import NativeFunctionDefinition
+
+
+def _research_request_schema() -> dict[str, object]:
+    """Build a strict function schema rather than a default-oriented schema."""
+
+    version_ref = {
+        "type": "object",
+        "properties": {
+            "specification": {"type": "string"},
+            "version": {"type": "string"},
+            "release": {"type": ["integer", "null"]},
+        },
+        "required": ["specification", "version", "release"],
+        "additionalProperties": False,
+    }
+    scope = {
+        "type": "object",
+        "properties": {
+            "policy": {
+                "type": "string",
+                "enum": [
+                    "latest_per_spec",
+                    "highest_version_within_release",
+                    "exact_version",
+                    "mixed_versions",
+                ],
+            },
+            "release": {"type": ["integer", "null"]},
+            "versions": {"type": "array", "items": version_ref},
+        },
+        "required": ["policy", "release", "versions"],
+        "additionalProperties": False,
+    }
+    prior_result = {
+        "type": "object",
+        "properties": {
+            "result_id": {"type": "string"},
+            "content_sha256": {"type": "string"},
+            "relationship": {
+                "type": "string",
+                "enum": [
+                    "follow_up",
+                    "condition_change",
+                    "revalidation",
+                    "continuation",
+                ],
+            },
+        },
+        "required": ["result_id", "content_sha256", "relationship"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string"},
+            "objective": {"type": ["string", "null"]},
+            "conditions": {"type": "array", "items": {"type": "string"}},
+            "requested_scope": {"anyOf": [scope, {"type": "null"}]},
+            "prior_results": {"type": "array", "items": prior_result},
+            "answer_language": {"type": "string"},
+            "detail_level": {"type": "string"},
+        },
+        "required": [
+            "question",
+            "objective",
+            "conditions",
+            "requested_scope",
+            "prior_results",
+            "answer_language",
+            "detail_level",
+        ],
+        "additionalProperties": False,
+    }
 
 
 def conversation_research_tool_definitions() -> tuple[NativeFunctionDefinition, ...]:
@@ -32,17 +105,14 @@ def conversation_research_tool_definitions() -> tuple[NativeFunctionDefinition, 
             "research_result_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "uniqueItems": True,
             },
             "run_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "uniqueItems": True,
             },
             "citations": {
                 "type": "array",
                 "items": {"type": "string"},
-                "uniqueItems": True,
             },
         },
         "required": [
@@ -61,7 +131,7 @@ def conversation_research_tool_definitions() -> tuple[NativeFunctionDefinition, 
                 "Create one durable evidence-backed 3GPP Research Run. Use this "
                 "for specification facts, protocol behavior, or technical judgments."
             ),
-            parameters=ResearchToolRequest.model_json_schema(),
+            parameters=_research_request_schema(),
         ),
         NativeFunctionDefinition(
             name="get_research_status",

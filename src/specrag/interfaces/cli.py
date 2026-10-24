@@ -20,7 +20,11 @@ from specrag.infrastructure import (
 )
 from specrag.infrastructure.structured_agent import LLMApiStructuredAgent
 from specrag.memory import resolve_user_configuration
-from specrag.models import MemoryExtractionSource, ResearchBudget, ResearchRequest
+from specrag.models import (
+    MemoryExtractionSource,
+    ResearchBudget,
+    ResearchRequest,
+)
 from specrag.retrieval.corpus import discover_all_source_documents
 
 from . import diagnostics
@@ -100,7 +104,14 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--release", type=int)
     run.add_argument("--language")
     run.add_argument("--detail")
-    run.add_argument("--elapsed-seconds", type=int, default=900)
+    run.add_argument(
+        "--elapsed-seconds",
+        type=int,
+        default=None,
+        help=(
+            "optional whole-Run wall-clock limit; omitted uses completion-first mode"
+        ),
+    )
     run.add_argument("--max-iterations", type=int, default=4)
     run.add_argument("--max-tool-calls", type=int, default=12)
     run.add_argument("--max-gap-tool-calls", type=int, default=6)

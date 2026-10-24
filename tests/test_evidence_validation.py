@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from specrag.evidence import (
     EvidenceSufficiencyService,
     EvidenceSynthesisService,
@@ -13,6 +15,7 @@ from specrag.evidence import (
 from specrag.models import (
     CandidateEvidence,
     EvidenceSynthesis,
+    ResearchBudget,
     ResearchPlan,
     ResearchTask,
     SourceValidationResult,
@@ -163,6 +166,20 @@ class _SufficiencyAssessor:
         return self.assessment
 
 
+class _TrackingSufficiencyAssessor:
+    def __init__(self) -> None:
+        self.task_ids: list[str] = []
+
+    def assess(self, task, evidence, original_question=None):
+        self.task_ids.append(task.task_id)
+        return TaskSufficiencyAssessment(
+            task_id=task.task_id,
+            status="sufficient",
+            supporting_evidence_ids=tuple(item.evidence_id for item in evidence),
+            rationale="The task has sufficient source evidence.",
+        )
+
+
 def _source_validation(
     evidence_id: str = "E1",
     *,
@@ -177,6 +194,58 @@ def _source_validation(
         excerpt_valid=valid,
         errors=() if valid else ("invalid source",),
     )
+
+
+def test_sufficiency_handler_does_not_reassess_completed_tasks() -> None:
+    assessor = _TrackingSufficiencyAssessor()
+    first_task = _task().model_copy(update={"status": "completed"})
+    second_task = ResearchTask(
+        task_id="T2",
+        question="What does the network do?",
+        objective="Find the network behavior.",
+        status="running",
+    )
+    first_candidate = _candidate_placeholder()
+    second_candidate = first_candidate.model_copy(update={
+        "evidence_id": "E2",
+        "task_id": "T2",
+        "chunk_id": "C2",
+        "excerpt": "The network shall process the request.",
+    })
+    first_assessment = TaskSufficiencyAssessment(
+        task_id="T1",
+        status="sufficient",
+        supporting_evidence_ids=("E1",),
+        rationale="The first task was already supported.",
+    )
+    state = new_research_state(
+        research_id="R-INCREMENTAL-JUDGE",
+        user_question="Explain both registration behaviors.",
+    )
+    state["research_tasks"] = (first_task, second_task)
+    state["candidate_evidence"] = (first_candidate, second_candidate)
+    state["source_validations"] = (
+        _source_validation("E1"),
+        _source_validation("E2"),
+    )
+    state["validated_evidence"] = (_validated(),)
+    state["sufficiency_assessments"] = (first_assessment,)
+
+    update = EvidenceSufficiencyHandler(
+        EvidenceSufficiencyService(assessor)
+    )(state)
+
+    assert assessor.task_ids == ["T2"]
+    assert [item.task_id for item in update["sufficiency_assessments"]] == [
+        "T1",
+        "T2",
+    ]
+    assert {item.evidence_id for item in update["validated_evidence"]} == {
+        "E1",
+        "E2",
+    }
+    assert all(item.status == "completed" for item in update["research_tasks"])
+    assert update["evidence_sufficient"] is True
 
 
 def test_supported_item_can_still_leave_task_level_missing_relation() -> None:
@@ -292,7 +361,7 @@ def test_unattempted_dependency_task_is_not_assessed_as_a_gap() -> None:
     assert batch.evidence_sufficient is False
 
 
-def test_sufficiency_handler_rejects_unvalidated_evidence_reference() -> None:
+def test_sufficiency_handler_downgrades_unvalidated_evidence_reference() -> None:
     assessment = TaskSufficiencyAssessment(
         task_id="T1",
         status="sufficient",
@@ -308,34 +377,45 @@ def test_sufficiency_handler_rejects_unvalidated_evidence_reference() -> None:
     state["candidate_evidence"] = (_candidate_placeholder(),)
     state["source_validations"] = (_source_validation(),)
 
-    try:
-        EvidenceSufficiencyHandler(service)(state)
-    except ValueError as exc:
-        assert "ineligible evidence" in str(exc)
-    else:
-        raise AssertionError("ineligible evidence reference was accepted")
+    update = EvidenceSufficiencyHandler(service)(state)
+
+    assert update["evidence_sufficient"] is False
+    assert update["research_tasks"][0].status == "running"
+    assert update["sufficiency_assessments"][0].status == "insufficient"
+    assert update["sufficiency_assessments"][0].supporting_evidence_ids == ()
+    assert update["gaps"][0].evidence_need == "direct_fact"
+    assert "not source-valid" in update["gaps"][0].description
 
 
 class _SynthesisGenerator:
     def __init__(self, evidence_id: str = "E1") -> None:
         self.evidence_id = evidence_id
 
-    def synthesize(self, question, tasks, evidence):
+    def synthesize(self, question, tasks, evidence, **metadata):
         return EvidenceSynthesis(
             answer=(
                 "The UE initiates the registration procedure. "
                 f"[{self.evidence_id}]"
             ),
             evidence_ids=(self.evidence_id,),
+            **metadata,
         )
 
 
 class _MissingInlineCitationGenerator:
-    def synthesize(self, question, tasks, evidence):
+    def synthesize(self, question, tasks, evidence, **metadata):
         return EvidenceSynthesis(
             answer="The UE initiates the registration procedure.",
             evidence_ids=("E1",),
+            **metadata,
         )
+
+
+class _UnavailableSynthesisGenerator:
+    def synthesize(self, question, tasks, evidence, **metadata):
+        error = RuntimeError("provider unavailable")
+        error.failure_kind = "provider_unavailable"
+        raise error
 
 
 def _sufficient_assessment() -> TaskSufficiencyAssessment:
@@ -362,6 +442,34 @@ def test_synthesis_rejects_unvalidated_answer_citations(tmp_path: Path) -> None:
         assert "ineligible evidence" in str(exc)
     else:
         raise AssertionError("synthesis accepted an unvalidated evidence ID")
+
+
+def test_synthesis_handler_publishes_evidence_digest_on_provider_failure(
+    tmp_path: Path,
+) -> None:
+    state = new_research_state(
+        research_id="R-SYNTHESIS-FALLBACK",
+        user_question="What starts registration?",
+    )
+    state["research_tasks"] = (
+        _task().model_copy(update={"status": "completed"}),
+    )
+    state["candidate_evidence"] = (_candidate(tmp_path),)
+    state["validated_evidence"] = (_validated(),)
+    state["sufficiency_assessments"] = (_sufficient_assessment(),)
+    state["evidence_sufficient"] = True
+
+    update = EvidenceSynthesisHandler(
+        EvidenceSynthesisService(_UnavailableSynthesisGenerator())
+    )(state)
+
+    synthesis = update["synthesis"]
+    assert synthesis.mode == "complete"
+    assert synthesis.evidence_ids == ("E1",)
+    assert "[E1]" in synthesis.answer
+    assert "model synthesis step was unavailable" in synthesis.answer
+    assert update["stop_reason"] == "completed"
+    assert update["errors"][-1].startswith("model synthesis unavailable")
 
 
 def test_synthesis_rejects_declared_citation_missing_from_answer(
@@ -405,6 +513,77 @@ def test_synthesis_handler_records_answer_to_evidence_chain(tmp_path: Path) -> N
         "The UE initiates the registration procedure. [E1]"
     )
     assert update["synthesis"].evidence_ids == ("E1",)
+
+
+def test_partial_synthesis_preserves_budget_stop_and_unresolved_tasks(
+    tmp_path: Path,
+) -> None:
+    second_task = ResearchTask(
+        task_id="T2",
+        question="What exception applies?",
+        objective="Find the exception.",
+        status="running",
+    )
+    partial_assessment = TaskSufficiencyAssessment(
+        task_id="T1",
+        status="partial",
+        supporting_evidence_ids=("E1",),
+        missing_relation="The exception is not established.",
+        rationale="The trigger is supported but its exception is missing.",
+    )
+    insufficient_assessment = TaskSufficiencyAssessment(
+        task_id="T2",
+        status="insufficient",
+        missing_relation="No source establishes the exception.",
+        rationale="No supported evidence was selected.",
+    )
+    state = new_research_state(
+        research_id="R-PARTIAL",
+        user_question="What starts registration and what exception applies?",
+    )
+    state["research_tasks"] = (_task(), second_task)
+    state["candidate_evidence"] = (_candidate(tmp_path),)
+    state["validated_evidence"] = (_validated(),)
+    state["sufficiency_assessments"] = (
+        partial_assessment,
+        insufficient_assessment,
+    )
+    state["evidence_sufficient"] = False
+    state["stop_reason"] = "iteration_budget"
+
+    update = EvidenceSynthesisHandler(
+        EvidenceSynthesisService(_SynthesisGenerator())
+    )(state)
+
+    synthesis = update["synthesis"]
+    assert update["stop_reason"] == "iteration_budget"
+    assert synthesis.mode == "partial"
+    assert synthesis.covered_task_ids == ("T1",)
+    assert synthesis.unresolved_task_ids == ("T1", "T2")
+    assert synthesis.conflicting_task_ids == ()
+    assert synthesis.evidence_ids == ("E1",)
+
+
+def test_partial_synthesis_rejects_evidence_not_selected_by_judge(
+    tmp_path: Path,
+) -> None:
+    assessment = TaskSufficiencyAssessment(
+        task_id="T1",
+        status="partial",
+        supporting_evidence_ids=(),
+        missing_relation="The trigger is not sufficiently established.",
+        rationale="No evidence was selected as supporting.",
+    )
+
+    with pytest.raises(ValueError, match="without supported evidence"):
+        EvidenceSynthesisService(_SynthesisGenerator()).synthesize(
+            "What starts registration?",
+            (_task(),),
+            (_candidate(tmp_path),),
+            (_validated(),),
+            (assessment,),
+            mode="partial",
+        )
 
 
 def test_synthesis_rejects_citations_that_omit_a_task(tmp_path: Path) -> None:
@@ -533,3 +712,52 @@ def test_real_evidence_handlers_complete_single_research_graph(
     assert result["validated_evidence"][0].validation_status == "supported"
     assert result["sufficiency_assessments"][0].status == "sufficient"
     assert result["synthesis"].evidence_ids == ("E1",)
+
+
+def test_budget_limited_graph_publishes_cited_partial_synthesis(
+    tmp_path: Path,
+) -> None:
+    task = _task()
+    plan = ResearchPlan(plan_id="P-PARTIAL", tasks=(task,))
+    partial = TaskSufficiencyAssessment(
+        task_id="T1",
+        status="partial",
+        supporting_evidence_ids=("E1",),
+        missing_relation="The exception remains unverified.",
+        rationale="The trigger is supported, but the exception is missing.",
+    )
+    workflow = build_single_research_workflow(ResearchNodeHandlers(
+        router=lambda state: {"route": "plan"},
+        planner=lambda state: {
+            "research_plan": plan,
+            "research_tasks": plan.tasks,
+        },
+        researcher=lambda state: {
+            "candidate_evidence": (_candidate(tmp_path),),
+            "last_researcher_stop_reason": "submitted_for_validation",
+        },
+        source_validator=SourceValidationHandler(SourceValidationService(
+            SourceEvidenceValidator(tmp_path),
+        )),
+        sufficiency_judge=EvidenceSufficiencyHandler(
+            EvidenceSufficiencyService(_SufficiencyAssessor(partial))
+        ),
+        replanner=lambda state: {},
+        synthesizer=EvidenceSynthesisHandler(EvidenceSynthesisService(
+            _SynthesisGenerator()
+        )),
+    ))
+
+    result = workflow.invoke(
+        new_research_state(
+            research_id="R-PARTIAL-E2E",
+            user_question="What starts registration and what exception applies?",
+            budget=ResearchBudget(max_iterations=1),
+        ),
+        thread_id="partial-evidence-e2e-test",
+    )
+
+    assert result["stop_reason"] == "iteration_budget"
+    assert result["synthesis"].mode == "partial"
+    assert result["synthesis"].evidence_ids == ("E1",)
+    assert result["synthesis"].unresolved_task_ids == ("T1",)

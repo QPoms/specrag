@@ -21,9 +21,12 @@ def _encode(value: bytes) -> str:
 def _decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     try:
-        return base64.urlsafe_b64decode(value + padding)
+        decoded = base64.urlsafe_b64decode(value + padding)
     except (ValueError, UnicodeEncodeError) as exc:
         raise AuthorizationError("invalid service delegation") from exc
+    if not value or _encode(decoded) != value:
+        raise AuthorizationError("invalid service delegation")
+    return decoded
 
 
 class ServiceDelegationSigner:

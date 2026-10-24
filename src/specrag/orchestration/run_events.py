@@ -31,14 +31,16 @@ class RunEventRecorder:
         task_id: str | None = None,
         payload: dict[str, object] | None = None,
     ) -> RunEvent:
-        return self.store.append_event(self.build(
-            run,
-            event_type,
-            operation_key,
-            stage=stage,
-            task_id=task_id,
-            payload=payload,
-        ))
+        return self.store.append_event(
+            self.build(
+                run,
+                event_type,
+                operation_key,
+                stage=stage,
+                task_id=task_id,
+                payload=payload,
+            )
+        )
 
     def build(
         self,
@@ -81,14 +83,37 @@ class RunEventRecorder:
                 f"node:{name}:iteration:{state['iteration']}:"
                 f"calls:{len(state['tool_calls'])}:gaps:{len(state['gaps'])}"
             )
+            old_execution_ids = {
+                item.execution_id for item in state.get("task_executions", ())
+            }
+            for execution in update.get("task_executions", ()):
+                if execution.execution_id in old_execution_ids:
+                    continue
+                self.append(
+                    run,
+                    "task_dispatched",
+                    f"task-execution:{execution.execution_id}",
+                    stage="researcher",
+                    task_id=execution.task_id,
+                    payload={
+                        "execution_id": execution.execution_id,
+                        "attempt": execution.attempt,
+                        "phase": execution.phase,
+                    },
+                )
             old_receipts = len(state.get("model_receipts", ()))
             new_receipts = tuple(update.get("model_receipts", ()))[old_receipts:]
-            for receipt in new_receipts:
+            for offset, receipt in enumerate(new_receipts, start=old_receipts + 1):
+                receipt_stage = str(receipt.get("stage") or name)
                 self.append(
                     run,
                     "model_receipt",
-                    f"receipt:{receipt.get('response_sha256', '')}",
-                    stage=name,
+                    (
+                        f"receipt:{offset}:"
+                        f"{receipt.get('request_sha256', '')}:"
+                        f"{receipt.get('response_sha256', '')}"
+                    ),
+                    stage=receipt_stage,
                     payload={
                         "model": receipt.get("model"),
                         "purpose": receipt.get("purpose"),
@@ -96,10 +121,31 @@ class RunEventRecorder:
                         "request_sha256": receipt.get("request_sha256"),
                         "response_sha256": receipt.get("response_sha256"),
                         "latency_ms": receipt.get("latency_ms", 0),
-                        "input_tokens": receipt.get("input_tokens") or 0,
-                        "output_tokens": receipt.get("output_tokens") or 0,
+                        "input_tokens": receipt.get("input_tokens"),
+                        "output_tokens": receipt.get("output_tokens"),
+                        "estimated_input_tokens": receipt.get("estimated_input_tokens"),
+                        "input_ceiling_tokens": receipt.get("input_ceiling_tokens"),
+                        "outcome": receipt.get("outcome", "completed"),
+                        "failure_kind": receipt.get("failure_kind"),
                     },
                 )
+            if name == "fan_in":
+                processed = int(state.get("researcher_results_processed", 0))
+                for result in state.get("researcher_results", ())[processed:]:
+                    self.append(
+                        run,
+                        "node_transition",
+                        f"researcher-worker:{result.execution_id}",
+                        stage="researcher",
+                        task_id=result.task_id,
+                        payload={
+                            "latency_ms": round(result.latency_ms, 3),
+                            "parallel_worker": True,
+                            "wave": state["iteration"] + 1,
+                            "execution_id": result.execution_id,
+                            "execution_status": result.execution_status,
+                        },
+                    )
             old_calls = len(state.get("tool_calls", ()))
             for call in tuple(update.get("tool_calls", ()))[old_calls:]:
                 self.append(

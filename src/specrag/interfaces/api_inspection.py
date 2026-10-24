@@ -101,6 +101,8 @@ def metadata_response(run: ResearchRun) -> RunMetadataResponse:
         created_at=run.created_at,
         started_at=run.started_at,
         finished_at=run.finished_at,
+        research_deadline_at=run.research_deadline_at,
+        finalization_deadline_at=run.finalization_deadline_at,
         deadline_at=run.deadline_at,
         cancel_requested_at=run.cancel_requested_at,
         retry_of_run_id=run.retry_of_run_id,
