@@ -9,6 +9,8 @@ from specrag.retrieval import hybrid
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
 from specrag.retrieval.models import CorpusScope, SourceDocument
 from specrag.retrieval.pool import RetrieverPool
+from specrag.interfaces.workspace_services import WorkspaceServices
+from specrag.models import CorpusVersionRef
 
 
 def test_retriever_pool_reuses_one_read_only_retriever_per_scope() -> None:
@@ -69,3 +71,52 @@ def test_read_only_retriever_fails_without_creating_a_chunk_snapshot(
         )
 
     assert not index_root.exists()
+
+
+def test_repeated_mcp_prewarm_reuses_one_bound_retriever(monkeypatch) -> None:
+    document = SourceDocument(
+        source_collection="3gpp_markdown",
+        specification="24.501",
+        version="17.10.0",
+        release=17,
+        source_path="data/3gpp/24.501/17.10.0.md",
+        document_sha256="A" * 64,
+    )
+    built: list[CorpusScope] = []
+
+    def builder(_config, scope):
+        built.append(scope)
+        return SimpleNamespace(corpus_scope=scope)
+
+    fake = SimpleNamespace(
+        harness=SimpleNamespace(
+            corpus_snapshot=lambda _scope: (
+                CorpusVersionRef(
+                    specification="24.501",
+                    version="17.10.0",
+                    release=17,
+                ),
+            )
+        ),
+        retriever_pool=RetrieverPool(RetrievalCfg(), builder=builder),
+    )
+    monkeypatch.setattr(
+        "specrag.interfaces.workspace_services.discover_source_documents",
+        lambda _config, _scope: (document,),
+    )
+    stages: list[str] = []
+
+    first = WorkspaceServices.prewarm_research_runtime(
+        fake,
+        stage_observer=lambda name, _duration: stages.append(name),
+    )
+    second = WorkspaceServices.prewarm_research_runtime(fake)
+
+    assert first is second
+    assert len(built) == 1
+    assert stages == [
+        "corpus_snapshot",
+        "local_snapshot_discovery",
+        "snapshot_consistency",
+        "retriever_construction",
+    ]

@@ -53,6 +53,7 @@ from .conversation_api import install_conversation_routes
 from .result_api import install_result_routes
 from .run_metadata_api import install_run_metadata_routes
 from .conversation_runtime import ApplicationWorkers
+from .health import health_projection
 from specrag.orchestration import ConversationTurnWorker, ResearchLifecycleWorker, RunWorker
 
 
@@ -146,12 +147,11 @@ def create_app(
         return response
 
     @app.get("/healthz", include_in_schema=False)
-    def health(request: Request) -> dict[str, object]:
-        capability = request.app.state.conversation_capability
-        return {
-            "status": "ok" if capability.status == "ready" else "degraded",
-            "conversation_agent": capability.model_dump(mode="json"),
-        }
+    async def health(request: Request) -> dict[str, object]:
+        return await health_projection(
+            request.app.state.conversation_capability,
+            request.app.state.conversation_worker,
+        )
 
     @app.post("/api/v1/auth/login", response_model=SessionResponse)
     def login(payload: LoginRequest, services: Services) -> SessionResponse:
@@ -437,7 +437,10 @@ def create_app(
         run_id: str, context: Context, services: Services,
     ) -> RunInspectionResponse:
         try:
-            return inspection_response(services.harness.inspect(context, run_id))
+            return inspection_response(
+                services.harness.inspect(context, run_id),
+                lambda result_id: services.research_results.get(context, result_id),
+            )
         except (AuthorizationError, KeyError) as exc:
             raise _run_not_found() from exc
 

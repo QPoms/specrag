@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+from time import perf_counter
+from collections.abc import Callable
 
 from specrag.access import LocalIdentityService
 from specrag.context import ContextHarness
@@ -87,48 +89,73 @@ class WorkspaceServices:
     retriever_pool: RetrieverPool
 
     def prewarm_research_runtime(
-        self, release: int = 17,
+        self,
+        release: int = 17,
+        *,
+        stage_observer: Callable[[str, float], None] | None = None,
     ) -> HybridMarkdownRetriever:
         """Open one validated immutable corpus runtime before serving tools."""
 
+        def measured(name: str, operation):
+            started = perf_counter()
+            result = operation()
+            if stage_observer is not None:
+                stage_observer(name, (perf_counter() - started) * 1000)
+            return result
+
         if self.harness.corpus_snapshot is None:
             raise RuntimeError("corpus snapshot service is unavailable")
-        versions = self.harness.corpus_snapshot(SpecificationScope(
-            policy="highest_version_within_release",
-            release=release,
-        ))
-        local = discover_source_documents(
-            load_config().retrieval,
-            CorpusScope(
-                version_policy="highest_version_within_release",
+        versions = measured(
+            "corpus_snapshot",
+            lambda: self.harness.corpus_snapshot(SpecificationScope(
+                policy="highest_version_within_release",
                 release=release,
+            )),
+        )
+        local = measured(
+            "local_snapshot_discovery",
+            lambda: discover_source_documents(
+                load_config().retrieval,
+                CorpusScope(
+                    version_policy="highest_version_within_release",
+                    release=release,
+                ),
             ),
         )
-        active_identity = {
-            (item.specification, item.version) for item in versions
-        }
-        local_identity = {
-            (item.specification, item.version)
-            for item in local
-            if item.specification is not None and item.version is not None
-        }
-        if active_identity != local_identity:
-            raise RuntimeError(
-                f"Release {release} active corpus does not match the local "
-                "source snapshot"
+
+        def validate_snapshot() -> tuple[SpecificationVersion, ...]:
+            active_identity = {
+                (item.specification, item.version) for item in versions
+            }
+            local_identity = {
+                (item.specification, item.version)
+                for item in local
+                if item.specification is not None and item.version is not None
+            }
+            if active_identity != local_identity:
+                raise RuntimeError(
+                    f"Release {release} active corpus does not match the local "
+                    "source snapshot"
+                )
+            return tuple(
+                SpecificationVersion(
+                    specification=item.specification,
+                    version=item.version,
+                    release=item.release,
+                )
+                for item in versions
             )
-        bound = tuple(
-            SpecificationVersion(
-                specification=item.specification,
-                version=item.version,
-                release=item.release,
-            )
-            for item in versions
+
+        bound = measured("snapshot_consistency", validate_snapshot)
+        return measured(
+            "retriever_construction",
+            lambda: self.retriever_pool.get(CorpusScope(
+                version_policy=(
+                    "exact_version" if len(bound) == 1 else "mixed_versions"
+                ),
+                versions=bound,
+            )),
         )
-        return self.retriever_pool.get(CorpusScope(
-            version_policy="exact_version" if len(bound) == 1 else "mixed_versions",
-            versions=bound,
-        ))
 
     @classmethod
     def create(

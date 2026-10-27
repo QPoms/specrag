@@ -301,14 +301,35 @@ function EvidencePanel({ inspection }: { inspection: RunInspection }) {
   const completed = inspection.run.status === "completed";
   const active = inspection.run.status === "queued" || inspection.run.status === "running";
   const answer = inspection.answer?.trim();
+  const taskById = new Map(inspection.research_tasks.map((task) => [task.task_id, task]));
   return <section className="evidence-panel" id="evidence">
     <div className="section-heading evidence-heading"><div><p className="eyebrow">规范证据支持的结果</p><h2>{completed ? "有据可查的研究答案" : "研究结果"}</h2><p className="result-meta">{inspection.run.run_id} · Release {inspection.run.release} · {zhLabel(inspection.run.status)}</p></div><span className={`result-status ${inspection.run.status}`}><span className="status-dot" /> {zhLabel(inspection.run.status)}</span></div>
+    {inspection.evidence_status && <div className={`evidence-verdict ${inspection.evidence_status}`}><span>{zhLabel(inspection.evidence_status)}</span><p>{evidenceStatusText(inspection.evidence_status)}</p></div>}
+    {inspection.task_assessments.length > 0 && <div className="task-assessment-panel">
+      <div className="evidence-heading-row"><span className="answer-label">子任务证据状态</span><span>{inspection.task_assessments.length} 项判断</span></div>
+      <div className="task-assessment-list">{inspection.task_assessments.map((assessment) => {
+        const task = taskById.get(assessment.task_id);
+        return <article className={`task-assessment ${assessment.status}`} key={assessment.task_id}>
+          <div><code>{assessment.task_id}</code><span>{zhLabel(assessment.status)}</span></div>
+          <h3>{task?.question ?? "历史结果未保存该子任务的问题文本"}</h3>
+          {assessment.missing_relation && <p><strong>尚未解决：</strong>{assessment.missing_relation}</p>}
+          <small>{assessment.supporting_evidence_ids.length} 条 Judge 选定证据</small>
+        </article>;
+      })}</div>
+    </div>}
     {!answer ? <div className="result-empty"><div className="empty-icon"><Icon name="clock" /></div><p>{completed ? "本次研究没有返回最终综合答案。" : active ? "此任务仍在收集和验证证据。" : "此任务在生成最终综合答案前已经停止。"}</p><small>{active ? "任务结束后再次打开即可刷新结果。" : "请查看上方的生命周期诊断，然后恢复任务或创建一次全新重试。"}</small></div> : <>
       <div className="answer-block"><span className="answer-label">综合结论</span><p>{answer}</p></div>
       <div className="evidence-heading-row"><span className="answer-label">支持证据</span><span>{inspection.evidence.length} 条已验证来源</span></div>
       {inspection.evidence.length === 0 ? <div className="result-empty compact-empty"><p>本次综合答案没有返回证据卡片。</p></div> : <div className="evidence-list">{inspection.evidence.map((item, index) => <article className="evidence-card" key={item.evidence_id}><div className="evidence-card-top"><span className="evidence-number">E{String(index + 1).padStart(2, "0")}</span><span className="evidence-spec">TS {item.specification} · Rel-{item.release}</span><span className="evidence-version">v{item.version}</span></div><div className="evidence-id"><code>[{item.evidence_id}]</code></div><h3>{item.heading_path.length ? item.heading_path.join(" / ") : "规范摘录"}</h3><blockquote>{item.excerpt}</blockquote><div className="evidence-source"><span>{item.source_path}</span><span>第 {item.line_start}–{item.line_end} 行</span></div><div className="evidence-hash">SHA-256 <code>{item.document_sha256.slice(0, 16)}…</code></div></article>)}</div>}
     </>}
   </section>;
+}
+
+function evidenceStatusText(status: NonNullable<RunInspection["evidence_status"]>) {
+  if (status === "sufficient") return "全部研究任务均有可追溯证据支持，可发布完整综合结论。";
+  if (status === "partial") return "只发布证据已经支持的部分；下方未解决项不构成否定结论。";
+  if (status === "conflict") return "来源、版本或条件之间仍有未解决冲突，不发布确定性结论。";
+  return "当前证据不足以支持规范结论，因此只展示研究状态与缺口。";
 }
 
 export default App;

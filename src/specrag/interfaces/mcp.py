@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from specrag.access import (
     AuthorizationError,
@@ -19,6 +23,7 @@ from specrag.access import (
 from specrag.infrastructure import DEFAULT_DATABASE_PATH
 from specrag.models import (
     MCPResearchResultResponse,
+    MCPRuntimeReadiness,
     MCPResearchStartResponse,
     MCPResearchStatusResponse,
     PriorResultRef,
@@ -32,9 +37,11 @@ from specrag.orchestration import (
 )
 
 from .workspace_services import WorkspaceServices
+from .mcp_runtime import MCPRuntimeState
 
 
 _DELEGATION_ENV = "SPECRAG_MCP_DELEGATION_SECRET"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _bearer(ctx: Context[Any, Any]) -> str:
@@ -51,12 +58,32 @@ def create_mcp_server(
     services: WorkspaceServices,
     research: ResearchToolService,
     signer: ServiceDelegationSigner,
+    runtime_state: MCPRuntimeState | None = None,
 ) -> MCPServer:
     server = MCPServer(
         "SpecRAG",
         description="Internal evidence-backed 3GPP specification research service.",
         version="0.1.0",
     )
+    readiness = runtime_state or MCPRuntimeState()
+    if runtime_state is None:
+        readiness.mark_ready()
+
+    @server.custom_route("/healthz", methods=["GET"], include_in_schema=False)
+    async def health(_request: Request) -> JSONResponse:
+        snapshot = readiness.snapshot()
+        return JSONResponse(
+            snapshot.model_dump(mode="json"),
+            status_code=200,
+        )
+
+    @server.custom_route("/readyz", methods=["GET"], include_in_schema=False)
+    async def ready(_request: Request) -> JSONResponse:
+        snapshot = readiness.snapshot()
+        return JSONResponse(
+            snapshot.model_dump(mode="json"),
+            status_code=200 if snapshot.status == "ready" else 503,
+        )
 
     def trusted(ctx: Context[Any, Any]):
         delegation = signer.verify(_bearer(ctx))
@@ -87,6 +114,7 @@ def create_mcp_server(
         answer_language: str = "English",
         detail_level: str = "standard",
     ) -> MCPResearchStartResponse:
+        readiness.require_ready()
         actor, delegation = trusted(ctx)
         return await research.start_research(
             actor,
@@ -182,6 +210,16 @@ class SpecRAGMCPClient:
             await self._call("get_research_result", payload, delegation_token)
         )
 
+    async def readiness(self) -> MCPRuntimeReadiness:
+        endpoint = self.url.removesuffix("/mcp") + "/readyz"
+        timeout = httpx2.Timeout(min(self.timeout_seconds, 5.0))
+        async with httpx2.AsyncClient(
+            timeout=timeout,
+            transport=self.http_transport,
+        ) as client:
+            response = await client.get(endpoint)
+        return MCPRuntimeReadiness.model_validate(response.json())
+
     async def _call(
         self, tool_name: str, arguments: dict[str, object], token: str
     ) -> Any:
@@ -217,11 +255,7 @@ def main() -> None:
     if arguments.host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("the first MCP release is restricted to a loopback host")
     services = WorkspaceServices.create(arguments.database)
-    try:
-        services.prewarm_research_runtime(17)
-    except Exception:
-        services.close()
-        raise
+    runtime_state = MCPRuntimeState(17)
     run_worker = RunWorker(services.harness, services.run_queue)
     lifecycle_worker = ResearchLifecycleWorker(
         services.runs,
@@ -238,10 +272,40 @@ def main() -> None:
         services.conversation_scope_store,
     )
     server = create_mcp_server(
-        services, research, ServiceDelegationSigner(_secret_from_environment())
+        services,
+        research,
+        ServiceDelegationSigner(_secret_from_environment()),
+        runtime_state,
     )
-    run_worker.start()
-    lifecycle_worker.start()
+    run_worker_started = False
+    lifecycle_worker_started = False
+
+    def warm() -> None:
+        nonlocal run_worker_started, lifecycle_worker_started
+        runtime_state.begin_warmup()
+        try:
+            services.prewarm_research_runtime(
+                17,
+                stage_observer=runtime_state.record_stage,
+            )
+            run_worker.start()
+            run_worker_started = True
+            lifecycle_worker.start()
+            lifecycle_worker_started = True
+        except Exception:
+            _LOGGER.exception("MCP research runtime warmup failed")
+            if lifecycle_worker_started:
+                lifecycle_worker.stop()
+                lifecycle_worker_started = False
+            if run_worker_started:
+                run_worker.stop()
+                run_worker_started = False
+            runtime_state.mark_failed()
+            return
+        runtime_state.mark_ready()
+
+    warmup = Thread(target=warm, name="specrag-mcp-warmup", daemon=False)
+    warmup.start()
     try:
         server.run(
             transport="streamable-http",
@@ -251,8 +315,11 @@ def main() -> None:
             stateless_http=True,
         )
     finally:
-        run_worker.stop()
-        lifecycle_worker.stop()
+        warmup.join()
+        if lifecycle_worker_started:
+            lifecycle_worker.stop()
+        if run_worker_started:
+            run_worker.stop()
         services.close()
 
 

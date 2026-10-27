@@ -42,6 +42,9 @@ export function ConversationDesk({ api, workspaceId, onOpenRun }: Props) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [capability, setCapability] = useState<NativeToolCapability | null>(null);
+  const [researchService, setResearchService] = useState<
+    Awaited<ReturnType<SpecRagApi["health"]>>["research_service"] | null
+  >(null);
   const cursor = useRef(0);
   const appliedCursor = useRef(0);
 
@@ -62,15 +65,27 @@ export function ConversationDesk({ api, workspaceId, onOpenRun }: Props) {
 
   useEffect(() => {
     void api.health()
-      .then((health) => setCapability(health.conversation_agent))
-      .catch(() => setCapability({
-        status: "unavailable",
-        api_mode: null,
-        failure_kind: "health_check_failed",
-        status_code: null,
-        retryable: true,
-        message: "无法读取对话智能体的启动能力检测结果。",
-      }));
+      .then((health) => {
+        setCapability(health.conversation_agent);
+        setResearchService(health.research_service);
+      })
+      .catch(() => {
+        setCapability({
+          status: "unavailable",
+          api_mode: null,
+          failure_kind: "health_check_failed",
+          status_code: null,
+          retryable: true,
+          message: "无法读取对话智能体的启动能力检测结果。",
+        });
+        setResearchService({
+          status: "unavailable",
+          release: 17,
+          message: "无法读取规范研究服务状态。",
+          stages: [],
+          total_ms: 0,
+        });
+      });
   }, [api]);
 
   useEffect(() => {
@@ -244,6 +259,11 @@ export function ConversationDesk({ api, workspaceId, onOpenRun }: Props) {
           capability.status_code ? `HTTP ${capability.status_code}` : null,
           capability.api_mode,
         ].filter(Boolean).join(" · ")}</small>
+      </div>}
+      {researchService && researchService.status !== "ready" && researchService.status !== "disabled" && <div className="research-service-warning">
+        <strong>规范研究服务尚未就绪</strong>
+        <span>{researchService.message} 普通对话仍可继续，涉及规范证据的问题将在服务就绪后可用。</span>
+        <small>Release {researchService.release} · {researchService.status}</small>
       </div>}
       {error && <div className="conversation-error">{error}</div>}
       <div className="message-thread" aria-live="polite">

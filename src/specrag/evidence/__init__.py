@@ -14,7 +14,11 @@ from .sufficiency import (
 from .synthesis import (
     EvidenceSynthesisGenerator,
     EvidenceSynthesisService,
+    PublicationDecision,
+    PublicationPath,
+    SynthesisContractError,
     partial_synthesis_eligible,
+    publication_decision,
 )
 from .results import ResearchResultMaterializer
 
@@ -23,7 +27,11 @@ __all__ = [
     "EvidenceSufficiencyService",
     "EvidenceSynthesisGenerator",
     "EvidenceSynthesisService",
+    "PublicationDecision",
+    "PublicationPath",
+    "SynthesisContractError",
     "partial_synthesis_eligible",
+    "publication_decision",
     "ResearchResultMaterializer",
     "SourceEvidenceValidator",
     "SourceValidationBatch",

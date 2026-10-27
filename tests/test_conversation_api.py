@@ -43,6 +43,15 @@ def test_health_reports_disabled_conversation_agent_without_secret(
                     "secret is not configured in the API process."
                 ),
             },
+            "research_service": {
+                "status": "disabled",
+                "release": 17,
+                "message": (
+                    "Research service probing is disabled with the Conversation Agent."
+                ),
+                "stages": [],
+                "total_ms": 0,
+            },
         }
     finally:
         services.close()

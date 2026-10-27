@@ -67,6 +67,10 @@
 .conversation-capability-error strong { font-size: 12px; }
 .conversation-capability-error span { font-size: 11px; line-height: 1.45; }
 .conversation-capability-error small { color: #9d6254; font: 9px "DM Mono", monospace; }
+.research-service-warning { display: grid; gap: 4px; margin: 12px 24px 0; padding: 12px 14px; border: 1px solid #d7bd83; border-radius: 3px; color: #665127; background: #fff8e8; }
+.research-service-warning strong { font-size: 12px; }
+.research-service-warning span { font-size: 11px; line-height: 1.45; }
+.research-service-warning small { color: #806b3f; font: 9px "DM Mono", monospace; }
 
 @media (max-width: 900px) {
   .conversation-desk { grid-template-columns: 1fr; }

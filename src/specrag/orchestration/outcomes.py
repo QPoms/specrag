@@ -46,6 +46,7 @@ def build_research_outcome(
         requested_scope=snapshot.requested_scope,
         corpus_versions=run.corpus_versions,
         synthesis=state.get("synthesis"),
+        research_tasks=tuple(state.get("research_tasks", ())),
         candidate_evidence=tuple(state.get("candidate_evidence", ())),
         validated_evidence=tuple(state.get("validated_evidence", ())),
         assessments=tuple(state.get("sufficiency_assessments", ())),

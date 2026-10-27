@@ -20,6 +20,7 @@ from specrag.models import (
     ResearchTask,
     ResearchTaskExecution,
     ResearchWorkerResult,
+    TaskEvidenceSet,
 )
 
 from .adapters import researcher_execution_update
@@ -47,6 +48,12 @@ from .workflow import (
     _receipt_payload,
 )
 
+_RUNTIME_COMPAT_KEYS = (
+    "task_executions",
+    "task_evidence_sets",
+    "judge_review_records",
+    "judge_skipped_task_ids",
+)
 
 class ParallelResearchState(ResearchState):
     """Unified research state with an append-only worker result channel."""
@@ -106,6 +113,7 @@ class ParallelResearcherHandler:
             researcher_execution,
             query_to_task=query_to_task,
             task_id=task.task_id,
+            execution_id=task_execution.execution_id,
             corrective=corrective,
         )
         old_candidates = {
@@ -131,6 +139,11 @@ class ParallelResearcherHandler:
                 evidence
                 for evidence in update["candidate_evidence"]
                 if evidence.evidence_id not in old_candidates
+            ),
+            active_evidence_ids=next(
+                item.active_evidence_ids
+                for item in update["task_evidence_sets"]
+                if item.task_id == task.task_id
             ),
             tool_calls=tuple(
                 call for call in update["tool_calls"] if call.call_id not in old_calls
@@ -185,12 +198,14 @@ class ParallelResearchWorkflow:
         config = self._config(thread_id)
         snapshot = self.graph.get_state(config)
         values = getattr(snapshot, "values", None)
-        if values and "task_executions" not in values:
+        if values and any(
+            key not in values for key in _RUNTIME_COMPAT_KEYS
+        ):
             self.graph.update_state(
                 config,
                 {
-                    "schema_version": "research-state/v1.9",
-                    "task_executions": (),
+                    "schema_version": "research-state/v1.10",
+                    **{key: values.get(key, ()) for key in _RUNTIME_COMPAT_KEYS},
                 },
             )
         if update:
@@ -223,14 +238,14 @@ def new_parallel_research_state(
 def _normalize_parallel_state(
     state: ParallelResearchState,
 ) -> ParallelResearchState:
-    if "task_executions" in state:
+    if all(key in state for key in _RUNTIME_COMPAT_KEYS):
         return state
     return cast(
         ParallelResearchState,
         {
             **state,
-            "schema_version": "research-state/v1.9",
-            "task_executions": (),
+            "schema_version": "research-state/v1.10",
+            **{key: state.get(key, ()) for key in _RUNTIME_COMPAT_KEYS},
         },
     )
 
@@ -344,6 +359,9 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
     errors = list(state["errors"])
     receipts = list(state["model_receipts"])
     budget = state["budget"]
+    evidence_sets = {
+        item.task_id: item for item in state.get("task_evidence_sets", ())
+    }
     new_results = state["researcher_results"][state["researcher_results_processed"] :]
     for result in new_results:
         for candidate in result.candidate_evidence:
@@ -387,10 +405,20 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
                     ),
                 }
             )
+        evidence_sets[result.task_id] = TaskEvidenceSet(
+            task_id=result.task_id,
+            execution_id=result.execution_id,
+            active_evidence_ids=result.active_evidence_ids,
+        )
     return {
         "candidate_evidence": tuple(existing_candidates),
         "tool_calls": tuple(existing_calls),
         "researcher_evidence_selections": tuple(existing_selections),
+        "task_evidence_sets": tuple(
+            evidence_sets[task.task_id]
+            for task in tasks
+            if task.task_id in evidence_sets
+        ),
         "research_tasks": tuple(task_by_id[task.task_id] for task in tasks),
         "task_executions": tuple(
             executions[item.execution_id] for item in state["task_executions"]

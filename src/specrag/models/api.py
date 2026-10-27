@@ -16,7 +16,13 @@ from .conversation import (
     ConversationTurn,
 )
 from .memory import MemoryEntry, MemoryProposal, MemoryTopic
-from .research import CandidateEvidence
+from .research import (
+    CandidateEvidence,
+    ResearchGap,
+    ResearchTask,
+    TaskSufficiencyAssessment,
+)
+from .results import EvidenceStatus
 from .runtime import (
     ResearchRun,
     RunEvent,
@@ -152,6 +158,10 @@ class RunInspectionResponse(_StrictTransport):
     answer: str | None = None
     evidence_ids: tuple[str, ...] = ()
     evidence: tuple[CandidateEvidence, ...] = ()
+    evidence_status: EvidenceStatus | None = None
+    research_tasks: tuple[ResearchTask, ...] = ()
+    task_assessments: tuple[TaskSufficiencyAssessment, ...] = ()
+    gaps: tuple[ResearchGap, ...] = ()
     failure: "RunFailureResponse | None" = None
 
 

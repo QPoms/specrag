@@ -14,6 +14,7 @@ from specrag.models import (
     ResearchResult,
     ResearchResultEvidence,
     ResearchRun,
+    ResearchTask,
     SpecificationScope,
     TaskSufficiencyAssessment,
     ValidatedEvidence,
@@ -183,6 +184,12 @@ def test_materializer_never_promotes_non_sufficient_evidence(
             answer="This assertion must not be promoted.",
             evidence_ids=(candidate.evidence_id,),
         ),
+        research_tasks=(ResearchTask(
+            task_id=candidate.task_id,
+            question="What action is required and what is the exception?",
+            objective="Establish the action and exception.",
+            status="blocked",
+        ),),
         candidate_evidence=(candidate,),
         validated_evidence=(ValidatedEvidence(
             evidence_id=candidate.evidence_id,
@@ -244,6 +251,12 @@ def test_materializer_publishes_explicit_partial_synthesis() -> None:
             covered_task_ids=(candidate.task_id,),
             unresolved_task_ids=(candidate.task_id,),
         ),
+        research_tasks=(ResearchTask(
+            task_id=candidate.task_id,
+            question="What action is required and what is the exception?",
+            objective="Establish the action and exception.",
+            status="blocked",
+        ),),
         candidate_evidence=(candidate,),
         validated_evidence=(ValidatedEvidence(
             evidence_id=candidate.evidence_id,
@@ -269,3 +282,8 @@ def test_materializer_publishes_explicit_partial_synthesis() -> None:
     assert result.evidence_status == "partial"
     assert result.answer == answer
     assert result.evidence_ids == (candidate.evidence_id,)
+    assert result.research_tasks[0].question.startswith("What action")
+    assert result.task_assessments[0].status == "partial"
+    assert result.task_assessments[0].missing_relation == (
+        "The exception remains unresolved."
+    )

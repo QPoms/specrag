@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from specrag.models import (
+    ResearchResult,
     ResearchRun,
     RunFailureResponse,
     RunInspectionResponse,
@@ -35,8 +38,16 @@ _FAILURE_SUMMARIES = {
 }
 
 
-def inspection_response(value: RunInspection) -> RunInspectionResponse:
+def inspection_response(
+    value: RunInspection,
+    result_reader: Callable[[str], ResearchResult] | None = None,
+) -> RunInspectionResponse:
     checkpoint = value.checkpoint or {}
+    result = (
+        result_reader(value.result_id)
+        if value.result_id is not None and result_reader is not None
+        else None
+    )
 
     def read(item, key: str, default=None):
         if isinstance(item, dict):
@@ -71,6 +82,14 @@ def inspection_response(value: RunInspection) -> RunInspectionResponse:
         and read(item, "evidence_id") in cited_id_set
     )
     answer = read(synthesis, "answer") or read(checkpoint, "final_answer")
+    if result is not None:
+        cited_ids = result.evidence_ids
+        evidence = tuple(
+            item.source
+            for item in result.evidence
+            if item.source.evidence_id in set(cited_ids)
+        )
+        answer = result.answer
     failure = _failure(value)
     return RunInspectionResponse(
         run=value.run,
@@ -83,6 +102,10 @@ def inspection_response(value: RunInspection) -> RunInspectionResponse:
         answer=answer,
         evidence_ids=cited_ids,
         evidence=evidence,
+        evidence_status=(result.evidence_status if result is not None else None),
+        research_tasks=(result.research_tasks if result is not None else ()),
+        task_assessments=(result.task_assessments if result is not None else ()),
+        gaps=(result.gaps if result is not None else ()),
         failure=failure,
     )
 

@@ -17,6 +17,7 @@ from specrag.evidence import partial_synthesis_eligible
 from specrag.models import (
     CandidateEvidence,
     EvidenceSynthesis,
+    JudgeReviewRecord,
     ResearchBudget,
     ResearchGap,
     ResearchPlan,
@@ -27,6 +28,7 @@ from specrag.models import (
     ResearchWorkerResult,
     SourceValidationResult,
     TaskSufficiencyAssessment,
+    TaskEvidenceSet,
     ToolCallRecord,
     ValidatedEvidence,
 )
@@ -89,6 +91,7 @@ def _merge_model_receipts(
 _CHECKPOINT_MODEL_ALLOWLIST = (
     CandidateEvidence,
     EvidenceSynthesis,
+    JudgeReviewRecord,
     ResearchBudget,
     ResearchGap,
     ResearchPlan,
@@ -99,6 +102,7 @@ _CHECKPOINT_MODEL_ALLOWLIST = (
     ResearchWorkerResult,
     SourceValidationResult,
     TaskSufficiencyAssessment,
+    TaskEvidenceSet,
     ToolCallRecord,
     ValidatedEvidence,
 )

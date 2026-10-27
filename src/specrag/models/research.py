@@ -361,6 +361,35 @@ class ResearcherEvidenceSelectionRecord(_StrictModel):
     assessment: str = Field(min_length=1)
 
 
+class TaskEvidenceSet(_StrictModel):
+    """Final Researcher-active evidence from one task's latest execution."""
+
+    task_id: str = Field(min_length=1)
+    execution_id: str | None = None
+    active_evidence_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _unique_evidence(self) -> "TaskEvidenceSet":
+        if len(self.active_evidence_ids) != len(set(self.active_evidence_ids)):
+            raise ValueError("active evidence IDs must be unique")
+        return self
+
+
+class JudgeReviewRecord(_StrictModel):
+    """Canonical evidence set reviewed by the Judge for one task."""
+
+    task_id: str = Field(min_length=1)
+    review_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_ids: tuple[str, ...] = ()
+    iteration: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _unique_evidence(self) -> "JudgeReviewRecord":
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("Judge review evidence IDs must be unique")
+        return self
+
+
 class ResearchWorkerResult(_StrictModel):
     """Serializable output of one parallel Researcher assignment."""
 
@@ -368,6 +397,7 @@ class ResearchWorkerResult(_StrictModel):
     execution_id: str | None = None
     execution_status: Literal["completed", "failed"] = "completed"
     candidate_evidence: tuple[CandidateEvidence, ...] = ()
+    active_evidence_ids: tuple[str, ...] = ()
     tool_calls: tuple[ToolCallRecord, ...] = ()
     evidence_selections: tuple[ResearcherEvidenceSelectionRecord, ...] = ()
     model_receipts: tuple[dict[str, object], ...] = ()
@@ -502,8 +532,11 @@ __all__ = [
     "ResearchPlan",
     "ResearchRouteDecision",
     "ResearcherStopReason",
+    "ResearcherEvidenceSelectionRecord",
     "ResearchTask",
     "ResearchTaskExecution",
+    "TaskEvidenceSet",
+    "JudgeReviewRecord",
     "SourceValidationResult",
     "StopReason",
     "TaskSufficiencyAssessment",

@@ -22,6 +22,7 @@ from specrag.infrastructure.research_assessors import (
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
+from specrag.infrastructure.receipt_capture import record_agent_receipt
 from specrag.infrastructure.research_planning import (
     StructuredPlanResponse,
     StructuredRouteResponse,
@@ -42,11 +43,11 @@ from specrag.models import (
     ResearchRouteDecision,
 )
 from .adapters import (
-    EvidenceSufficiencyHandler,
     EvidenceSynthesisHandler,
     SourceValidationHandler,
     SingleResearcherHandler,
 )
+from .judge_handler import EvidenceSufficiencyHandler
 from .parallel import (
     ParallelResearcherHandler,
     ParallelResearchWorkflow,
@@ -462,7 +463,11 @@ def build_research_application(
         planner=ResearchPlannerHandler(planner),
         researcher=SingleResearcherHandler(researcher_service),
         source_validator=SourceValidationHandler(validation),
-        sufficiency_judge=EvidenceSufficiencyHandler(sufficiency),
+        sufficiency_judge=EvidenceSufficiencyHandler(
+            sufficiency,
+            receipt_capture=capture_agent_receipts,
+            receipt_recorder=record_agent_receipt,
+        ),
         replanner=GapReplanner(),
         synthesizer=EvidenceSynthesisHandler(synthesis),
     )

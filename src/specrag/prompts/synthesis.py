@@ -1,85 +1,91 @@
-"""Evidence-grounded final synthesis prompt contract."""
+"""Composable evidence-grounded final synthesis prompt contract."""
 
-SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.8"
+from __future__ import annotations
 
-SYNTHESIS_INSTRUCTIONS = """\
-You produce the final answer to one 3GPP research question from evidence that
-has already passed source validation and task-level sufficiency review.
+from typing import Literal
 
-The input declares `synthesis_mode`. In `complete` mode, answer every task. In
-`partial` mode, answer only the conclusions established by evidence for
-`covered_task_ids`, explicitly identify the limits represented by
-`unresolved_task_ids`, and clearly distinguish unresolved conflicts listed in
-`conflicting_task_ids`. A partial answer must not imply that the original
-question has been fully resolved. Do not turn a missing or conflicting result
-into a negative technical conclusion.
 
-The original question is the complete and authoritative answer scope. Task
-questions are coverage checkpoints only. Do not infer additional requirements
-from how tasks were decomposed, and do not add background, trigger conditions,
-branches, implementation details, or later procedure steps unless the original
-question asks for them or they are necessary to state the requested conclusion
-accurately.
+SYNTHESIS_PROMPT_VERSION = "evidence-synthesis/v1.10"
 
-Use only the supplied supported evidence. Do not retrieve, re-evaluate
-sufficiency, cite rejected material, fill gaps from memory, or introduce a
-normative conclusion that the supplied passages do not establish.
+_COMMON_GROUNDING = """\
+You produce source-backed content for one 3GPP research answer. The backend has
+already decided the publication path and filtered the input through source
+validation and task-level sufficiency review.
 
-Follow the supplied presentation language and detail level. These settings
-affect wording and amount of explanation only; they cannot add facts, change
-scope, or weaken the evidence requirements below.
+The original question is the authoritative answer scope. Supplied task
+questions are coverage checkpoints only. Use only supplied evidence. Do not
+retrieve, re-evaluate sufficiency, cite rejected material, fill gaps from
+memory, or introduce a normative conclusion that the passages do not establish.
 
-Write one complete, coherent answer to the original question. The answer may
-use paragraphs or a short list when that improves clarity, but it must read as
-a direct response rather than as disconnected claim fragments. Every factual
-statement, relation, comparison, or conclusion must:
+Every factual statement, relation, comparison, or conclusion must cite one or
+more supplied evidence IDs directly after the supported clause using the exact
+format `[evidence_id]`. Preserve specification-specific actors, interfaces,
+messages, states, conditions, exceptions, scope, and implication direction.
+Do not combine analogous procedures unless the evidence directly establishes
+that relationship. Omit true but unrequested detail.
 
-- state one directly supported fact, relation, comparison, or conclusion needed
-  to answer the original question;
-- cite one or more supplied evidence IDs that directly support its complete
-  wording;
-- preserve the source's specification-specific actors, interfaces, messages,
-  states, conditions, and terminology; and
-- avoid combining analogous procedures from different specifications or radio
-  systems into one generalized statement unless the supplied evidence directly
-  establishes that relationship.
-
-Preserve the source's logical structure exactly. Keep nested conditions,
-branch-local qualifiers, exceptions, scope limits, and implication direction.
-Do not flatten "if A, then B; otherwise C" into an unconditional statement.
-Do not turn "X is required for Y" into "X is sufficient for Y", or turn a
-possibility, permission, or implication into a guarantee. Do not use absolute
-words such as "all", "always", or "any" unless the supplied passage itself
-uses that scope.
-
-When a source contains nested branches, repeat the full applicable antecedent
-in each branch. Never use a standalone "otherwise" when the alternative still
-depends on an earlier state, actor role, or condition. Omit true but
-unrequested details merely because they appear in supplied evidence; include
-them only when they are needed to answer the original question accurately.
-Conditions, exceptions, and normative limits that directly qualify a requested
-action, procedure, or conclusion are part of that answer and must not be
-omitted as background. Conversely, before emitting an independent statement, check
-whether removing it would still leave every part of the original question
-answered without changing the meaning or scope of another statement. If so,
-omit that independent statement.
-
-In complete mode, the answer must cover every substantive part of the original
-question. In partial mode, it must cover every supported part and explicitly
-state what remains unresolved. In either mode, use at least one supported
-evidence item owned by each covered task. Put citations directly
-after the sentence or clause they support using the exact format
-`[evidence_id]`, for example `[E:T1:chunk-1]`. Do not use any other bracketed
-reference format. A citation must support the complete wording immediately
-before it; place separate citations where different passages support different
-parts of the answer.
-
-Return `answer` as the user-facing response and `evidence_ids` as the
-ordered, deduplicated list of every evidence ID cited inline. Do not return a
-claim list or a second representation of the answer. Do not repeat a fact merely
-to attach another citation. Return only `answer` and `evidence_ids`. Mode and
-task coverage fields are deterministic workflow metadata added by the backend;
-do not reproduce or decide them.
+Follow the supplied presentation language and detail level. Return `answer` as
+one coherent answer and `evidence_ids` as the ordered, deduplicated IDs cited
+inline. Return no claim list, status label, limitation section, or second answer
+representation; the backend owns publication status and qualification text.
 """
 
-__all__ = ["SYNTHESIS_INSTRUCTIONS", "SYNTHESIS_PROMPT_VERSION"]
+_FULL_SYNTHESIS = """\
+Publication path: full synthesis. Every supplied task is evidence-supported.
+Answer every substantive part of the original question and cite evidence owned
+by every supplied task. Do not invent an unresolved issue or qualification.
+"""
+
+_QUALIFIED_SYNTHESIS = """\
+Publication path: qualified synthesis. Generate only the supported portion of
+the answer from `covered_task_ids`. A partially supported task can appear in
+both `covered_task_ids` and `unresolved_task_ids`: for such a task, answer only
+the propositions directly established by its supplied evidence and leave its
+unsupported relation or condition unresolved. Do not answer or speculate about
+an unresolved task that is absent from `covered_task_ids`. Do not imply that
+the complete original question has been resolved.
+Do not turn missing evidence into a negative conclusion.
+Cite evidence owned by every covered task.
+The backend will append the mandatory unresolved-task disclosure; do not try
+to paraphrase or replace it.
+"""
+
+_CONFLICT_RESTRICTION = """\
+Some unresolved tasks are listed in `conflicting_task_ids`. Do not reconcile,
+select between, or derive a conclusion from their conflicting evidence. The
+backend will publish the conflict disclosure separately.
+"""
+
+
+def synthesis_prompt(
+    mode: Literal["complete", "partial"],
+    *,
+    has_conflicts: bool,
+) -> tuple[str, str]:
+    """Return concrete version and instructions for one publication path."""
+
+    if mode == "complete":
+        if has_conflicts:
+            raise ValueError("complete synthesis cannot contain conflicts")
+        suffix = "full"
+        blocks = (_COMMON_GROUNDING, _FULL_SYNTHESIS)
+    else:
+        suffix = "qualified-conflict" if has_conflicts else "qualified"
+        blocks = (
+            _COMMON_GROUNDING,
+            _QUALIFIED_SYNTHESIS,
+            *(() if not has_conflicts else (_CONFLICT_RESTRICTION,)),
+        )
+    return f"{SYNTHESIS_PROMPT_VERSION}-{suffix}", "\n".join(blocks)
+
+
+# Compatibility export for callers that inspect the base contract. Runtime
+# calls use `synthesis_prompt` and receive exactly one publication branch.
+SYNTHESIS_INSTRUCTIONS = "\n".join((_COMMON_GROUNDING, _FULL_SYNTHESIS))
+
+
+__all__ = [
+    "SYNTHESIS_INSTRUCTIONS",
+    "SYNTHESIS_PROMPT_VERSION",
+    "synthesis_prompt",
+]

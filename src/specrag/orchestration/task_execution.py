@@ -8,6 +8,7 @@ from specrag.models import (
     ResearchTaskExecution,
     TaskSufficiencyAssessment,
 )
+from specrag.evidence import publication_decision
 
 from .state import ResearchState
 from .workflow import _has_judge_gap
@@ -114,10 +115,17 @@ def terminalize_tasks(state: ResearchState) -> dict[str, object]:
             tasks.append(task.model_copy(update={"status": "blocked"}))
         else:
             tasks.append(task.model_copy(update={"status": "completed"}))
+    final_assessments = tuple(assessments)
+    decision = publication_decision(
+        tuple(tasks),
+        state["validated_evidence"],
+        final_assessments,
+    )
     return {
         "research_tasks": tuple(tasks),
-        "sufficiency_assessments": tuple(assessments),
+        "sufficiency_assessments": final_assessments,
         "gaps": tuple(gaps),
+        "publication_path": decision.path,
         "evidence_sufficient": bool(tasks) and all(
             assessment_by_task[task.task_id].status == "sufficient"
             for task in tasks

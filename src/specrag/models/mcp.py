@@ -60,6 +60,25 @@ class ResearchToolRequest(_StrictModel):
 
 
 MCPResearchDisposition = Literal["completed", "accepted", "terminal"]
+MCPRuntimeStatus = Literal["starting", "warming", "ready", "failed"]
+
+
+class MCPWarmupStage(_StrictModel):
+    name: Literal[
+        "corpus_snapshot",
+        "local_snapshot_discovery",
+        "snapshot_consistency",
+        "retriever_construction",
+    ]
+    duration_ms: float = Field(ge=0)
+
+
+class MCPRuntimeReadiness(_StrictModel):
+    status: MCPRuntimeStatus
+    release: int = Field(default=17, ge=1)
+    message: str = Field(min_length=1, max_length=300)
+    stages: tuple[MCPWarmupStage, ...] = ()
+    total_ms: float = Field(default=0, ge=0)
 
 
 class MCPResearchStartResponse(_StrictModel):
@@ -108,6 +127,9 @@ __all__ = [
     "MCPResearchResultResponse",
     "MCPResearchStartResponse",
     "MCPResearchStatusResponse",
+    "MCPRuntimeReadiness",
+    "MCPRuntimeStatus",
+    "MCPWarmupStage",
     "ResearchToolRequest",
     "ServiceDelegation",
 ]

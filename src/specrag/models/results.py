@@ -12,6 +12,7 @@ from .research import (
     CandidateEvidence,
     EvidenceSynthesis,
     ResearchGap,
+    ResearchTask,
     StopReason,
     TaskSufficiencyAssessment,
     ValidatedEvidence,
@@ -107,6 +108,7 @@ class ResearchOutcome(_StrictModel):
     requested_scope: SpecificationScope
     corpus_versions: tuple[CorpusVersionRef, ...]
     synthesis: EvidenceSynthesis | None = None
+    research_tasks: tuple[ResearchTask, ...] = ()
     candidate_evidence: tuple[CandidateEvidence, ...] = ()
     validated_evidence: tuple[ValidatedEvidence, ...] = ()
     assessments: tuple[TaskSufficiencyAssessment, ...] = ()
@@ -129,6 +131,9 @@ class ResearchOutcome(_StrictModel):
             unknown = set(self.synthesis.evidence_ids) - set(validation_ids)
             if unknown:
                 raise ValueError("outcome synthesis references unvalidated evidence")
+        task_ids = [item.task_id for item in self.research_tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("outcome research task IDs must be unique")
         if len(self.conditions) != len(set(self.conditions)):
             raise ValueError("outcome conditions must be unique")
         if len(self.prior_results) != len(
@@ -173,6 +178,8 @@ class ResearchResult(_StrictModel):
     answer: str = Field(min_length=1)
     evidence: tuple[ResearchResultEvidence, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+    research_tasks: tuple[ResearchTask, ...] = ()
+    task_assessments: tuple[TaskSufficiencyAssessment, ...] = ()
     conditions: tuple[str, ...] = ()
     requested_scope: SpecificationScope
     corpus_versions: tuple[CorpusVersionRef, ...]
@@ -203,6 +210,21 @@ class ResearchResult(_StrictModel):
                 raise ValueError("Result cannot cite rejected evidence")
         if self.evidence_status == "sufficient" and not self.evidence_ids:
             raise ValueError("sufficient Result requires cited evidence")
+        task_ids = [item.task_id for item in self.research_tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("Result research task IDs must be unique")
+        assessment_ids = [item.task_id for item in self.task_assessments]
+        if len(assessment_ids) != len(set(assessment_ids)):
+            raise ValueError("Result task assessment IDs must be unique")
+        if task_ids and set(assessment_ids) - set(task_ids):
+            raise ValueError("Result assessment references an unknown research task")
+        assessment_evidence_ids = {
+            evidence_id
+            for item in self.task_assessments
+            for evidence_id in item.supporting_evidence_ids
+        }
+        if assessment_evidence_ids - set(evidence_by_id):
+            raise ValueError("Result assessment references evidence not copied into Result")
         if self.supersedes_result_id == self.result_id:
             raise ValueError("Result cannot supersede itself")
         for name, values in (

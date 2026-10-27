@@ -205,6 +205,7 @@ def test_researcher_execution_preserves_provenance_and_accounting() -> None:
     )
 
     candidate = update["candidate_evidence"][0]
+    assert len(update["candidate_evidence"]) == 2
     assert candidate.task_id == "T1"
     assert candidate.chunk_id == "24.501:17.1.0:chunk-1"
     assert candidate.release == 17
@@ -226,6 +227,9 @@ def test_researcher_execution_preserves_provenance_and_accounting() -> None:
     selection = update["researcher_evidence_selections"][0]
     assert selection.task_id == "T1"
     assert selection.retained_evidence_ids == (candidate.evidence_id,)
+    evidence_set = update["task_evidence_sets"][0]
+    assert evidence_set.task_id == "T1"
+    assert evidence_set.active_evidence_ids == (candidate.evidence_id,)
 
 
 def test_planner_handler_reuses_a_frozen_plan() -> None:

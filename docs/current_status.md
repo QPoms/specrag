@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-24
+Updated: 2026-10-25
 
 ## Current state
 
@@ -91,9 +91,9 @@ rejections are persisted with a specific safe explanation instead of the
 generic internal-error message.
 
 The current quality gate passes the structure check, the 50-question QA data
-check, and all 312 tests. The frontend production TypeScript/Vite build passes,
-and a live probe using the current project `.env` reports the configured model
-ready for the Responses native-tool contract.
+check, and the frontend production TypeScript/Vite build. A live probe using
+the current project `.env` reports the configured model ready for the Responses
+native-tool contract.
 
 A live 2026-10-24 Vite-proxy/API/MCP/Worker exercise created one immutable
 Release 17 Run, reused the 27,858-vector index, persisted a partial Research
@@ -162,6 +162,55 @@ validated, the workflow can persist a deterministic, explicitly labeled
 evidence digest containing only eligible cited evidence; programming and state
 errors still fail normally. Failed graph-node model receipts are emitted before
 the exception propagates. The canonical project gate now passes all 316 tests.
+
+Judge review-set isolation is now implemented. `candidate_evidence` is the
+append-only audit pool, while each latest TaskExecution persists its final
+Researcher-active evidence IDs separately. A task Judge receives only the
+source-valid union of its prior Judge-selected evidence and latest active set;
+historical inactive candidates remain auditable but do not repeatedly consume
+Judge context. Canonical review fingerprints reuse the prior assessment and
+Gap when a corrective execution makes no evidence progress. Independent task
+Judge calls in the same wave execute concurrently, with isolated receipt
+capture and deterministic ResearchTask-order fan-in. Run Events expose review
+sizes and skipped task IDs.
+
+Publication safety is now an application-owned decision. Source-valid,
+Judge-selected evidence and per-task assessments deterministically select one
+of `full_synthesis`, `qualified_synthesis`, or `status_only`. Full and
+qualified generation use composable prompt blocks over the original question,
+covered Research Task questions, and only eligible evidence. A status-only
+Result never calls the Synthesizer. Qualified output receives a backend-owned,
+language-aware disclosure for every unresolved or conflicting task, so the
+model cannot silently remove the limitations or reinterpret absent evidence as
+a negative conclusion. Research Results persist the task questions and
+assessments independently from LangGraph checkpoints, and historical Run
+inspection reads that durable Result for the answer, citations, overall status,
+task states, and gaps.
+
+A subsequent live complex Conversation Run exposed one qualified-synthesis
+contract contradiction: a partially supported task correctly appeared in both
+`covered_task_ids` and `unresolved_task_ids`, while the prompt told the model to
+omit every unresolved task and the backend simultaneously required a citation
+for every covered task. The model omitted that task and the otherwise
+publishable partial Run failed after synthesis. The qualified prompt now
+defines the overlap explicitly: supported propositions may be answered while
+the missing relation remains unresolved. Citation coverage remains mandatory.
+Synthesis citation-contract violations now use the existing deterministic,
+Judge-selected evidence digest and backend-owned qualification instead of
+turning the Run into an internal error; unrelated programming or state errors
+still fail closed. The regression includes the exact covered-and-unresolved
+task shape observed in the live Run.
+
+The MCP research process now exposes `starting`, `warming`, `ready`, and
+`failed` readiness while it warms Release 17 in the background. New submissions
+are blocked until ready, but status and Result readback remain available.
+Warmup timing is recorded separately for registry snapshot binding, local
+snapshot discovery, consistency validation, and Retriever/vector/model
+construction. One process-local Retriever pool and the MCP-owned Workers are
+reused across Runs; no per-Run MCP startup path exists. API health and the
+browser expose research-service readiness without leaking internal errors.
+The canonical quality gate passes the structure and QA-data checks and all 324
+tests; the frontend production TypeScript/Vite build also passes.
 
 Browser-level validation now covers the same persisted state. A real headless
 Chrome session rendered the Simplified Chinese login and workspace, loaded the
@@ -301,7 +350,7 @@ nodes and Researcher rounds/tool calls, stable operation keys, redacted model
 receipts, and per-stage latency/token inspection. Events cover transitions,
 task dispatch, tool calls, evidence selection, source validation, Judge, Gap,
 replan, synthesis, resume, cancellation, and stop. The runtime state wire
-contract is now `research-state/v1.9`; persisted v1.7 and v1.8 checkpoints
+contract is now `research-state/v1.10`; persisted v1.7 through v1.9 checkpoints
 remain readable. The Research Run contract is `research-run/v1.8`.
 The public `context` package now provides the first Context Harness slice.
 Every OpenAI-compatible structured request receives a conservative full-request

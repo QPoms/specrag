@@ -191,6 +191,14 @@ class RunEventRecorder:
                     "latency_ms": round(latency_ms, 3),
                     "tool_calls": len(update.get("tool_calls", ())),
                     "evidence": len(update.get("candidate_evidence", ())),
+                    "judge_skipped_task_ids": list(
+                        update.get("judge_skipped_task_ids", ())
+                    ),
+                    "judge_review_evidence_counts": {
+                        item.task_id: len(item.evidence_ids)
+                        for item in update.get("judge_review_records", ())
+                    },
+                    "publication_path": update.get("publication_path"),
                     "stop_reason": update.get("stop_reason"),
                 },
             )

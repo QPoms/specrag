@@ -529,10 +529,16 @@ high-entropy service secret in the issuing application and MCP process through
 specrag-mcp --database .local/state/specrag.sqlite3
 ```
 
-`specrag-mcp` validates the active Release 17 registry and prewarms the
-immutable Retriever, vector index, and embedding model before accepting tool
-traffic. Run submission itself performs only the lightweight database-backed
-version binding; it never chunks or embeds the corpus.
+`specrag-mcp` is one long-running process for the complete local service
+session; it must not be started once per Research Run. It publishes HTTP while
+it validates the active Release 17 registry and prewarms the immutable
+Retriever, vector index, and embedding model. `GET /healthz` reports the
+process state and `GET /readyz` returns 200 only after the research Worker is
+ready. During `starting` or `warming`, Result/status readback stays available,
+while `start_research` is rejected with a stable unavailable response. A failed
+warmup is reported as `failed` without exposing exception text. Run submission
+after readiness performs only the lightweight database-backed version binding;
+it never chunks or embeds the corpus.
 
 It exposes the Streamable HTTP endpoint at `http://127.0.0.1:8766/mcp` and
 starts the existing Run and Lifecycle Workers for the local deployment. The
@@ -576,14 +582,24 @@ legacy direct Run entry and linked Run/evidence views remain available. It also
 provides a responsive Memory/SpecFact management surface. The admin-only People & Permissions panel
 adds local members, edits roles, confirms removal, and explains each role;
 non-admin clients do not request the member directory. Run the one-time
-Release 17 corpus activation first, then start MCP, API, and the frontend in
-separate terminals:
+Release 17 corpus activation first. Then keep MCP, API, and the frontend
+running in three separate terminals. MCP owns the shared Retriever pool and
+both research workers for all Runs in that process lifetime; closing it makes
+new specification research temporarily unavailable but does not delete
+persisted Conversations or Results.
 
 ```text
 specrag corpus sync --release 17 --apply
+
+# Terminal 1: long-running research service
 $env:SPECRAG_MCP_DELEGATION_SECRET="<at-least-32-byte-shared-secret>"
 specrag-mcp
+
+# Terminal 2: long-running application API; use the exact same secret
+$env:SPECRAG_MCP_DELEGATION_SECRET="<the-same-secret>"
 specrag-api
+
+# Terminal 3: browser development server
 cd frontend
 npm install
 npm run dev
@@ -591,9 +607,11 @@ npm run dev
 
 At API startup, the Conversation runtime sends one bounded capability probe
 through the same configured model, Responses API path, and strict function
-schemas used by real Turns. `GET /healthz` reports a redacted
-`conversation_agent` state (`ready`, `unavailable`, or `disabled`) with only
-safe status metadata. The browser shows that diagnostic before submission, and
+schemas used by real Turns. The API `GET /healthz` reports both a redacted
+`conversation_agent` state (`ready`, `unavailable`, or `disabled`) and the MCP
+`research_service` readiness (`starting`, `warming`, `ready`, `failed`, or
+`unavailable`) with per-stage warmup timings. The browser shows those
+diagnostics before submission, and
 failed Turns retain the safe actionable reason instead of only displaying
 `invalid_request`. A capability failure leaves the API available in degraded
 mode for login, history, and inspection; it prevents the Turn Worker from
@@ -629,9 +647,11 @@ results. The knowledge view displays User/Project/Topic Memory, proposals,
 reviewed SpecFacts, source locators, and proposal state. Owners can review their
 private Memory proposals; reviewers/admins can approve or reject workspace
 Memory and SpecFact proposals, and rejection requires a reason.
-Opening a historical Run also displays checkpoint availability, token/stage
-metrics, recent events, safe failure diagnostics, and state-aware Cancel,
-Resume, and Retry actions.
+Opening a historical Run reads its independently persisted Result and displays
+the overall evidence status plus every Research Task's question, Judge status,
+selected-evidence count, and unresolved relation. It also displays checkpoint
+availability, token/stage metrics, recent events, safe failure diagnostics,
+and state-aware Cancel, Resume, and Retry actions.
 
 Every product research command requires `--workspace`. A trusted session and
 membership produce `ActorContext` before corpus or checkpoint access. Members

@@ -8,6 +8,7 @@ from typing import Annotated, Literal, TypedDict
 from specrag.models import (
     CandidateEvidence,
     EvidenceSynthesis,
+    JudgeReviewRecord,
     ResearchBudget,
     ResearchGap,
     ResearchPlan,
@@ -20,6 +21,7 @@ from specrag.models import (
     SourceValidationResult,
     StopReason,
     TaskSufficiencyAssessment,
+    TaskEvidenceSet,
     ToolCallRecord,
     ValidatedEvidence,
 )
@@ -27,7 +29,8 @@ from specrag.models import (
 
 class ResearchState(TypedDict):
     schema_version: Literal[
-        "research-state/v1.7", "research-state/v1.8", "research-state/v1.9"
+        "research-state/v1.7", "research-state/v1.8", "research-state/v1.9",
+        "research-state/v1.10"
     ]
     research_id: str
     user_question: str
@@ -45,11 +48,17 @@ class ResearchState(TypedDict):
     researcher_evidence_selections: tuple[
         ResearcherEvidenceSelectionRecord, ...
     ]
+    task_evidence_sets: tuple[TaskEvidenceSet, ...]
+    judge_review_records: tuple[JudgeReviewRecord, ...]
+    judge_skipped_task_ids: tuple[str, ...]
     budget: ResearchBudget
     iteration: int
     evidence_sufficient: bool | None
     final_answer: str | None
     synthesis: EvidenceSynthesis | None
+    publication_path: Literal[
+        "full_synthesis", "qualified_synthesis", "status_only"
+    ] | None
     specfact_proposal_ids: tuple[str, ...]
     specfact_ids: tuple[str, ...]
     memory_ids: tuple[str, ...]
@@ -76,7 +85,7 @@ def new_research_state(
     if not user_question.strip():
         raise ValueError("user_question must not be blank")
     return ResearchState(
-        schema_version="research-state/v1.9",
+        schema_version="research-state/v1.10",
         research_id=research_id,
         user_question=user_question,
         route="plan",
@@ -91,11 +100,15 @@ def new_research_state(
         gaps=(),
         tool_calls=(),
         researcher_evidence_selections=(),
+        task_evidence_sets=(),
+        judge_review_records=(),
+        judge_skipped_task_ids=(),
         budget=budget or ResearchBudget(),
         iteration=0,
         evidence_sufficient=None,
         final_answer=None,
         synthesis=None,
+        publication_path=None,
         specfact_proposal_ids=(),
         specfact_ids=specfact_ids,
         memory_ids=memory_ids,

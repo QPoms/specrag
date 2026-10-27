@@ -15,8 +15,7 @@ from specrag.models import (
 from specrag.prompts import (
     SUFFICIENCY_INSTRUCTIONS,
     SUFFICIENCY_PROMPT_VERSION,
-    SYNTHESIS_INSTRUCTIONS,
-    SYNTHESIS_PROMPT_VERSION,
+    synthesis_prompt,
 )
 
 from .structured_agent import CodexStructuredAgent
@@ -68,10 +67,14 @@ class StructuredEvidenceSynthesisGenerator:
         unresolved_task_ids: tuple[str, ...],
         conflicting_task_ids: tuple[str, ...],
     ) -> EvidenceSynthesis:
+        prompt_version, instructions = synthesis_prompt(
+            mode,
+            has_conflicts=bool(conflicting_task_ids),
+        )
         response = self.agent.parse(
             purpose="synthesize an evidence-grounded technical answer",
-            prompt_version=SYNTHESIS_PROMPT_VERSION,
-            instructions=SYNTHESIS_INSTRUCTIONS,
+            prompt_version=prompt_version,
+            instructions=instructions,
             input_payload={
                 "question": question,
                 "synthesis_mode": mode,

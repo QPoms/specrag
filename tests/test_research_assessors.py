@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from specrag.infrastructure import (
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
 from specrag.models import CandidateEvidence, EvidenceSynthesis, ResearchTask
 from specrag.prompts import SUFFICIENCY_INSTRUCTIONS
-from specrag.prompts import SYNTHESIS_INSTRUCTIONS
+from specrag.prompts import SYNTHESIS_INSTRUCTIONS, synthesis_prompt
 
 
 def _task() -> ResearchTask:
@@ -81,7 +83,7 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
     assert synthesis.evidence_ids == ("E1",)
     assert [item[0] for item in agent.payloads] == [
         "evidence-sufficiency/v1.13",
-        "evidence-synthesis/v1.8",
+        "evidence-synthesis/v1.10-full",
     ]
     sufficiency_payload = agent.payloads[0][1]
     assert sufficiency_payload["original_question"] == (
@@ -107,19 +109,34 @@ def test_structured_evidence_adapters_use_domain_output_contracts() -> None:
 
 
 def test_synthesis_prompt_enforces_final_answer_boundary() -> None:
-    assert "complete and authoritative answer scope" in SYNTHESIS_INSTRUCTIONS
-    assert "Task\nquestions are coverage checkpoints only" in (
-        SYNTHESIS_INSTRUCTIONS
+    full_version, full = synthesis_prompt("complete", has_conflicts=False)
+    qualified_version, qualified = synthesis_prompt(
+        "partial", has_conflicts=False
     )
-    assert "one complete, coherent answer" in SYNTHESIS_INSTRUCTIONS
-    assert "supported\nevidence item owned by each covered task" in (
-        SYNTHESIS_INSTRUCTIONS
+    conflict_version, conflict = synthesis_prompt(
+        "partial", has_conflicts=True
     )
-    assert "Do not return a\nclaim list" in SYNTHESIS_INSTRUCTIONS
-    assert "different specifications or radio" in SYNTHESIS_INSTRUCTIONS
-    assert "systems into one generalized statement" in SYNTHESIS_INSTRUCTIONS
-    assert "nested conditions" in SYNTHESIS_INSTRUCTIONS
-    assert "implication direction" in SYNTHESIS_INSTRUCTIONS
+
+    assert SYNTHESIS_INSTRUCTIONS == full
+    assert full_version.endswith("-full")
+    assert "original question is the authoritative answer scope" in full
+    assert "coverage checkpoints only" in full
+    assert "backend owns publication status" in full
+    assert "Publication path: full synthesis" in full
+    assert "qualified synthesis" not in full
+    assert qualified_version.endswith("-qualified")
+    assert "Publication path: qualified synthesis" in qualified
+    assert "can appear in" in qualified
+    assert "both `covered_task_ids` and `unresolved_task_ids`" in qualified
+    assert "absent from `covered_task_ids`" in qualified
+    assert "Cite evidence owned by every covered task" in qualified
+    assert "turn missing evidence into a negative conclusion" in qualified
+    assert "backend will append the mandatory unresolved-task disclosure" in qualified
+    assert conflict_version.endswith("-qualified-conflict")
+    assert "Do not reconcile" in conflict
+
+    with pytest.raises(ValueError, match="cannot contain conflicts"):
+        synthesis_prompt("complete", has_conflicts=True)
 
 
 def test_synthesis_model_reads_legacy_claim_json_without_retaining_claims() -> None:

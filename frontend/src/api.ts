@@ -58,10 +58,41 @@ export type RunInspection = {
   input_tokens: number | null;
   output_tokens: number | null;
   checkpoint_available: boolean;
+  result_id: string | null;
   answer: string | null;
   evidence_ids: string[];
   evidence: EvidenceItem[];
+  evidence_status: EvidenceStatus | null;
+  research_tasks: ResearchTaskSummary[];
+  task_assessments: TaskAssessment[];
+  gaps: ResearchGap[];
   failure: RunFailure | null;
+};
+
+export type EvidenceStatus = "sufficient" | "partial" | "insufficient" | "conflict";
+
+export type ResearchTaskSummary = {
+  task_id: string;
+  question: string;
+  objective: string;
+  dependencies: string[];
+  status: string;
+};
+
+export type TaskAssessment = {
+  task_id: string;
+  status: EvidenceStatus;
+  supporting_evidence_ids: string[];
+  missing_relation: string | null;
+  rationale: string;
+};
+
+export type ResearchGap = {
+  gap_id: string;
+  task_id: string;
+  kind: string;
+  description: string;
+  resolved: boolean;
 };
 
 export type RunFailure = {
@@ -226,6 +257,13 @@ export type NativeToolCapability = {
 export type HealthStatus = {
   status: "ok" | "degraded";
   conversation_agent: NativeToolCapability;
+  research_service: {
+    status: "starting" | "warming" | "ready" | "failed" | "unavailable" | "disabled";
+    release: number;
+    message: string;
+    stages: { name: string; duration_ms: number }[];
+    total_ms: number;
+  };
 };
 
 export type MemoryEntry = {

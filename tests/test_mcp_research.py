@@ -10,6 +10,7 @@ import pytest
 
 from specrag.access import AuthorizationError, ServiceDelegationSigner
 from specrag.interfaces.mcp import SpecRAGMCPClient, create_mcp_server
+from specrag.interfaces.mcp_runtime import MCPRuntimeState
 from specrag.interfaces.workspace_services import WorkspaceServices
 from specrag.models import (
     CorpusVersionRef,
@@ -300,6 +301,64 @@ def test_streamable_http_tools_use_header_delegation_not_identity_arguments(
         assert "workspace_id" not in properties
         assert "role" not in properties
         assert set(properties) >= {"question", "conditions", "requested_scope"}
+    finally:
+        services.close()
+
+
+def test_mcp_readiness_blocks_new_runs_until_runtime_is_ready(
+    tmp_path: Path,
+) -> None:
+    services, actor, conversation, accepted, harness, run_worker, _ = _setup(
+        tmp_path / "readiness.sqlite3"
+    )
+    signer = ServiceDelegationSigner(SECRET)
+    token = _delegation(signer, actor, conversation, accepted)
+    research = ResearchToolService(
+        harness,
+        run_worker,
+        services.research_results,
+        services.conversations,
+        services.conversation_lifecycle_store,
+        services.conversation_scope_store,
+        wait_seconds=0,
+    )
+    readiness = MCPRuntimeState()
+    readiness.begin_warmup()
+    server = create_mcp_server(services, research, signer, readiness)
+    app = server.streamable_http_app(
+        json_response=True,
+        stateless_http=True,
+        host="127.0.0.1",
+    )
+
+    async def exercise() -> None:
+        transport = httpx2.ASGITransport(app=app)
+        async with app.router.lifespan_context(app):
+            client = SpecRAGMCPClient(
+                "http://127.0.0.1:8000/mcp", http_transport=transport
+            )
+            warming = await client.readiness()
+            assert warming.status == "warming"
+            with pytest.raises(Exception):
+                await client.start_research(
+                    token,
+                    ResearchToolRequest(question="When shall the UE register?"),
+                )
+            assert services.run_queue.pending_count() == 0
+
+            readiness.record_stage("corpus_snapshot", 12.5)
+            readiness.mark_ready()
+            ready = await client.readiness()
+            assert ready.status == "ready"
+            assert ready.stages[0].duration_ms == 12.5
+            response = await client.start_research(
+                token,
+                ResearchToolRequest(question="When shall the UE register?"),
+            )
+            assert response.disposition == "accepted"
+
+    try:
+        asyncio.run(exercise())
     finally:
         services.close()
 

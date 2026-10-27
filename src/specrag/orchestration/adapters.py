@@ -9,13 +9,15 @@ from typing import cast
 from specrag.agents.models import AgenticRetrievalExecution
 from specrag.agents.researcher import RegistryResearcherService
 from specrag.evidence import (
-    EvidenceSufficiencyService,
     EvidenceSynthesisService,
     SourceValidationService,
+    SynthesisContractError,
+    publication_decision,
 )
 from specrag.models import (
     CandidateEvidence,
     ResearcherEvidenceSelectionRecord,
+    TaskEvidenceSet,
     ToolCallRecord,
 )
 
@@ -134,89 +136,20 @@ class SourceValidationHandler:
 
 
 @dataclass(frozen=True)
-class EvidenceSufficiencyHandler:
-    """Expose task-level sufficiency and Gap generation as a graph handler."""
-
-    service: EvidenceSufficiencyService
-
-    def __call__(self, state: ResearchState) -> dict[str, object]:
-        assessment_by_task = {
-            item.task_id: item for item in state["sufficiency_assessments"]
-        }
-        completed_task_ids = {
-            task.task_id
-            for task in state["research_tasks"]
-            if task.status == "completed"
-            and (
-                assessment := assessment_by_task.get(task.task_id)
-            ) is not None
-            and assessment.status == "sufficient"
-        }
-        active_tasks = tuple(
-            task
-            for task in state["research_tasks"]
-            if task.task_id not in completed_task_ids
-        )
-        active_candidates = tuple(
-            item
-            for item in state["candidate_evidence"]
-            if item.task_id not in completed_task_ids
-        )
-        active_evidence_ids = {item.evidence_id for item in active_candidates}
-        batch = self.service.evaluate(
-            active_tasks,
-            active_candidates,
-            tuple(
-                item
-                for item in state["source_validations"]
-                if item.evidence_id in active_evidence_ids
-            ),
-            original_question=state["user_question"],
-        )
-        updated_task_by_id = {item.task_id: item for item in batch.tasks}
-        updated_assessment_by_task = {
-            **{
-                task_id: assessment_by_task[task_id]
-                for task_id in completed_task_ids
-            },
-            **{item.task_id: item for item in batch.assessments},
-        }
-        validated_by_id = {
-            item.evidence_id: item
-            for item in state["validated_evidence"]
-            if item.task_id in completed_task_ids
-        }
-        validated_by_id.update(
-            {item.evidence_id: item for item in batch.validated_evidence}
-        )
-        tasks = tuple(
-            updated_task_by_id.get(task.task_id, task)
-            for task in state["research_tasks"]
-        )
-        return {
-            "research_tasks": tasks,
-            "validated_evidence": tuple(validated_by_id.values()),
-            "sufficiency_assessments": tuple(
-                updated_assessment_by_task[task.task_id]
-                for task in tasks
-                if task.task_id in updated_assessment_by_task
-            ),
-            "gaps": batch.gaps,
-            "evidence_sufficient": bool(tasks)
-            and all(task.status == "completed" for task in tasks),
-        }
-
-
-@dataclass(frozen=True)
 class EvidenceSynthesisHandler:
     """Produce a complete or explicitly qualified evidence-backed answer."""
 
     service: EvidenceSynthesisService
 
     def __call__(self, state: ResearchState) -> dict[str, object]:
-        mode = (
-            "complete" if state["evidence_sufficient"] is True else "partial"
+        decision = publication_decision(
+            state["research_tasks"],
+            state["validated_evidence"],
+            state["sufficiency_assessments"],
         )
+        mode = decision.synthesis_mode
+        if mode is None:
+            raise ValueError("status-only research cannot invoke synthesis")
         try:
             synthesis = self.service.synthesize(
                 state["user_question"],
@@ -225,6 +158,19 @@ class EvidenceSynthesisHandler:
                 state["validated_evidence"],
                 state["sufficiency_assessments"],
                 mode=mode,
+            )
+        except SynthesisContractError:
+            synthesis = self.service.evidence_digest(
+                state["research_tasks"],
+                state["candidate_evidence"],
+                state["validated_evidence"],
+                state["sufficiency_assessments"],
+                mode=mode,
+            )
+            errors = (
+                *state["errors"],
+                "model synthesis violated the grounded output contract; "
+                "deterministic evidence digest published",
             )
         except Exception as exc:
             if getattr(exc, "failure_kind", None) is None:
@@ -245,6 +191,7 @@ class EvidenceSynthesisHandler:
         return {
             "synthesis": synthesis,
             "final_answer": synthesis.answer,
+            "publication_path": decision.path,
             "stop_reason": state["stop_reason"] or "completed",
             "errors": errors,
         }
@@ -260,6 +207,7 @@ def researcher_execution_update(
     *,
     query_to_task: Mapping[str, str],
     task_id: str | None = None,
+    execution_id: str | None = None,
     corrective: bool = False,
 ) -> dict[str, object]:
     """Translate an audited Researcher execution into a state update.
@@ -331,7 +279,7 @@ def researcher_execution_update(
     convert_hits(
         execution.candidate_evidence_execution
         or execution.evidence_execution,
-        promote=False,
+        promote=True,
     )
     convert_hits(execution.evidence_execution, promote=True)
 
@@ -437,6 +385,21 @@ def researcher_execution_update(
         corrective=corrective,
     )
 
+    active_evidence_ids = tuple(dict.fromkeys(
+        evidence_ids[(task_result.query_id, hit.hit_id)]
+        for task_result in execution.evidence_execution.tasks
+        if query_to_task[task_result.query_id] == charged_task_id
+        for hit in task_result.hits
+    ))
+    evidence_sets = {
+        item.task_id: item for item in state.get("task_evidence_sets", ())
+    }
+    evidence_sets[charged_task_id] = TaskEvidenceSet(
+        task_id=charged_task_id,
+        execution_id=execution_id,
+        active_evidence_ids=active_evidence_ids,
+    )
+
     receipts = tuple((*state["model_receipts"], *(
         turn.receipt.model_dump(mode="json") for turn in execution.turns
     )))
@@ -444,6 +407,13 @@ def researcher_execution_update(
         "candidate_evidence": tuple(candidates),
         "tool_calls": tuple(calls),
         "researcher_evidence_selections": tuple(selections),
+        "task_evidence_sets": tuple(
+            evidence_sets[known_task_id]
+            for known_task_id in (
+                task.task_id for task in state["research_tasks"]
+            )
+            if known_task_id in evidence_sets
+        ),
         "budget": budget,
         "last_researcher_stop_reason": execution.stop_reason,
         "errors": tuple((*state["errors"], *execution.errors)),
@@ -456,7 +426,6 @@ def researcher_execution_update(
 
 __all__ = [
     "SourceValidationHandler",
-    "EvidenceSufficiencyHandler",
     "EvidenceSynthesisHandler",
     "SingleResearcherHandler",
     "researcher_execution_update",

@@ -3,12 +3,12 @@
 from .state import ResearchState, new_research_state
 from .dependencies import build_dependency_context
 from .adapters import (
-    EvidenceSufficiencyHandler,
     EvidenceSynthesisHandler,
     SourceValidationHandler,
     SingleResearcherHandler,
     researcher_execution_update,
 )
+from .judge_handler import EvidenceSufficiencyHandler
 from .workflow import (
     ResearchNodeHandlers,
     SingleResearchWorkflow,

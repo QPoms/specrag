@@ -57,6 +57,16 @@ class ResearchResultMaterializer:
             and validations[candidate.evidence_id].source_valid
         )
         copied_by_id = {item.source.evidence_id: item for item in copied}
+        assessments = tuple(
+            item.model_copy(update={
+                "supporting_evidence_ids": tuple(
+                    evidence_id
+                    for evidence_id in item.supporting_evidence_ids
+                    if evidence_id in copied_by_id
+                )
+            })
+            for item in outcome.assessments
+        )
         synthesis = outcome.synthesis
         cited_ids: tuple[str, ...] = ()
         synthesis_is_safe = synthesis is not None
@@ -98,6 +108,8 @@ class ResearchResultMaterializer:
             "answer": answer,
             "evidence": copied,
             "evidence_ids": cited_ids,
+            "research_tasks": outcome.research_tasks,
+            "task_assessments": assessments,
             "conditions": outcome.conditions,
             "requested_scope": outcome.requested_scope,
             "corpus_versions": outcome.corpus_versions,
