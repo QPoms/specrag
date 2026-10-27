@@ -36,6 +36,10 @@ user question or task
   dense candidate search, and deterministic reciprocal-rank fusion.
 - `src/specrag/retrieval/hybrid.py`: small hybrid retrieval orchestrator with
   a tested lexical fallback when semantic search is unavailable.
+- `src/specrag/retrieval/clauses.py`: deterministic Release/specification/
+  version-bound Clause Index with source ranges, direct and descendant chunks,
+  parent/child edges, and parsed cross-references. `clauses.jsonl` is persisted
+  beside each compatible chunk snapshot without changing vector identities.
 - `src/specrag/retrieval/planner.py`: stable public facade and high-level
   retrieval workflow orchestration.
 - `src/specrag/retrieval/routing.py`: candidate-specification routing for
@@ -61,7 +65,10 @@ user question or task
   rounds adapt to observed evidence. Retrieved chunks enter a deduplicated
   candidate pool; the controller maintains a bounded active evidence set and
   may replace weaker early items with later gap-closing evidence without
-  deleting the audit trail. Each ResearchTask has an initial retrieval
+  deleting the audit trail. Every task also maintains stable structured
+  Evidence Requirements with missing/partial/covered status and direct
+  evidence links across normal rounds, checkpoints, and corrective attempts.
+  Each ResearchTask has an initial retrieval
   allowance and a separate bounded corrective allowance for unresolved
   Sufficiency Judge gaps; both are charged only for executed retrieval calls
   and recorded independently. There are no per-tool-category quotas. One
@@ -78,7 +85,10 @@ user question or task
   with covered, unresolved, and conflicting task IDs; there is no parallel
   claim list or claim-concatenation step.
 - `src/specrag/tools/`: provider-neutral per-tool argument schemas, function
-  descriptions, registry, and seven trusted retrieval adapters. The Registry
+  descriptions, registry, and nine trusted retrieval adapters. Clause lookup
+  supports cursor-based long-clause reads and explicit descendant inclusion;
+  parent/child and source-confirmed cross-reference navigation are bounded,
+  paged, and restricted to the Run's immutable corpus scope. The Registry
   is the single source for definition, validation, and execution. HyDE embeds an
   untrusted controller-generated passage for retrieval; only returned source
   chunks can become evidence.

@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Iterable
-
 from specrag.models import NativeFunctionDefinition
 from specrag.retrieval.hybrid import HybridMarkdownRetriever
 from specrag.retrieval.index import searchable_text
-from specrag.retrieval.models import MarkdownChunk, RetrievalHit
-from specrag.retrieval.navigation import (
-    expand_source_context_chunks,
-    lookup_clause_chunks,
-)
+from specrag.retrieval.navigation import expand_source_context_chunks
 from specrag.retrieval.reranker import CrossEncoderReranker
 
 from .models import (
     ClauseLookupArguments,
+    ClauseNavigationArguments,
+    CrossReferenceLookupArguments,
     ExpandSourceContextArguments,
     HybridSearchArguments,
     HyDESearchArguments,
@@ -24,112 +20,14 @@ from .models import (
     RetrievalToolName,
     RetrievalToolRequest,
     RetrievalToolResult,
-    ScoreKind,
     SemanticSearchArguments,
-    ToolEvidence,
     ToolCapability,
-    ToolStatus,
 )
 from .registry import ToolRegistry
+from .retrieval_base import RetrieverTool
 
 
-class _RetrieverTool:
-    name: RetrievalToolName
-
-    def __init__(self, retriever: HybridMarkdownRetriever) -> None:
-        self.retriever = retriever
-
-    def _result(
-        self,
-        request: RetrievalToolRequest,
-        evidence: Iterable[ToolEvidence] = (),
-        *,
-        errors: tuple[str, ...] = (),
-        status: ToolStatus | None = None,
-    ) -> RetrievalToolResult:
-        materialized = tuple(evidence)
-        resolved_status: ToolStatus = status or (
-            "partial"
-            if materialized and errors
-            else "completed"
-            if materialized
-            else "unavailable"
-            if errors
-            else "no_hits"
-        )
-        return RetrievalToolResult(
-            request_id=request.request_id,
-            query_id=request.query_id,
-            tool_name=self.name,
-            status=resolved_status,
-            corpus_scope=self.retriever.corpus_scope,
-            evidence=materialized,
-            errors=errors,
-        )
-
-    def _chunk_evidence(
-        self,
-        chunk: MarkdownChunk,
-        *,
-        request: RetrievalToolRequest,
-        rank: int,
-        score: float | None = None,
-        score_kind: ScoreKind = "source_order",
-    ) -> ToolEvidence:
-        assert chunk.specification is not None and chunk.version is not None
-        return ToolEvidence(
-            evidence_id=f"{request.request_id}:{rank}",
-            chunk_id=chunk.chunk_id,
-            rank=rank,
-            match_kind=self.name,
-            score=score,
-            score_kind=score_kind,
-            specification=chunk.specification,
-            release=int(chunk.version.split(".", 1)[0]),
-            version=chunk.version,
-            source_path=chunk.source_path,
-            document_sha256=chunk.document_sha256,
-            heading_path=chunk.heading_path,
-            line_start=chunk.line_start,
-            line_end=chunk.line_end,
-            excerpt=chunk.text,
-        )
-
-    def _hit_evidence(
-        self,
-        hit: RetrievalHit,
-        *,
-        request: RetrievalToolRequest,
-        rank: int,
-    ) -> ToolEvidence:
-        assert hit.specification is not None and hit.version is not None
-        return ToolEvidence(
-            evidence_id=f"{request.request_id}:{rank}",
-            chunk_id=hit.chunk_id,
-            rank=rank,
-            match_kind=self.name,
-            score=hit.rrf_score,
-            score_kind="rrf",
-            specification=hit.specification,
-            release=int(hit.version.split(".", 1)[0]),
-            version=hit.version,
-            source_path=hit.source_path,
-            document_sha256=hit.document_sha256,
-            heading_path=hit.heading_path,
-            line_start=hit.line_start,
-            line_end=hit.line_end,
-            excerpt=hit.excerpt,
-        )
-
-    def _reject(
-        self,
-        request: RetrievalToolRequest,
-        message: str,
-    ) -> RetrievalToolResult:
-        return self._result(request, errors=(message,), status="rejected")
-
-
-class KeywordSearchTool(_RetrieverTool):
+class KeywordSearchTool(RetrieverTool):
     name: RetrievalToolName = "keyword_search"
     argument_type = KeywordSearchArguments
     capability = ToolCapability(
@@ -172,7 +70,7 @@ class KeywordSearchTool(_RetrieverTool):
         )
 
 
-class SemanticSearchTool(_RetrieverTool):
+class SemanticSearchTool(RetrieverTool):
     name: RetrievalToolName = "semantic_search"
     argument_type = SemanticSearchArguments
     capability = ToolCapability(
@@ -215,7 +113,7 @@ class SemanticSearchTool(_RetrieverTool):
         )
 
 
-class HybridSearchTool(_RetrieverTool):
+class HybridSearchTool(RetrieverTool):
     name: RetrievalToolName = "hybrid_search"
     argument_type = HybridSearchArguments
     capability = ToolCapability(
@@ -249,7 +147,7 @@ class HybridSearchTool(_RetrieverTool):
         )
 
 
-class HyDESearchTool(_RetrieverTool):
+class HyDESearchTool(RetrieverTool):
     name: RetrievalToolName = "hyde_search"
     argument_type = HyDESearchArguments
     capability = ToolCapability(
@@ -298,7 +196,7 @@ class HyDESearchTool(_RetrieverTool):
         )
 
 
-class ClauseLookupTool(_RetrieverTool):
+class ClauseLookupTool(RetrieverTool):
     name: RetrievalToolName = "clause_lookup"
     argument_type = ClauseLookupArguments
     capability = ToolCapability(
@@ -316,24 +214,158 @@ class ClauseLookupTool(_RetrieverTool):
         if request.clause is None:
             return self._reject(request, "clause_lookup requires a clause")
         try:
-            chunks = lookup_clause_chunks(
-                self.retriever.chunks,
+            records = self.retriever.clause_index.lookup(
                 request.clause,
                 specifications=request.target_specifications,
-                limit=request.limit,
+                limit=12,
             )
         except ValueError as exc:
             return self._reject(request, str(exc))
+        all_chunks = tuple(dict.fromkeys(
+            chunk
+            for record in records
+            for chunk in self.retriever.clause_index.chunks_for(
+                record,
+                include_descendants=request.include_descendants,
+            )
+        ))
+        page = all_chunks[request.cursor:request.cursor + request.limit]
+        next_cursor = (
+            request.cursor + len(page)
+            if request.cursor + len(page) < len(all_chunks)
+            else None
+        )
         return self._result(
             request,
             (
                 self._chunk_evidence(chunk, request=request, rank=rank)
-                for rank, chunk in enumerate(chunks, 1)
+                for rank, chunk in enumerate(page, 1)
             ),
+            next_cursor=next_cursor,
         )
 
 
-class ExpandSourceContextTool(_RetrieverTool):
+class ClauseNavigationTool(RetrieverTool):
+    name: RetrievalToolName = "navigate_clause"
+    argument_type = ClauseNavigationArguments
+    capability = ToolCapability(
+        name=name,
+        description=(
+            "Follow a parent, direct-child, or parsed cross-reference edge from "
+            "one to four already observed evidence items. Navigation is limited "
+            "to clauses present in the active corpus snapshot."
+        ),
+        execution_kind="deterministic",
+    )
+
+    def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
+        if request.clause_relation is None:
+            return self._reject(request, "navigate_clause requires a relation")
+        unknown = tuple(
+            item
+            for item in request.seed_chunk_ids
+            if item not in self.retriever.chunk_by_id
+        )
+        if unknown:
+            return self._reject(
+                request, "unknown seed chunks: " + ", ".join(unknown)
+            )
+        records = []
+        for chunk_id in request.seed_chunk_ids:
+            owner = self.retriever.clause_index.owner(chunk_id)
+            if owner is None:
+                continue
+            records.extend(
+                self.retriever.clause_index.related(owner, request.clause_relation)
+            )
+        unique_records = tuple(dict.fromkeys(records))
+        chunks = tuple(dict.fromkeys(
+            chunk
+            for record in unique_records
+            for chunk in self.retriever.clause_index.chunks_for(record)
+        ))
+        page = chunks[request.cursor:request.cursor + request.limit]
+        next_cursor = (
+            request.cursor + len(page)
+            if request.cursor + len(page) < len(chunks)
+            else None
+        )
+        return self._result(
+            request,
+            (
+                self._chunk_evidence(chunk, request=request, rank=rank)
+                for rank, chunk in enumerate(page, 1)
+            ),
+            next_cursor=next_cursor,
+        )
+
+
+class CrossReferenceLookupTool(RetrieverTool):
+    name: RetrievalToolName = "cross_reference_lookup"
+    argument_type = CrossReferenceLookupArguments
+    capability = ToolCapability(
+        name=name,
+        description=(
+            "Read a clause explicitly referenced by previously observed "
+            "evidence. Supply the cited target specification (or null for the "
+            "same specification), target clause, cited version when present, "
+            "and a page cursor. The tool "
+            "rejects unobserved, ambiguous, absent, or out-of-scope targets."
+        ),
+        execution_kind="deterministic",
+    )
+
+    def invoke(self, request: RetrievalToolRequest) -> RetrievalToolResult:
+        if request.reference_clause is None:
+            return self._reject(
+                request, "cross_reference_lookup requires a target clause"
+            )
+        unknown = tuple(
+            item
+            for item in request.seed_chunk_ids
+            if item not in self.retriever.chunk_by_id
+        )
+        if unknown:
+            return self._reject(
+                request, "unknown seed chunks: " + ", ".join(unknown)
+            )
+        targets = []
+        for chunk_id in request.seed_chunk_ids:
+            owner = self.retriever.clause_index.owner(chunk_id)
+            if owner is None:
+                continue
+            target = self.retriever.clause_index.resolve_reference(
+                owner,
+                target_specification=request.reference_specification,
+                target_clause_id=request.reference_clause,
+                target_version=request.reference_version,
+            )
+            if target is not None:
+                targets.append(target)
+        unique_targets = tuple(dict.fromkeys(targets))
+        if len(unique_targets) != 1:
+            return self._reject(
+                request,
+                "the observed source does not identify one in-scope target clause",
+            )
+        chunks = self.retriever.clause_index.chunks_for(unique_targets[0])
+        page = chunks[request.cursor:request.cursor + request.limit]
+        next_cursor = (
+            request.cursor + len(page)
+            if request.cursor + len(page) < len(chunks)
+            else None
+        )
+        return self._result(
+            request,
+            (
+                self._chunk_evidence(chunk, request=request, rank=rank)
+                for rank, chunk in enumerate(page, 1)
+            ),
+            next_cursor=next_cursor,
+        )
+
+
+class ExpandSourceContextTool(RetrieverTool):
     name: RetrievalToolName = "expand_source_context"
     argument_type = ExpandSourceContextArguments
     capability = ToolCapability(
@@ -353,6 +385,7 @@ class ExpandSourceContextTool(_RetrieverTool):
                 self.retriever.chunks,
                 request.seed_chunk_ids,
                 limit=request.limit,
+                clause_index=self.retriever.clause_index,
             )
         except ValueError as exc:
             return self._reject(request, str(exc))
@@ -365,7 +398,7 @@ class ExpandSourceContextTool(_RetrieverTool):
         )
 
 
-class RerankTool(_RetrieverTool):
+class RerankTool(RetrieverTool):
     name: RetrievalToolName = "rerank"
     argument_type = RerankArguments
     capability = ToolCapability(
@@ -445,6 +478,8 @@ def retrieval_tool_capabilities() -> tuple[ToolCapability, ...]:
         HyDESearchTool.capability,
         RerankTool.capability,
         ClauseLookupTool.capability,
+        ClauseNavigationTool.capability,
+        CrossReferenceLookupTool.capability,
         ExpandSourceContextTool.capability,
     )
     return tuple(sorted(capabilities, key=lambda item: item.name))
@@ -460,6 +495,8 @@ def retrieval_tool_definitions() -> tuple[NativeFunctionDefinition, ...]:
         HyDESearchTool,
         RerankTool,
         ClauseLookupTool,
+        ClauseNavigationTool,
+        CrossReferenceLookupTool,
         ExpandSourceContextTool,
     )
     return tuple(sorted(
@@ -488,6 +525,8 @@ def build_retrieval_tool_registry(
         HyDESearchTool(retriever),
         RerankTool(retriever, reranker),
         ClauseLookupTool(retriever),
+        ClauseNavigationTool(retriever),
+        CrossReferenceLookupTool(retriever),
         ExpandSourceContextTool(retriever),
     ):
         registry.register(tool)
@@ -496,6 +535,8 @@ def build_retrieval_tool_registry(
 
 __all__ = [
     "ClauseLookupTool",
+    "ClauseNavigationTool",
+    "CrossReferenceLookupTool",
     "ExpandSourceContextTool",
     "HybridSearchTool",
     "HyDESearchTool",

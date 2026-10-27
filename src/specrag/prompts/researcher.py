@@ -1,6 +1,6 @@
 """Researcher controller prompt contract."""
 
-RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v2.3"
+RESEARCHER_CONTROLLER_PROMPT_VERSION = "researcher-controller/v2.5"
 
 RESEARCHER_CONTROLLER_INSTRUCTIONS = """\
 You control a bounded source-retrieval loop for one or more ResearchTask items.
@@ -21,6 +21,15 @@ each ResearchTask. An answer unit is a distinct fact, condition, relation,
 mapping, responsibility, branch, state transition, or other proposition that
 requires source evidence.
 
+Represent every answer unit in evidence_requirements. Use a stable
+requirement_id unique within its ResearchTask, the exact task_id, a concrete
+description, coverage_status missing/partial/covered, and the retained direct
+evidence IDs supporting partial or covered status. A missing requirement has
+no evidence IDs. Return the complete current requirement set on every control
+call. Preserve every previously supplied requirement_id; you may refine its
+description or add a new in-scope requirement, but never silently delete or
+rename an existing requirement.
+
 During the first retrieval round, every substantive answer unit must be
 directly targeted by at least one retrieval action. One action may cover
 multiple tightly coupled units only when its query explicitly expresses all of
@@ -32,12 +41,15 @@ Evidence is provided through:
 
 - active_evidence: evidence retained after the previous review;
 - pending_candidates: newly retrieved evidence not yet reviewed;
-- inactive_candidates: previously reviewed evidence not currently retained.
+- inactive_candidates: bounded metadata and excerpt previews for previously
+  reviewed evidence not currently retained. Full original tool results remain
+  available in the Context Harness through history.tool_result_id.
 
-Every evidence view contains the complete source excerpt available for that
-candidate. Review the complete excerpt before judging it. Do not classify
-evidence only from its heading, opening lines, retrieval rank, arrival order,
-or whether it is new.
+Active evidence and pending candidates contain the complete available source
+excerpt. Inactive candidates are bounded previews; use their metadata to
+recognize prior directions and do not upgrade their coverage without reading
+the full stored result. Do not classify evidence only from its heading,
+opening lines, retrieval rank, arrival order, or whether it is new.
 
 For every substantive answer unit, distinguish:
 
@@ -113,6 +125,8 @@ On every later retrieval round, perform these steps in order:
    responsibilities, or other answer units that remain unsupported. Do not
    describe the entire original task as missing when only part of it remains
    unsupported. Record each remaining gap explicitly in unresolved_gaps.
+   Every gap must name its corresponding requirement_id. Return one gap for
+   every missing or partial requirement and no gap for a covered requirement.
 
 5. Generate Gap-Driven Retrieval Actions
    Generate new tool actions only from the explicitly identified unresolved
@@ -179,6 +193,13 @@ expand_source_context calls.
 
 Use expand_source_context only for bounded local context around an already
 retrieved passage, or when a clause lookup leaves a specific nearby gap.
+
+Clause lookup is paged. Set include_descendants explicitly and continue from
+next_cursor when a long clause has another page. Use navigate_clause only from
+observed seed evidence to request its parent or direct children. Use
+cross_reference_lookup only from observed seed evidence, copying an exact
+target clause, specification, and any explicit version from a normative source
+reference. Never guess these values or recursively expand references.
 
 Follow a normative cross-reference only when the current passage delegates a
 fact, condition, action, definition, parameter meaning, or result required by

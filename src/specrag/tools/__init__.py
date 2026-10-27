@@ -2,6 +2,8 @@
 
 from .models import (
     ClauseLookupArguments,
+    ClauseNavigationArguments,
+    CrossReferenceLookupArguments,
     ExpandSourceContextArguments,
     HybridSearchArguments,
     HyDESearchArguments,
@@ -44,6 +46,8 @@ __all__ = [
     "retrieval_tool_capabilities",
     "retrieval_tool_definitions",
     "ClauseLookupArguments",
+    "ClauseNavigationArguments",
+    "CrossReferenceLookupArguments",
     "ExpandSourceContextArguments",
     "HybridSearchArguments",
     "HyDESearchArguments",

@@ -9,6 +9,7 @@ from pathlib import Path
 from ..config import RetrievalCfg
 from .corpus import corpus_scope_from_config
 from .models import (
+    ClauseRecord,
     CorpusScope,
     MarkdownChunk,
     RetrievalIndexManifest,
@@ -51,6 +52,7 @@ def write_snapshot(
     directory: Path,
     chunks: tuple[MarkdownChunk, ...],
     manifest: RetrievalIndexManifest,
+    clauses: tuple[ClauseRecord, ...] = (),
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "chunks.jsonl").write_text(
@@ -64,11 +66,26 @@ def write_snapshot(
         manifest.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )
+    (directory / "clauses.jsonl").write_text(
+        "".join(
+            json.dumps(item.model_dump(mode="json"), ensure_ascii=False) + "\n"
+            for item in clauses
+        ),
+        encoding="utf-8",
+    )
 
 
 def load_chunks(path: Path) -> tuple[MarkdownChunk, ...]:
     return tuple(
         MarkdownChunk.model_validate_json(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+
+def load_clauses(path: Path) -> tuple[ClauseRecord, ...]:
+    return tuple(
+        ClauseRecord.model_validate_json(line)
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
@@ -82,6 +99,7 @@ def searchable_text(chunk: MarkdownChunk) -> str:
 
 __all__ = [
     "index_fingerprint",
+    "load_clauses",
     "load_chunks",
     "searchable_text",
     "write_snapshot",

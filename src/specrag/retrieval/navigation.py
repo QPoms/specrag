@@ -2,61 +2,8 @@
 
 from __future__ import annotations
 
-import re
-
+from .clauses import ClauseIndex
 from .models import MarkdownChunk
-
-
-_CLAUSE_IDENTIFIER = re.compile(r"\d+(?:\.\d+)+")
-
-
-def _fold_heading(value: str) -> str:
-    return re.sub(r"\s+", "", value).casefold()
-
-
-def _matches_clause_heading(heading: str, clause: str) -> bool:
-    folded_clause = _fold_heading(clause)
-    folded_heading = _fold_heading(heading)
-    if _CLAUSE_IDENTIFIER.fullmatch(folded_clause):
-        return re.search(
-            rf"(?<![0-9.]){re.escape(folded_clause)}(?![0-9.])",
-            folded_heading,
-        ) is not None
-    return folded_clause in folded_heading
-
-
-def lookup_clause_chunks(
-    chunks: tuple[MarkdownChunk, ...],
-    clause: str,
-    *,
-    specifications: tuple[str, ...] = (),
-    limit: int = 10,
-) -> tuple[MarkdownChunk, ...]:
-    """Find chunks by clause identifier, title, or combined heading."""
-
-    if not clause.strip():
-        raise ValueError("clause must not be blank")
-    if limit < 1:
-        raise ValueError("limit must be positive")
-    allowed = frozenset(specifications)
-    matches = [
-        chunk
-        for chunk in chunks
-        if (not allowed or chunk.specification in allowed)
-        and any(
-            _matches_clause_heading(heading, clause)
-            for heading in chunk.heading_path
-        )
-    ]
-    return tuple(sorted(
-        matches,
-        key=lambda chunk: (
-            chunk.specification or "",
-            chunk.source_path,
-            chunk.line_start,
-            chunk.chunk_id,
-        ),
-    )[:limit])
 
 
 def expand_source_context_chunks(
@@ -64,6 +11,7 @@ def expand_source_context_chunks(
     seed_chunk_ids: tuple[str, ...],
     *,
     limit: int = 8,
+    clause_index: ClauseIndex | None = None,
 ) -> tuple[MarkdownChunk, ...]:
     """Return bounded same-section and adjacent-sibling source context."""
 
@@ -106,8 +54,32 @@ def expand_source_context_chunks(
             if 0 <= index < len(same_section)
         ]
 
+        owner = clause_index.owner(seed_id) if clause_index is not None else None
+        if owner is not None:
+            parent = tuple(clause_index.related(owner, "parent"))
+            siblings = (
+                clause_index.related(parent[0], "children") if parent else ()
+            )
+            owner_position = next((
+                index
+                for index, sibling in enumerate(siblings)
+                if sibling.clause_id == owner.clause_id
+            ), None)
+            sibling_positions = (
+                (owner_position - 1, owner_position + 1)
+                if owner_position is not None
+                else ()
+            )
+            for position in sibling_positions:
+                if not 0 <= position < len(siblings):
+                    continue
+                sibling = siblings[position]
+                sibling_chunks = clause_index.chunks_for(sibling)
+                if sibling_chunks:
+                    candidates.append(sibling_chunks[0])
+
         depth = len(seed.heading_path)
-        if depth:
+        if depth and owner is None:
             parent = seed.heading_path[:-1]
             section_openings: list[MarkdownChunk] = []
             section_paths: list[tuple[str, ...]] = []
@@ -135,4 +107,4 @@ def expand_source_context_chunks(
     return tuple(selected)
 
 
-__all__ = ["expand_source_context_chunks", "lookup_clause_chunks"]
+__all__ = ["expand_source_context_chunks"]

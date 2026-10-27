@@ -8,6 +8,7 @@ from specrag.agents.planning import (
     ResearcherPlanningService,
     propose_researcher_turn,
 )
+from specrag.agents.models import researcher_control_definitions
 from specrag.agents.state import EvidenceLedger
 from specrag.cli import BaselineQuestion, CuratedRouteLabel, run_researcher_planning
 from specrag.infrastructure.research_planning import StructuredResearchPlanner
@@ -19,6 +20,7 @@ from specrag.infrastructure.structured_agent import (
     CodexAgentToolResponse,
 )
 from specrag.models import (
+    EvidenceRequirement,
     NativeFunctionCall,
     ResearchPlan,
     ResearchRouteDecision,
@@ -80,6 +82,13 @@ def _control(*, retained: tuple[str, ...] = ()) -> NativeFunctionCall:
         name="update_research_state",
         arguments={
             "assessment": "Search directly for the normative rule.",
+            "evidence_requirements": [{
+                "requirement_id": "R1",
+                "task_id": "T1",
+                "description": "Establish the requested normative rule.",
+                "coverage_status": "partial" if retained else "missing",
+                "evidence_ids": list(retained),
+            }],
             "evidence_selections": (
                 [{
                     "query_id": "T1",
@@ -89,6 +98,7 @@ def _control(*, retained: tuple[str, ...] = ()) -> NativeFunctionCall:
             ),
             "unresolved_gaps": [{
                 "query_id": "T1",
+                "requirement_id": "R1",
                 "description": "The requested normative rule is unsupported.",
             }],
         },
@@ -264,6 +274,52 @@ def test_tool_missing_from_catalog_is_rejected() -> None:
     )
 
 
+def test_researcher_control_schema_requires_every_nested_property() -> None:
+    schema = researcher_control_definitions()[0].parameters
+    requirement = schema["$defs"]["EvidenceRequirement"]
+
+    assert set(requirement["required"]) == set(requirement["properties"])
+    assert "default" not in requirement["properties"]["evidence_ids"]
+
+
+def test_replan_cannot_silently_delete_existing_requirement() -> None:
+    empty_control = _control().model_copy(update={
+        "arguments": {
+            **_control().arguments,
+            "evidence_requirements": [],
+            "unresolved_gaps": [],
+        }
+    })
+    agent = _NativeAgent((empty_control, _hybrid_call("T1")))
+    ledger = EvidenceLedger(("T1",), max_per_question=12)
+
+    proposal = propose_researcher_turn(
+        (ResearchTask(
+            task_id="T1",
+            question="One focused rule?",
+            objective="Establish the rule.",
+        ),),
+        controller_agent=StructuredResearcherController(agent),
+        corpus_scope=CorpusScope(release=17),
+        available_specifications=("24.501",),
+        available_tools=retrieval_tool_definitions(),
+        ledger=ledger,
+        evidence_requirements=(EvidenceRequirement(
+            requirement_id="R1",
+            task_id="T1",
+            description="Establish the requested normative rule.",
+            coverage_status="missing",
+            evidence_ids=(),
+        ),),
+        round_number=2,
+    )
+
+    assert proposal.accepted is False
+    assert proposal.protocol_errors == (
+        "evidence requirements cannot be deleted: T1/R1",
+    )
+
+
 def test_first_turn_budget_accepts_six_and_rejects_seventh_call() -> None:
     task = (ResearchTask(
         task_id="T1",
@@ -343,7 +399,9 @@ def test_evidence_ledger_keeps_complete_candidates_and_replaces_active() -> None
         hits[0].excerpt,
         hits[2].excerpt,
     ]
-    assert views["inactive_candidates"][0]["excerpt"] == hits[1].excerpt
+    assert views["inactive_candidates"][0]["excerpt"] == (
+        hits[1].excerpt[:240].rstrip() + " ..."
+    )
 
 
 def test_corrective_ledger_restores_candidates_and_judge_active_set() -> None:
@@ -389,6 +447,8 @@ def test_grounded_clause_call_is_accepted_from_observed_evidence() -> None:
             "clause": "5.8.9.1a.3",
             "target_specifications": ["38.331"],
             "max_results": 5,
+            "include_descendants": False,
+            "cursor": 0,
         },
     )
     agent = _NativeAgent((control, clause))

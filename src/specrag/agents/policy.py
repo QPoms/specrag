@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from specrag.tools import (
+    ClauseNavigationArguments,
+    CrossReferenceLookupArguments,
     ExpandSourceContextArguments,
     RerankArguments,
     RetrievalToolArguments,
@@ -45,7 +47,12 @@ def validate_call(
             "observed evidence: " + ", ".join(ungrounded_specs)
         )
 
-    if isinstance(arguments, (RerankArguments, ExpandSourceContextArguments)):
+    if isinstance(arguments, (
+        ClauseNavigationArguments,
+        CrossReferenceLookupArguments,
+        RerankArguments,
+        ExpandSourceContextArguments,
+    )):
         unknown_ids = [
             evidence_id
             for evidence_id in arguments.seed_evidence_ids

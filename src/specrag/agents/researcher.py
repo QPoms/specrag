@@ -8,11 +8,18 @@ from specrag.config import AppConfig
 from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
-from specrag.models import CandidateEvidence, NativeFunctionCallOutput, ResearchTask
+from specrag.models import (
+    CandidateEvidence,
+    EvidenceRequirement,
+    NativeFunctionCallOutput,
+    ResearchTask,
+)
 from specrag.retrieval.hybrid import HybridMarkdownRetriever, effective_corpus_scope
 from specrag.retrieval.planner import PlannedRetrievalExecution, PlannedRetrievalTaskResult
 from specrag.tools import (
     ClauseLookupArguments,
+    ClauseNavigationArguments,
+    CrossReferenceLookupArguments,
     ExpandSourceContextArguments,
     HybridSearchArguments,
     HyDESearchArguments,
@@ -56,6 +63,7 @@ class RegistryResearcherService:
         max_tool_calls: int | None = None,
         initial_evidence: tuple[CandidateEvidence, ...] = (),
         initial_active_evidence_ids: tuple[str, ...] = (),
+        initial_evidence_requirements: tuple[EvidenceRequirement, ...] = (),
     ) -> tuple[AgenticRetrievalExecution, dict[str, str]]:
         if not tasks:
             raise ValueError("Researcher requires at least one research task")
@@ -71,6 +79,7 @@ class RegistryResearcherService:
             },
             initial_evidence=initial_evidence,
             initial_active_evidence_ids=initial_active_evidence_ids,
+            initial_evidence_requirements=initial_evidence_requirements,
             max_rounds=self.max_rounds,
             max_total_actions=(
                 max_tool_calls
@@ -106,6 +115,12 @@ def build_retrieval_tool_request(
     semantic_query: str | None = None
     hypothetical_document: str | None = None
     clause: str | None = None
+    clause_relation = None
+    reference_specification = None
+    reference_version = None
+    reference_clause = None
+    include_descendants = False
+    cursor = 0
     if isinstance(arguments, KeywordSearchArguments):
         query = arguments.lexical_query
     elif isinstance(arguments, SemanticSearchArguments):
@@ -120,6 +135,16 @@ def build_retrieval_tool_request(
         semantic_query = arguments.semantic_query
     elif isinstance(arguments, ClauseLookupArguments):
         clause = arguments.clause
+        include_descendants = arguments.include_descendants
+        cursor = arguments.cursor
+    elif isinstance(arguments, ClauseNavigationArguments):
+        clause_relation = arguments.relation
+        cursor = arguments.cursor
+    elif isinstance(arguments, CrossReferenceLookupArguments):
+        reference_specification = arguments.target_specification
+        reference_version = arguments.target_version
+        reference_clause = arguments.target_clause
+        cursor = arguments.cursor
     elif not isinstance(arguments, ExpandSourceContextArguments):
         raise TypeError(f"unsupported retrieval arguments: {type(arguments).__name__}")
     return RetrievalToolRequest(
@@ -134,6 +159,12 @@ def build_retrieval_tool_request(
             getattr(arguments, "target_specifications", ())
         ),
         clause=clause,
+        clause_relation=clause_relation,
+        reference_specification=reference_specification,
+        reference_version=reference_version,
+        reference_clause=reference_clause,
+        include_descendants=include_descendants,
+        cursor=cursor,
         seed_chunk_ids=seeds,
         limit=min(arguments.max_results, result_limit),
     )
@@ -202,6 +233,7 @@ def run_agentic_retrieval_loop(
     shared_context: Mapping[str, Any] | None = None,
     initial_evidence: tuple[CandidateEvidence, ...] = (),
     initial_active_evidence_ids: tuple[str, ...] = (),
+    initial_evidence_requirements: tuple[EvidenceRequirement, ...] = (),
     max_rounds: int = 4,
     max_total_actions: int = 9,
     hits_per_search: int = 8,
@@ -245,6 +277,7 @@ def run_agentic_retrieval_loop(
         initial_evidence,
         active_evidence_ids=initial_active_evidence_ids,
     )
+    evidence_requirements = tuple(initial_evidence_requirements)
     turns: list[AgentRetrievalTurn] = []
     errors: list[str] = []
     signatures: set[tuple[Any, ...]] = set()
@@ -274,6 +307,7 @@ def run_agentic_retrieval_loop(
                 available_specifications=tuple(sorted(available_specs)),
                 available_tools=registry.definitions,
                 ledger=ledger,
+                evidence_requirements=evidence_requirements,
                 shared_context=shared_context,
                 round_number=round_number,
                 max_rounds=max_rounds,
@@ -332,6 +366,7 @@ def run_agentic_retrieval_loop(
                 selection.query_id,
                 selection.retained_evidence_ids,
             )
+        evidence_requirements = review.evidence_requirements
         if proposal.control_call.name == "submit_for_validation":
             turns.append(AgentRetrievalTurn(
                 round_number=round_number,
@@ -367,7 +402,11 @@ def run_agentic_retrieval_loop(
                 call.arguments,
             )
             signatures.add(call_signature(call, arguments))
-            if call.tool == "expand_source_context":
+            if call.tool in {
+                "expand_source_context",
+                "navigate_clause",
+                "cross_reference_lookup",
+            }:
                 expansion_used += 1
             else:
                 search_used += 1
@@ -406,6 +445,7 @@ def run_agentic_retrieval_loop(
                     new_evidence_ids=added,
                     errors=result.errors,
                     tool_result_id=tool_result_id,
+                    next_cursor=result.next_cursor,
                 )
             except Exception as exc:
                 outcome = AgentToolOutcome(
@@ -450,6 +490,7 @@ def run_agentic_retrieval_loop(
                 available_specifications=tuple(sorted(available_specs)),
                 available_tools=registry.definitions,
                 ledger=ledger,
+                evidence_requirements=evidence_requirements,
                 shared_context=shared_context,
                 round_number=finalization_round,
                 max_rounds=max_rounds,
@@ -480,6 +521,9 @@ def run_agentic_retrieval_loop(
                         selection.query_id,
                         selection.retained_evidence_ids,
                     )
+                evidence_requirements = (
+                    proposal.control_call.review.evidence_requirements
+                )
             turns.append(AgentRetrievalTurn(
                 round_number=finalization_round,
                 phase="finalization",
@@ -524,6 +568,7 @@ def run_agentic_retrieval_loop(
         rounds_used=sum(turn.phase == "retrieval" for turn in turns),
         search_actions_used=search_used,
         expansion_actions_used=expansion_used,
+        evidence_requirements=evidence_requirements,
         turns=tuple(turns),
         evidence_execution=evidence,
         candidate_evidence_execution=candidate_evidence,

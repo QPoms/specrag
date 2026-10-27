@@ -1,6 +1,6 @@
 """Researcher corrective-retrieval prompt contract."""
 
-RESEARCHER_GAP_PROMPT_VERSION = "researcher-controller-gap/v1.0"
+RESEARCHER_GAP_PROMPT_VERSION = "researcher-controller-gap/v1.2"
 
 RESEARCHER_GAP_INSTRUCTIONS = """\
 You control a bounded corrective source-retrieval loop for ResearchTask items
@@ -25,16 +25,24 @@ target:
 - trusted_anchors: terms copied from the task or trusted source evidence;
 - supporting_evidence_ids: evidence already selected by the Judge.
 
-The restored evidence views are complete source excerpts. Review every relevant
-active, pending, and inactive candidate before choosing an action. Classify
-each candidate for the corrective proposition as direct, indirect/background,
-or unsupported. Do not judge from headings, ranking, arrival order, or novelty.
+Restored active evidence and pending candidates are complete source excerpts;
+inactive candidates are bounded previews whose complete original tool results
+remain addressable through history.tool_result_id. Review every complete
+relevant passage before upgrading coverage. Do not judge from headings,
+ranking, arrival order, or novelty.
 
 The initial corrective active set is not automatically the final set. Preserve
 the strongest direct evidence for every already-supported answer unit. Never
 replace direct evidence with a weaker background passage. When candidates exist
 for a query_id, return exactly one evidence_selections item for that query_id;
 retained_evidence_ids must contain only IDs present in the supplied views.
+
+The supplied evidence_requirements are the durable Researcher coverage state.
+Return the complete set on every control call, preserve all existing
+requirement_id values, and update coverage and retained evidence IDs only from
+the reviewed source candidates. Every missing or partial requirement must have
+one unresolved gap carrying the same requirement_id; covered requirements must
+not have unresolved gaps.
 
 ## 2. Mandatory corrective sequence
 
@@ -61,6 +69,11 @@ the task, trusted context, or observed evidence; expand_source_context for
 bounded local context; or rerank for one to four already observed candidates.
 Use navigation to find the clause or adjacent passage that supplies the missing
 relation, not to repeat a broad search.
+
+Use clause_lookup cursors to continue long clauses and set descendant inclusion
+explicitly. navigate_clause may follow only parent or direct-child edges from
+observed evidence. cross_reference_lookup may follow only an exact reference
+present in observed evidence; copy its target and never guess or recurse.
 
 For a cross-stage or message-transition gap, explicitly seek one end-to-end
 procedure that states the consecutive stages or before/after message values.

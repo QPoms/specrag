@@ -100,6 +100,9 @@ class SingleResearcherHandler:
                 "initial_active_evidence_ids": (
                     corrective_input.initial_active_evidence_ids
                 ),
+                "initial_evidence_requirements": (
+                    corrective_input.initial_evidence_requirements
+                ),
             }
         execution, query_to_task = self.service.run(
             (running,),
@@ -399,12 +402,45 @@ def researcher_execution_update(
         execution_id=execution_id,
         active_evidence_ids=active_evidence_ids,
     )
+    requirements_by_task = {
+        known_task_id: tuple(
+            item
+            for item in state.get("evidence_requirements", ())
+            if item.task_id == known_task_id
+        )
+        for known_task_id in known_tasks
+    }
+    mapped_requirements = []
+    for requirement in execution.evidence_requirements:
+        mapped_task_id = query_to_task.get(requirement.task_id)
+        if mapped_task_id is None:
+            raise ValueError(
+                "missing research-task mapping for requirement task "
+                + requirement.task_id
+            )
+        mapped_requirements.append(requirement.model_copy(update={
+            "task_id": mapped_task_id,
+            "evidence_ids": tuple(
+                evidence_ids.get(
+                    (requirement.task_id, evidence_id), evidence_id
+                )
+                for evidence_id in requirement.evidence_ids
+            ),
+        }))
+    requirements_by_task[charged_task_id] = tuple(mapped_requirements)
 
     receipts = tuple((*state["model_receipts"], *(
         turn.receipt.model_dump(mode="json") for turn in execution.turns
     )))
     update = {
         "candidate_evidence": tuple(candidates),
+        "evidence_requirements": tuple(
+            requirement
+            for known_task_id in (
+                task.task_id for task in state["research_tasks"]
+            )
+            for requirement in requirements_by_task[known_task_id]
+        ),
         "tool_calls": tuple(calls),
         "researcher_evidence_selections": tuple(selections),
         "task_evidence_sets": tuple(

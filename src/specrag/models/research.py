@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TaskStatus = Literal["pending", "running", "completed", "blocked", "failed"]
 TaskExecutionStatus = Literal["queued", "running", "completed", "failed"]
+RequirementCoverageStatus = Literal["missing", "partial", "covered"]
 GapDimension = Literal[
     "actor",
     "action",
@@ -61,6 +62,28 @@ class ResearchTask(_StrictModel):
     objective: str = Field(min_length=1)
     dependencies: tuple[str, ...] = ()
     status: TaskStatus = "pending"
+
+
+class EvidenceRequirement(_StrictModel):
+    """One task-local proposition tracked by the Researcher."""
+
+    requirement_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    coverage_status: RequirementCoverageStatus
+    evidence_ids: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def _coherent_coverage(self) -> "EvidenceRequirement":
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("requirement evidence IDs must be unique")
+        if self.coverage_status == "missing" and self.evidence_ids:
+            raise ValueError("missing requirement cannot claim evidence")
+        if self.coverage_status != "missing" and not self.evidence_ids:
+            raise ValueError(
+                "partial or covered requirement requires retained evidence"
+            )
+        return self
 
 
 class ResearchTaskExecution(_StrictModel):
@@ -398,6 +421,7 @@ class ResearchWorkerResult(_StrictModel):
     execution_status: Literal["completed", "failed"] = "completed"
     candidate_evidence: tuple[CandidateEvidence, ...] = ()
     active_evidence_ids: tuple[str, ...] = ()
+    evidence_requirements: tuple[EvidenceRequirement, ...] = ()
     tool_calls: tuple[ToolCallRecord, ...] = ()
     evidence_selections: tuple[ResearcherEvidenceSelectionRecord, ...] = ()
     model_receipts: tuple[dict[str, object], ...] = ()
@@ -525,6 +549,7 @@ class ResearchBudget(_StrictModel):
 
 __all__ = [
     "CandidateEvidence",
+    "EvidenceRequirement",
     "EvidenceSynthesis",
     "EvidenceSynthesisDraft",
     "ResearchBudget",
@@ -533,6 +558,7 @@ __all__ = [
     "ResearchRouteDecision",
     "ResearcherStopReason",
     "ResearcherEvidenceSelectionRecord",
+    "RequirementCoverageStatus",
     "ResearchTask",
     "ResearchTaskExecution",
     "TaskEvidenceSet",

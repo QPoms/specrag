@@ -25,8 +25,9 @@ from specrag.models import (
 
 from .adapters import researcher_execution_update
 from .dependencies import build_dependency_context
-from .gap_context import build_corrective_research_input
-from .state import ResearchState, new_research_state
+from .gap_context import build_corrective_research_input, requirements_for_task
+from .gap_context import requirements_in_task_order
+from .state import RUNTIME_COMPAT_KEYS, ResearchState, new_research_state
 from .task_execution import (
     TERMINAL_TASK_STATUSES,
     prepare_task_executions,
@@ -46,13 +47,6 @@ from .workflow import (
     ReceiptCapture,
     RuntimeGuard,
     _receipt_payload,
-)
-
-_RUNTIME_COMPAT_KEYS = (
-    "task_executions",
-    "task_evidence_sets",
-    "judge_review_records",
-    "judge_skipped_task_ids",
 )
 
 class ParallelResearchState(ResearchState):
@@ -101,6 +95,9 @@ class ParallelResearcherHandler:
                 "initial_active_evidence_ids": (
                     corrective_input.initial_active_evidence_ids
                 ),
+                "initial_evidence_requirements": (
+                    corrective_input.initial_evidence_requirements
+                ),
             }
         researcher_execution, query_to_task = self.service.run(
             (running,),
@@ -144,6 +141,9 @@ class ParallelResearcherHandler:
                 item.active_evidence_ids
                 for item in update["task_evidence_sets"]
                 if item.task_id == task.task_id
+            ),
+            evidence_requirements=requirements_for_task(
+                update["evidence_requirements"], task.task_id
             ),
             tool_calls=tuple(
                 call for call in update["tool_calls"] if call.call_id not in old_calls
@@ -199,13 +199,13 @@ class ParallelResearchWorkflow:
         snapshot = self.graph.get_state(config)
         values = getattr(snapshot, "values", None)
         if values and any(
-            key not in values for key in _RUNTIME_COMPAT_KEYS
+            key not in values for key in RUNTIME_COMPAT_KEYS
         ):
             self.graph.update_state(
                 config,
                 {
-                    "schema_version": "research-state/v1.10",
-                    **{key: values.get(key, ()) for key in _RUNTIME_COMPAT_KEYS},
+                    "schema_version": "research-state/v1.11",
+                    **{key: values.get(key, ()) for key in RUNTIME_COMPAT_KEYS},
                 },
             )
         if update:
@@ -238,14 +238,14 @@ def new_parallel_research_state(
 def _normalize_parallel_state(
     state: ParallelResearchState,
 ) -> ParallelResearchState:
-    if all(key in state for key in _RUNTIME_COMPAT_KEYS):
+    if all(key in state for key in RUNTIME_COMPAT_KEYS):
         return state
     return cast(
         ParallelResearchState,
         {
             **state,
-            "schema_version": "research-state/v1.10",
-            **{key: state.get(key, ()) for key in _RUNTIME_COMPAT_KEYS},
+            "schema_version": "research-state/v1.11",
+            **{key: state.get(key, ()) for key in RUNTIME_COMPAT_KEYS},
         },
     )
 
@@ -362,6 +362,12 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
     evidence_sets = {
         item.task_id: item for item in state.get("task_evidence_sets", ())
     }
+    requirements_by_task = {
+        task.task_id: requirements_for_task(
+            state.get("evidence_requirements", ()), task.task_id
+        )
+        for task in tasks
+    }
     new_results = state["researcher_results"][state["researcher_results_processed"] :]
     for result in new_results:
         for candidate in result.candidate_evidence:
@@ -410,8 +416,12 @@ def _fan_in(state: ParallelResearchState) -> dict[str, object]:
             execution_id=result.execution_id,
             active_evidence_ids=result.active_evidence_ids,
         )
+        requirements_by_task[result.task_id] = result.evidence_requirements
     return {
         "candidate_evidence": tuple(existing_candidates),
+        "evidence_requirements": requirements_in_task_order(
+            tasks, requirements_by_task
+        ),
         "tool_calls": tuple(existing_calls),
         "researcher_evidence_selections": tuple(existing_selections),
         "task_evidence_sets": tuple(

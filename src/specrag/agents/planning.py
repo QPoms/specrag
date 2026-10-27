@@ -12,6 +12,7 @@ from specrag.infrastructure.researcher_controller import (
     StructuredResearcherController,
 )
 from specrag.models import (
+    EvidenceRequirement,
     NativeFunctionCallOutput,
     NativeFunctionDefinition,
     ResearchTask,
@@ -100,6 +101,7 @@ def _controller_payload(
     max_evidence_per_question: int,
     history: Sequence[Mapping[str, Any]],
     evidence_views: Mapping[str, Sequence[Mapping[str, Any]]],
+    evidence_requirements: Sequence[EvidenceRequirement],
     finalization_only: bool,
 ) -> dict[str, Any]:
     return {
@@ -122,6 +124,9 @@ def _controller_payload(
             "finalization_only" if finalization_only else "retrieval"
         ),
         "history": [dict(item) for item in history],
+        "evidence_requirements": [
+            item.model_dump(mode="json") for item in evidence_requirements
+        ],
         "active_evidence": [
             dict(item) for item in evidence_views["active_evidence"]
         ],
@@ -237,6 +242,112 @@ def _validate_evidence_selections(
     return tuple(validations)
 
 
+def _validate_evidence_requirements(
+    review: AgentResearchReview | None,
+    *,
+    query_ids: frozenset[str],
+    prior_requirements: Sequence[EvidenceRequirement],
+    ledger: EvidenceLedger,
+) -> tuple[str, ...]:
+    """Validate stable task-local coverage state before it is committed."""
+
+    if review is None:
+        return ()
+    errors: list[str] = []
+    current: dict[tuple[str, str], EvidenceRequirement] = {}
+    for requirement in review.evidence_requirements:
+        key = (requirement.task_id, requirement.requirement_id)
+        if requirement.task_id not in query_ids:
+            errors.append(
+                "evidence requirement references unknown task: "
+                + requirement.task_id
+            )
+        if key in current:
+            errors.append(
+                "duplicate evidence requirement: "
+                + f"{requirement.task_id}/{requirement.requirement_id}"
+            )
+        current[key] = requirement
+        if requirement.task_id in query_ids:
+            unknown = tuple(
+                evidence_id
+                for evidence_id in requirement.evidence_ids
+                if ledger.find(requirement.task_id, evidence_id) is None
+            )
+            if unknown:
+                errors.append(
+                    f"requirement {requirement.requirement_id} references "
+                    "unknown evidence: " + ", ".join(unknown)
+                )
+
+    prior_keys = {
+        (item.task_id, item.requirement_id) for item in prior_requirements
+    }
+    removed = sorted(prior_keys - set(current))
+    if removed:
+        errors.append(
+            "evidence requirements cannot be deleted: "
+            + ", ".join(
+                f"{task_id}/{requirement_id}"
+                for task_id, requirement_id in removed
+            )
+        )
+
+    retained_by_task = {
+        item.query_id: frozenset(item.retained_evidence_ids)
+        for item in review.evidence_selections
+    }
+    for requirement in current.values():
+        not_retained = tuple(
+            evidence_id
+            for evidence_id in requirement.evidence_ids
+            if evidence_id not in retained_by_task.get(
+                requirement.task_id, frozenset()
+            )
+        )
+        if not_retained:
+            errors.append(
+                f"requirement {requirement.requirement_id} evidence is not "
+                "retained in the active set: " + ", ".join(not_retained)
+            )
+
+    gap_keys: set[tuple[str, str]] = set()
+    for gap in review.unresolved_gaps:
+        key = (gap.query_id, gap.requirement_id)
+        if key in gap_keys:
+            errors.append(
+                "duplicate unresolved requirement gap: "
+                + f"{gap.query_id}/{gap.requirement_id}"
+            )
+        gap_keys.add(key)
+        requirement = current.get(key)
+        if requirement is None:
+            errors.append(
+                "unresolved gap references unknown requirement: "
+                + f"{gap.query_id}/{gap.requirement_id}"
+            )
+        elif requirement.coverage_status == "covered":
+            errors.append(
+                "covered requirement cannot remain unresolved: "
+                + f"{gap.query_id}/{gap.requirement_id}"
+            )
+    expected_gaps = {
+        key
+        for key, requirement in current.items()
+        if requirement.coverage_status != "covered"
+    }
+    missing_gaps = sorted(expected_gaps - gap_keys)
+    if missing_gaps:
+        errors.append(
+            "missing unresolved gaps for requirements: "
+            + ", ".join(
+                f"{task_id}/{requirement_id}"
+                for task_id, requirement_id in missing_gaps
+            )
+        )
+    return tuple(errors)
+
+
 def _validate_calls(
     calls: tuple[AgentRetrievalCall, ...],
     *,
@@ -302,6 +413,7 @@ def propose_researcher_turn(
     available_specifications: tuple[str, ...],
     available_tools: tuple[NativeFunctionDefinition, ...],
     ledger: EvidenceLedger,
+    evidence_requirements: Sequence[EvidenceRequirement] = (),
     shared_context: Mapping[str, Any] | None = None,
     round_number: int = 1,
     max_rounds: int = 4,
@@ -333,6 +445,7 @@ def propose_researcher_turn(
         max_evidence_per_question=max_evidence_per_question,
         history=history,
         evidence_views=ledger.selection_payload(),
+        evidence_requirements=evidence_requirements,
         finalization_only=finalization_only,
     )
     control_definitions = researcher_control_definitions()
@@ -374,6 +487,13 @@ def propose_researcher_turn(
             "unresolved gaps contain unknown query IDs: "
             + ", ".join(unknown_gap_ids)
         ))
+    requirement_errors = _validate_evidence_requirements(
+        review,
+        query_ids=query_ids,
+        prior_requirements=evidence_requirements,
+        ledger=ledger,
+    )
+    protocol_errors = (*protocol_errors, *requirement_errors)
     available_specification_set = frozenset(available_specifications)
     trusted_context_by_query = {
         task.task_id: _trusted_call_context(

@@ -8,12 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from specrag.infrastructure.structured_agent import CodexAgentReceipt
 from specrag.models import (
+    EvidenceRequirement,
     NativeFunctionCall,
     NativeFunctionDefinition,
     ResearcherStopReason,
 )
 from specrag.retrieval.planner import PlannedRetrievalExecution
-from specrag.tools import RetrievalToolName
 
 
 class _StrictModel(BaseModel):
@@ -31,6 +31,7 @@ class AgentUnresolvedGap(_StrictModel):
     """One explicit evidence gap remaining for a task answer unit."""
 
     query_id: str = Field(min_length=1)
+    requirement_id: str = Field(min_length=1)
     description: str = Field(min_length=1)
 
 
@@ -38,6 +39,7 @@ class AgentResearchReview(_StrictModel):
     """Evidence review committed before retrieval or downstream submission."""
 
     assessment: str = Field(min_length=1)
+    evidence_requirements: tuple[EvidenceRequirement, ...]
     evidence_selections: tuple[AgentEvidenceSelection, ...]
     unresolved_gaps: tuple[AgentUnresolvedGap, ...]
 
@@ -137,6 +139,7 @@ class AgentToolOutcome(_StrictModel):
     new_evidence_ids: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
     tool_result_id: str | None = None
+    next_cursor: int | None = Field(default=None, ge=0)
 
 
 class AgentRetrievalTurn(_StrictModel):
@@ -158,6 +161,7 @@ class AgenticRetrievalExecution(_StrictModel):
     rounds_used: int = Field(ge=0)
     search_actions_used: int = Field(ge=0)
     expansion_actions_used: int = Field(ge=0)
+    evidence_requirements: tuple[EvidenceRequirement, ...] = ()
     turns: tuple[AgentRetrievalTurn, ...] = ()
     evidence_execution: PlannedRetrievalExecution
     candidate_evidence_execution: PlannedRetrievalExecution | None = None

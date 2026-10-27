@@ -17,6 +17,8 @@ RetrievalToolName = Literal[
     "hyde_search",
     "rerank",
     "clause_lookup",
+    "navigate_clause",
+    "cross_reference_lookup",
     "expand_source_context",
 ]
 ToolStatus = Literal["completed", "partial", "no_hits", "unavailable", "rejected"]
@@ -93,6 +95,24 @@ class RerankArguments(_ToolArguments):
 
 class ClauseLookupArguments(_ScopedToolArguments):
     clause: str = Field(min_length=1, max_length=64)
+    include_descendants: bool
+    cursor: int = Field(ge=0)
+
+
+class ClauseNavigationArguments(_ToolArguments):
+    seed_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    relation: Literal["parent", "children"]
+    cursor: int = Field(ge=0)
+
+
+class CrossReferenceLookupArguments(_ToolArguments):
+    seed_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    target_specification: str | None = Field(
+        pattern=r"^\d{2}\.\d{3}$"
+    )
+    target_version: str | None = Field(pattern=r"^\d+\.\d+\.\d+$")
+    target_clause: str = Field(min_length=1, max_length=64)
+    cursor: int = Field(ge=0)
 
 
 class ExpandSourceContextArguments(_ToolArguments):
@@ -106,6 +126,8 @@ RetrievalToolArguments: TypeAlias = (
     | HyDESearchArguments
     | RerankArguments
     | ClauseLookupArguments
+    | ClauseNavigationArguments
+    | CrossReferenceLookupArguments
     | ExpandSourceContextArguments
 )
 
@@ -120,6 +142,8 @@ RETRIEVAL_TOOL_ARGUMENT_TYPES: dict[
     "hyde_search": HyDESearchArguments,
     "rerank": RerankArguments,
     "clause_lookup": ClauseLookupArguments,
+    "navigate_clause": ClauseNavigationArguments,
+    "cross_reference_lookup": CrossReferenceLookupArguments,
     "expand_source_context": ExpandSourceContextArguments,
 }
 
@@ -143,6 +167,16 @@ class RetrievalToolRequest(_StrictModel):
     hypothetical_document: str | None = Field(default=None, max_length=4000)
     target_specifications: tuple[str, ...] = Field(default=(), max_length=12)
     clause: str | None = Field(default=None, max_length=64)
+    clause_relation: Literal["parent", "children"] | None = None
+    reference_specification: str | None = Field(
+        default=None, pattern=r"^\d{2}\.\d{3}$"
+    )
+    reference_version: str | None = Field(
+        default=None, pattern=r"^\d+\.\d+\.\d+$"
+    )
+    reference_clause: str | None = Field(default=None, max_length=64)
+    include_descendants: bool = False
+    cursor: int = Field(default=0, ge=0)
     seed_chunk_ids: tuple[str, ...] = Field(default=(), max_length=50)
     limit: int = Field(default=8, ge=1, le=50)
 
@@ -199,6 +233,7 @@ class RetrievalToolResult(_StrictModel):
     corpus_scope: CorpusScope
     evidence: tuple[ToolEvidence, ...] = ()
     errors: tuple[str, ...] = ()
+    next_cursor: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _coherent_status(self) -> "RetrievalToolResult":
@@ -227,6 +262,8 @@ class RetrievalTool(Protocol):
 
 __all__ = [
     "ClauseLookupArguments",
+    "ClauseNavigationArguments",
+    "CrossReferenceLookupArguments",
     "ExpandSourceContextArguments",
     "HybridSearchArguments",
     "HyDESearchArguments",

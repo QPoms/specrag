@@ -263,7 +263,11 @@ def _budget_guard(
     ):
         return {"stop_reason": "research_time_budget"}
     budget = state["budget"]
-    if state["iteration"] >= budget.max_iterations:
+    # Corrective attempts are bounded by max_replans and their separate tool
+    # allowance. They must not consume the scheduling waves needed to unlock a
+    # valid dependency chain.
+    scheduling_iterations = state["iteration"] - budget.replans_used
+    if scheduling_iterations >= budget.max_iterations:
         return {"stop_reason": "iteration_budget"}
     completed = {
         task.task_id for task in state["research_tasks"] if task.status == "completed"

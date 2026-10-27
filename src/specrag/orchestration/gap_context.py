@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from specrag.models import CandidateEvidence, ResearchTask
+from specrag.models import CandidateEvidence, EvidenceRequirement, ResearchTask
 
 from .state import ResearchState
 
@@ -16,6 +17,24 @@ class CorrectiveResearchInput:
     shared_context: dict[str, object]
     initial_evidence: tuple[CandidateEvidence, ...]
     initial_active_evidence_ids: tuple[str, ...]
+    initial_evidence_requirements: tuple[EvidenceRequirement, ...]
+
+
+def requirements_for_task(
+    requirements: Sequence[EvidenceRequirement], task_id: str
+) -> tuple[EvidenceRequirement, ...]:
+    return tuple(item for item in requirements if item.task_id == task_id)
+
+
+def requirements_in_task_order(
+    tasks: Sequence[ResearchTask],
+    requirements_by_task: Mapping[str, tuple[EvidenceRequirement, ...]],
+) -> tuple[EvidenceRequirement, ...]:
+    return tuple(
+        requirement
+        for task in tasks
+        for requirement in requirements_by_task[task.task_id]
+    )
 
 
 def build_corrective_research_input(
@@ -76,7 +95,15 @@ def build_corrective_research_input(
         },
         initial_evidence=candidates,
         initial_active_evidence_ids=active_ids,
+        initial_evidence_requirements=requirements_for_task(
+            state.get("evidence_requirements", ()), task.task_id
+        ),
     )
 
 
-__all__ = ["CorrectiveResearchInput", "build_corrective_research_input"]
+__all__ = [
+    "CorrectiveResearchInput",
+    "build_corrective_research_input",
+    "requirements_for_task",
+    "requirements_in_task_order",
+]

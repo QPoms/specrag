@@ -117,6 +117,63 @@ class MarkdownChunk(_StrictModel):
         return self
 
 
+class ClauseReference(_StrictModel):
+    """One deterministically parsed clause reference in source text."""
+
+    raw_text: str = Field(min_length=1)
+    line_number: int = Field(ge=1)
+    target_clause_id: str = Field(min_length=1)
+    target_specification: str | None = Field(
+        default=None, pattern=r"^\d{2}\.\d{3}$"
+    )
+    target_version: str | None = Field(
+        default=None, pattern=r"^\d+\.\d+\.\d+$"
+    )
+    reference_label: str | None = None
+
+
+class ClauseRecord(_StrictModel):
+    """Immutable structural identity and source bounds for one clause."""
+
+    specification: str = Field(pattern=r"^\d{2}\.\d{3}$")
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    release: int = Field(ge=1)
+    source_path: str = Field(min_length=1)
+    document_sha256: str = Field(pattern=r"^[0-9A-F]{64}$")
+    clause_id: str = Field(min_length=1)
+    title: str = ""
+    heading_path: tuple[str, ...]
+    heading_level: int = Field(ge=1, le=6)
+    line_start: int = Field(ge=1)
+    direct_line_end: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    parent_clause_id: str | None = None
+    child_clause_ids: tuple[str, ...] = ()
+    direct_chunk_ids: tuple[str, ...] = ()
+    chunk_ids: tuple[str, ...] = ()
+    cross_references: tuple[ClauseReference, ...] = ()
+
+    @model_validator(mode="after")
+    def _coherent_clause(self) -> "ClauseRecord":
+        if release_from_version(self.version) != self.release:
+            raise ValueError("clause Release does not match its exact version")
+        if self.direct_line_end < self.line_start:
+            raise ValueError("clause direct range precedes its start")
+        if self.line_end < self.direct_line_end:
+            raise ValueError("clause descendant range precedes direct content")
+        for name, values in (
+            ("child clause IDs", self.child_clause_ids),
+            ("direct chunk IDs", self.direct_chunk_ids),
+            ("chunk IDs", self.chunk_ids),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must be unique")
+        unknown_direct = set(self.direct_chunk_ids) - set(self.chunk_ids)
+        if unknown_direct:
+            raise ValueError("direct clause chunks must belong to clause chunks")
+        return self
+
+
 class RetrievalHit(_StrictModel):
     hit_id: str
     chunk_id: str
@@ -192,8 +249,11 @@ class RetrievalExecution(_StrictModel):
 
 
 class RetrievalIndexManifest(_StrictModel):
-    schema_version: Literal["specification-retrieval-index/v1.1"] = (
-        "specification-retrieval-index/v1.1"
+    schema_version: Literal[
+        "specification-retrieval-index/v1.1",
+        "specification-retrieval-index/v1.2",
+    ] = (
+        "specification-retrieval-index/v1.2"
     )
     index_fingerprint: str
     embedding_model: str
@@ -205,6 +265,7 @@ class RetrievalIndexManifest(_StrictModel):
     collection_name: str
     documents: tuple[SourceDocument, ...]
     chunk_count: int
+    clause_count: int = 0
 
     @model_validator(mode="after")
     def _coherent_corpus_scope(self):
@@ -217,6 +278,8 @@ class RetrievalIndexManifest(_StrictModel):
 
 
 __all__ = [
+    "ClauseRecord",
+    "ClauseReference",
     "CorpusScope",
     "CorpusVersionPolicy",
     "MarkdownChunk",

@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-10-25
+Updated: 2026-10-27
 
 ## Current state
 
@@ -19,6 +19,39 @@ authorized Result readback, completion reconciliation, Conversation research
 links, conditional automatic presentation Turn scheduling, Agent execution,
 and reconnectable browser projection are supported through the authenticated
 API. The existing Run research API, CLI, and linked Run views remain supported.
+
+The Researcher now maintains task-local structured Evidence Requirements with
+stable identifiers, missing/partial/covered status, and validated links to its
+active evidence. This coverage state is returned in the existing single
+controller decision, survives parallel fan-in and LangGraph checkpoints, and
+is restored with the prior candidate pool during Judge-gap correction. Active
+and pending evidence retain full excerpts; inactive evidence is injected as a
+bounded preview while the complete original tool result remains in Context
+Harness storage.
+
+Retrieval snapshots now have an additive deterministic Clause Index persisted
+as `clauses.jsonl`. Records bind each clause to Release, exact specification
+version, source hash/ranges, direct and descendant chunks, parent/child edges,
+and source-parsed cross-references (including explicit cited versions). Clause
+lookup supports stable cursor pages and explicit descendant inclusion. The
+Tool Registry also exposes paged parent/child navigation and a separate
+cross-reference lookup that requires observed seed evidence and rejects an
+unconfirmed, ambiguous, absent, or out-of-scope target. Existing chunk IDs,
+vector fingerprints, Validator authority, and frozen Run corpus scope are
+unchanged.
+
+Production Researcher execution now permits four internal retrieval rounds;
+the existing per-task 12-call initial and six-call corrective allowances remain
+independent. Corrective attempts no longer consume the outer scheduling waves
+needed by a valid dependency chain, while `max_replans` and both tool budgets
+continue to bound the workflow. A live API smoke run on 2026-10-27 completed
+the Router, Researcher, hybrid retrieval, Source Validator, Sufficiency Judge,
+and full Synthesizer path with one covered Evidence Requirement, five validated
+candidates, one Judge-selected citation, and no errors. That run also exposed
+and fixed a strict Responses function-schema issue: `evidence_ids` is now
+explicitly required (an empty array for a missing requirement), so every nested
+Researcher control property satisfies the provider contract. The canonical
+gate passes all 333 tests.
 
 The current product research scope is now fixed to Release 17. Research
 submission requires a complete active corpus registry and opens the existing

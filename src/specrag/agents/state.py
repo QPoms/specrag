@@ -257,7 +257,7 @@ class EvidenceLedger:
             ),
             "inactive_candidates": self._payload_for_status(
                 "inactive",
-                excerpt_characters=None,
+                excerpt_characters=240,
             ),
         }
 

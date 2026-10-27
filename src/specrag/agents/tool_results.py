@@ -45,7 +45,13 @@ def planned_hits_from_tool(
             probe_ids=(result.request_id,),
             retrieval_sources=(f"tool:{result.tool_name}",),
             retrieval_hop=(
-                2 if result.tool_name == "expand_source_context" else 1
+                2
+                if result.tool_name in {
+                    "expand_source_context",
+                    "navigate_clause",
+                    "cross_reference_lookup",
+                }
+                else 1
             ),
             semantic_rank=(
                 evidence.rank
@@ -86,6 +92,7 @@ def research_history(turns: list[AgentRetrievalTurn]) -> list[dict[str, Any]]:
         "status": outcome.status,
         "new_evidence_ids": list(outcome.new_evidence_ids),
         "errors": list(outcome.errors),
+        "next_cursor": outcome.next_cursor,
     } for turn in turns for outcome in turn.outcomes]
 
 
@@ -120,6 +127,7 @@ def native_tool_outputs(
                 "new_evidence_ids": list(outcome.new_evidence_ids),
                 "errors": list(outcome.errors),
                 "tool_result_id": outcome.tool_result_id,
+                "next_cursor": outcome.next_cursor,
             }
         outputs.append(NativeFunctionCallOutput(call_id=native_call.call_id, output=content))
     return tuple(outputs)

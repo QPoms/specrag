@@ -22,6 +22,7 @@ from specrag.infrastructure.structured_agent import (
     capture_agent_receipts,
 )
 from specrag.models import (
+    EvidenceRequirement,
     ResearchBudget,
     ResearchGap,
     ResearchPlan,
@@ -104,6 +105,13 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
         rounds_used=1,
         search_actions_used=1,
         expansion_actions_used=0,
+        evidence_requirements=(EvidenceRequirement(
+            requirement_id="R1",
+            task_id=query_id,
+            description="Establish the registration procedure.",
+            coverage_status="covered",
+            evidence_ids=(hit_id,),
+        ),),
         turns=(
             AgentRetrievalTurn(
                 round_number=1,
@@ -112,6 +120,13 @@ def _execution(task_id: str) -> AgenticRetrievalExecution:
                     name="update_research_state",
                     review=AgentResearchReview(
                         assessment="Evidence found.",
+                        evidence_requirements=(EvidenceRequirement(
+                            requirement_id="R1",
+                            task_id=query_id,
+                            description="Establish the registration procedure.",
+                            coverage_status="covered",
+                            evidence_ids=(hit_id,),
+                        ),),
                         evidence_selections=(),
                         unresolved_gaps=(),
                     ),
@@ -151,6 +166,7 @@ class _FakeService:
         max_tool_calls,
         initial_evidence=(),
         initial_active_evidence_ids=(),
+        initial_evidence_requirements=(),
     ):
         task_id = tasks[0].task_id
         self.calls.append(task_id)
@@ -516,7 +532,7 @@ def test_incomplete_predecessor_replans_before_dependent_task() -> None:
             research_id="dependency-replan-test",
             user_question="Retry a predecessor before its dependent task.",
             budget=ResearchBudget(
-                max_iterations=4,
+                max_iterations=2,
                 max_tool_calls=1,
                 max_gap_tool_calls=1,
                 max_replans=1,

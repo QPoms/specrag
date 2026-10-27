@@ -57,11 +57,20 @@ def _review_call(
     retained: tuple[str, ...] = (),
     assessment: str = "Review the evidence and address the remaining gap.",
 ) -> NativeFunctionCall:
+    covered = submit and bool(retained)
+    coverage_status = "covered" if covered else "partial" if retained else "missing"
     return NativeFunctionCall(
         call_id="control-submit" if submit else "control-update",
         name=("submit_for_validation" if submit else "update_research_state"),
         arguments={
             "assessment": assessment,
+            "evidence_requirements": [{
+                "requirement_id": "R1",
+                "task_id": "Q1",
+                "description": "Establish the normative registration procedure.",
+                "coverage_status": coverage_status,
+                "evidence_ids": list(retained),
+            }],
             "evidence_selections": (
                 [{
                     "query_id": "Q1",
@@ -71,8 +80,9 @@ def _review_call(
             ),
             "unresolved_gaps": (
                 []
-                if submit else [{
+                if covered else [{
                     "query_id": "Q1",
+                    "requirement_id": "R1",
                     "description": "The normative procedure remains unsupported.",
                 }]
             ),
@@ -97,7 +107,11 @@ def _search_call(
             "semantic_query": "registration procedure",
         })
     elif tool == "clause_lookup":
-        arguments["clause"] = "5.1"
+        arguments.update({
+            "clause": "5.1",
+            "include_descendants": False,
+            "cursor": 0,
+        })
     return NativeFunctionCall(
         call_id=call_id,
         name=tool,
@@ -218,7 +232,7 @@ def _config() -> AppConfig:
 
 
 def test_researcher_prompt_uses_evidence_gap_paths_in_order() -> None:
-    assert RESEARCHER_CONTROLLER_PROMPT_VERSION == "researcher-controller/v2.3"
+    assert RESEARCHER_CONTROLLER_PROMPT_VERSION == "researcher-controller/v2.5"
     assert "Judge-gap corrective rounds" not in RESEARCHER_CONTROLLER_INSTRUCTIONS
     assert "Update Active Evidence" in RESEARCHER_CONTROLLER_INSTRUCTIONS
     assert "Corrective input and evidence semantics" in RESEARCHER_GAP_INSTRUCTIONS
@@ -226,7 +240,7 @@ def test_researcher_prompt_uses_evidence_gap_paths_in_order() -> None:
     assert "### Path A: existing evidence" in RESEARCHER_GAP_INSTRUCTIONS
     assert "### Path B: source navigation" in RESEARCHER_GAP_INSTRUCTIONS
     assert "### Path C: new search" in RESEARCHER_GAP_INSTRUCTIONS
-    assert RESEARCHER_GAP_PROMPT_VERSION == "researcher-controller-gap/v1.0"
+    assert RESEARCHER_GAP_PROMPT_VERSION == "researcher-controller-gap/v1.2"
 
 
 def test_evidence_gap_uses_dedicated_prompt_contract() -> None:
@@ -343,6 +357,10 @@ def test_native_tool_result_is_replayed_on_next_round() -> None:
     assert len(tool.requests) == 1
     assert result.search_actions_used == 1
     assert result.stop_reason == "submitted_for_validation"
+    assert result.evidence_requirements[0].requirement_id == "R1"
+    assert agent.calls[1]["input_payload"]["evidence_requirements"][0][
+        "requirement_id"
+    ] == "R1"
     outputs = agent.calls[1]["prior_outputs"]
     assert {output.call_id for output in outputs} == {
         "control-update",

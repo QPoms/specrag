@@ -7,6 +7,7 @@ from typing import Annotated, Literal, TypedDict
 
 from specrag.models import (
     CandidateEvidence,
+    EvidenceRequirement,
     EvidenceSynthesis,
     JudgeReviewRecord,
     ResearchBudget,
@@ -27,10 +28,19 @@ from specrag.models import (
 )
 
 
+RUNTIME_COMPAT_KEYS = (
+    "task_executions",
+    "evidence_requirements",
+    "task_evidence_sets",
+    "judge_review_records",
+    "judge_skipped_task_ids",
+)
+
+
 class ResearchState(TypedDict):
     schema_version: Literal[
         "research-state/v1.7", "research-state/v1.8", "research-state/v1.9",
-        "research-state/v1.10"
+        "research-state/v1.10", "research-state/v1.11"
     ]
     research_id: str
     user_question: str
@@ -40,6 +50,7 @@ class ResearchState(TypedDict):
     research_tasks: tuple[ResearchTask, ...]
     task_executions: tuple[ResearchTaskExecution, ...]
     candidate_evidence: tuple[CandidateEvidence, ...]
+    evidence_requirements: tuple[EvidenceRequirement, ...]
     source_validations: tuple[SourceValidationResult, ...]
     validated_evidence: tuple[ValidatedEvidence, ...]
     sufficiency_assessments: tuple[TaskSufficiencyAssessment, ...]
@@ -85,7 +96,7 @@ def new_research_state(
     if not user_question.strip():
         raise ValueError("user_question must not be blank")
     return ResearchState(
-        schema_version="research-state/v1.10",
+        schema_version="research-state/v1.11",
         research_id=research_id,
         user_question=user_question,
         route="plan",
@@ -94,6 +105,7 @@ def new_research_state(
         research_tasks=(),
         task_executions=(),
         candidate_evidence=(),
+        evidence_requirements=(),
         source_validations=(),
         validated_evidence=(),
         sufficiency_assessments=(),
@@ -121,4 +133,4 @@ def new_research_state(
     )
 
 
-__all__ = ["ResearchState", "new_research_state"]
+__all__ = ["RUNTIME_COMPAT_KEYS", "ResearchState", "new_research_state"]

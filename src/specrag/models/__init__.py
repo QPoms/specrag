@@ -80,6 +80,7 @@ from .memory import (
 
 from .research import (
     CandidateEvidence,
+    EvidenceRequirement,
     EvidenceSynthesis,
     EvidenceSynthesisDraft,
     GapDimension,
@@ -91,6 +92,7 @@ from .research import (
     ResearchRouteDecision,
     ResearcherStopReason,
     ResearcherEvidenceSelectionRecord,
+    RequirementCoverageStatus,
     ResearchTask,
     ResearchTaskExecution,
     ResearchWorkerResult,
@@ -168,6 +170,7 @@ from .mcp import (
 
 __all__ = [
     "CandidateEvidence",
+    "EvidenceRequirement",
     "EvidenceSynthesis",
     "EvidenceSynthesisDraft",
     "GapDimension",
@@ -179,6 +182,7 @@ __all__ = [
     "ResearchRouteDecision",
     "ResearcherStopReason",
     "ResearcherEvidenceSelectionRecord",
+    "RequirementCoverageStatus",
     "ResearchTask",
     "ResearchTaskExecution",
     "ResearchWorkerResult",

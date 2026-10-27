@@ -24,8 +24,11 @@ _MARKDOWN_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s+.*$")
 
 
 @dataclass(frozen=True)
-class _Section:
+class MarkdownSection:
+    """One Markdown heading and its direct (non-descendant) source lines."""
+
     heading_path: tuple[str, ...]
+    heading_level: int
     first_line: int
     lines: tuple[str, ...]
 
@@ -206,14 +209,16 @@ def discover_all_source_documents(
     return tuple(documents)
 
 
-def _sections(lines: tuple[str, ...], *, skip_preamble: bool) -> tuple[_Section, ...]:
+def parse_markdown_sections(
+    lines: tuple[str, ...], *, skip_preamble: bool
+) -> tuple[MarkdownSection, ...]:
     starts = [index for index, line in enumerate(lines) if _HEADING.match(line)]
     if not starts:
-        return (_Section((), 0, lines),) if lines else ()
-    sections: list[_Section] = []
+        return (MarkdownSection((), 0, 0, lines),) if lines else ()
+    sections: list[MarkdownSection] = []
     hierarchy: list[str] = []
     if not skip_preamble and starts[0] > 0:
-        sections.append(_Section((), 0, lines[:starts[0]]))
+        sections.append(MarkdownSection((), 0, 0, lines[:starts[0]]))
     for position, start in enumerate(starts):
         match = _HEADING.match(lines[start])
         assert match is not None
@@ -221,12 +226,14 @@ def _sections(lines: tuple[str, ...], *, skip_preamble: bool) -> tuple[_Section,
         hierarchy = hierarchy[: level - 1]
         hierarchy.append(match.group(2).strip())
         end = starts[position + 1] if position + 1 < len(starts) else len(lines)
-        sections.append(_Section(tuple(hierarchy), start, lines[start:end]))
+        sections.append(MarkdownSection(
+            tuple(hierarchy), level, start, lines[start:end]
+        ))
     return tuple(sections)
 
 
 def _window_section(
-    section: _Section,
+    section: MarkdownSection,
     *,
     max_characters: int,
     overlap_characters: int,
@@ -296,7 +303,7 @@ def chunk_source_documents(
     for document in documents:
         source = ROOT / document.source_path
         lines = tuple(source.read_text(encoding="utf-8").splitlines())
-        sections = _sections(
+        sections = parse_markdown_sections(
             lines,
             skip_preamble=document.source_collection == "3gpp_markdown",
         )
@@ -358,6 +365,8 @@ __all__ = [
     "discover_all_source_documents",
     "discover_source_documents",
     "evidence_body_text",
+    "MarkdownSection",
+    "parse_markdown_sections",
     "relative_repository_path",
     "repository_path",
 ]

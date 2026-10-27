@@ -12,6 +12,7 @@ from specrag.agents.models import (
 from specrag.infrastructure.structured_agent import CodexAgentReceipt
 from specrag.models import (
     CandidateEvidence,
+    EvidenceRequirement,
     ResearchBudget,
     ResearchGap,
     ResearchPlan,
@@ -133,6 +134,13 @@ def _execution() -> AgenticRetrievalExecution:
                 name="update_research_state",
                 review=AgentResearchReview(
                     assessment="Evidence found.",
+                    evidence_requirements=(EvidenceRequirement(
+                        requirement_id="R1",
+                        task_id="Q1",
+                        description="Establish the registration trigger.",
+                        coverage_status="covered",
+                        evidence_ids=("E-Q1:1",),
+                    ),),
                     evidence_selections=(AgentEvidenceSelection(
                         query_id="Q1",
                         retained_evidence_ids=("E-Q1:1",),
@@ -351,6 +359,7 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
             self.shared_context = {}
             self.initial_evidence = ()
             self.initial_active_evidence_ids = ()
+            self.initial_evidence_requirements = ()
 
         def run(
             self,
@@ -360,11 +369,13 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
             max_tool_calls,
             initial_evidence=(),
             initial_active_evidence_ids=(),
+            initial_evidence_requirements=(),
         ):
             self.max_tool_calls = max_tool_calls
             self.shared_context = shared_context
             self.initial_evidence = initial_evidence
             self.initial_active_evidence_ids = initial_active_evidence_ids
+            self.initial_evidence_requirements = initial_evidence_requirements
             return _execution(), {"Q1": tasks[0].task_id}
 
     gap = ResearchGap(
@@ -397,6 +408,13 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
     ),)
     state["gaps"] = (gap,)
     state["candidate_evidence"] = (_candidate("E1"),)
+    state["evidence_requirements"] = (EvidenceRequirement(
+        requirement_id="R1",
+        task_id="T1",
+        description="Establish the normative trigger.",
+        coverage_status="partial",
+        evidence_ids=("E1",),
+    ),)
     state["source_validations"] = (SourceValidationResult(
         evidence_id="E1",
         valid=True,
@@ -420,6 +438,7 @@ def test_judge_gap_receives_independent_corrective_budget() -> None:
         "E1",
     )
     assert service.initial_active_evidence_ids == ("E1",)
+    assert service.initial_evidence_requirements == state["evidence_requirements"]
     assert update["budget"].initial_tool_calls_used_for("T1") == 1
     assert update["budget"].gap_tool_calls_used_for("T1") == 1
     assert update["budget"].tool_calls_used_for("T1") == 2
@@ -581,6 +600,7 @@ def test_insufficient_evidence_routes_gap_back_to_researcher() -> None:
             max_tool_calls,
             initial_evidence=(),
             initial_active_evidence_ids=(),
+            initial_evidence_requirements=(),
         ):
             self.contexts.append(shared_context)
             return _execution(), {"Q1": tasks[0].task_id}

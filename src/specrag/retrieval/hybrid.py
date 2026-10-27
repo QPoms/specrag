@@ -20,9 +20,11 @@ from .corpus import (
     relative_repository_path,
     repository_path,
 )
+from .clauses import ClauseIndex, build_clause_records
 from .fusion import reciprocal_rank_fusion
 from .index import (
     index_fingerprint,
+    load_clauses,
     load_chunks,
     searchable_text,
     vector_cache_fingerprint,
@@ -70,8 +72,10 @@ class HybridMarkdownRetriever:
                 self.fingerprint = compatible_manifest.index_fingerprint
         self.index_manifest_path = relative_repository_path(snapshot / "manifest.json")
         chunks_path = snapshot / "chunks.jsonl"
+        clauses_path = snapshot / "clauses.jsonl"
         manifest_path = snapshot / "manifest.json"
         cached_chunks: tuple[MarkdownChunk, ...] | None = None
+        cached_clauses = None
         if chunks_path.is_file() and manifest_path.is_file():
             try:
                 cached_manifest = RetrievalIndexManifest.model_validate_json(
@@ -83,6 +87,13 @@ class HybridMarkdownRetriever:
                     and cached_manifest.chunk_count == len(loaded_chunks)
                 ):
                     cached_chunks = loaded_chunks
+                    if clauses_path.is_file():
+                        try:
+                            loaded_clauses = load_clauses(clauses_path)
+                        except (OSError, ValueError):
+                            loaded_clauses = ()
+                        if cached_manifest.clause_count == len(loaded_clauses):
+                            cached_clauses = loaded_clauses
             except (OSError, ValueError):
                 cached_chunks = None
         if cached_chunks is None and not allow_index_build:
@@ -90,6 +101,10 @@ class HybridMarkdownRetriever:
                 "retrieval index is not ready: chunk snapshot is missing"
             )
         self.chunks = cached_chunks or chunk_source_documents(self.documents, cfg)
+        self.clauses = cached_clauses or build_clause_records(
+            self.documents, self.chunks
+        )
+        self.clause_index = ClauseIndex(self.clauses, self.chunks)
         manifest = RetrievalIndexManifest(
             index_fingerprint=self.fingerprint,
             embedding_model=cfg.embedding_model,
@@ -101,9 +116,10 @@ class HybridMarkdownRetriever:
             collection_name="specification_evidence",
             documents=self.documents,
             chunk_count=len(self.chunks),
+            clause_count=len(self.clauses),
         )
-        if cached_chunks is None:
-            write_snapshot(snapshot, self.chunks, manifest)
+        if allow_index_build and (cached_chunks is None or cached_clauses is None):
+            write_snapshot(snapshot, self.chunks, manifest, self.clauses)
         self.chunk_by_id = {item.chunk_id: item for item in self.chunks}
         self.bm25 = BM25Index(self.chunks)
         self.active_document_hashes = tuple(sorted({
