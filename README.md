@@ -334,6 +334,50 @@ and report both the new score and its delta from this baseline.
 
 ## End-to-end and efficiency evaluation
 
+The active final-answer Benchmark V1 composes the same 50 questions with
+reviewed Reference Answers and Answer Units, self-reviewed weighted Rubrics,
+known-sufficient non-exclusive Gold Evidence, and the exact 34-document Release
+17 Environment. It classifies only `simple` (34) and `complex` (16), freezes
+one trial per case, and exposes a leakage-safe Workflow input containing only
+the task ID, Question, and Environment. Validate it with:
+
+```powershell
+uv run python scripts/check_end_to_end_benchmark.py
+```
+
+The Benchmark contract and curation rules are documented in
+[`docs/end_to_end_benchmark.md`](docs/end_to_end_benchmark.md) and
+[`docs/plans/044-final-answer-benchmark.md`](docs/plans/044-final-answer-benchmark.md).
+The complete 50-case human-review view is available as one checked-in file at
+[`data/QA/end_to_end_benchmark_review.json`](data/QA/end_to_end_benchmark_review.json);
+the canonical check guarantees that it matches the composed source data.
+The final-answer Judge has frozen its prompt as
+`final-answer-rubric-judge/v1.0` in
+[`src/specrag/prompts/rubric_judge.py`](src/specrag/prompts/rubric_judge.py).
+It judges only Question, Reference Answer, Rubric, and Candidate Answer and
+returns ordered item bands rather than model-authored scores. Strict models
+reject missing, duplicate, or reordered Rubric IDs and Candidate support that
+is not present after whitespace normalization. Application code attaches each
+Benchmark weight, maps `full/partial/none` to `1.0/0.5/0.0`, and calculates the
+0-100 score. The saved-answer batch runner is implemented; manual calibration
+remains pending. See
+[`docs/plans/045-final-answer-judge.md`](docs/plans/045-final-answer-judge.md).
+
+The bounded execution policy is also implemented. A blank Workflow answer
+bypasses the model and deterministically receives zero with every item marked
+`none`. A non-empty answer receives at most two top-level Judge attempts over
+the same immutable input. If both attempts fail validation or the provider
+fails, the execution records `evaluation_failed` with a null score instead of
+misreporting a zero; the saved answer can be judged again without rerunning the
+Research Workflow. Manual calibration remains pending.
+
+Saved Workflow artifacts can now be scored without rerunning research through
+`scripts/evaluate_final_answer_benchmark.py`. The runner supports `simple`,
+`complex`, or all frozen cases, resumable outputs, an API or isolated Codex
+backend, source-artifact hash freezing, per-case execution records, and overall
+plus difficulty-level score summaries. Generated judgments remain under the
+ignored `artifacts/` tree.
+
 The end-to-end baseline uses the same 50 answerable Release 17 questions but does not
 inject reviewed intermediate tasks or evidence. Its only quality aggregate is
 `Task Success Rate`: a Run must produce a normal answer, answer the core

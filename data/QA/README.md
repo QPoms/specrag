@@ -1,7 +1,9 @@
 # Release 17 development questions
 
 This directory contains the small, manually verified question set used to
-improve Specrag's end-to-end research behavior. It is not a formal benchmark.
+improve Specrag's end-to-end research behavior. It now backs the internal
+`specrag-release17-final-answer` Benchmark V1, but remains development data
+rather than a hidden, independently adjudicated academic benchmark.
 
 `questions.jsonl` is the curated development question set. The
 `component_*_pilot*.jsonl` files are the reviewed component-evaluation
@@ -18,6 +20,20 @@ retain the smaller reviewed calibration slice and evidence-path pilot.
 Complete upstream snapshots may be downloaded into
 `telco-dpr/` and `mm-telcobench/`; both directories are local inputs ignored by
 Git.
+
+`end_to_end_benchmark.json` freezes the Benchmark source hashes and exact
+Release 17 Environment. `end_to_end_rubrics.jsonl` adds the self-reviewed
+positive weights for all 50 Answer Unit sets. The active loader composes these
+with `questions.jsonl` and `component_evaluation_release17.jsonl`; it does not
+copy Reference Answers or Gold Evidence into a parallel authority. See
+`docs/end_to_end_benchmark.md` for the full contract.
+`end_to_end_benchmark_review.json` materializes that composition into one
+checked-in, human-readable file for convenient review. Its cases come first;
+each case groups the question, answer, Rubric, Gold Evidence, and relevant
+specification versions, while the full execution Environment remains at the
+end. Regenerate it with
+`uv run python scripts/export_end_to_end_benchmark.py`; the Benchmark checker
+fails if the review file differs from the canonical composition.
 
 A component record may be promoted to `reviewed` only when it also records a
 non-empty `reviewed_by` value and a timezone-aware `reviewed_at` timestamp.

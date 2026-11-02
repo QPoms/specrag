@@ -1,8 +1,48 @@
 # Current project status
 
-Updated: 2026-10-27
+Updated: 2026-11-02
 
 ## Current state
+
+The final-answer Benchmark V1 is now frozen as
+`specrag-release17-final-answer` version `1.0.0`. It composes the existing 50
+Release 17 questions (34 simple, 16 complex), reviewed Reference Answers and
+Answer Units, 129 positive weighted Rubric items with full/partial/none bands,
+72 known-sufficient non-exclusive Gold Evidence passages, and the exact
+34-document corpus Environment. Only task ID, Question, and Environment are
+projected into the backend Research Workflow; evaluator-only reference,
+Rubric, and Gold data are structurally excluded. Source hashes, document
+hashes, index fingerprint, case counts, weights, mappings, and evidence scope
+fail closed in the standalone and canonical checks. The canonical gate passes
+the structure check, both dataset checks, and all 354 tests.
+For human review, the complete normalized Benchmark is also materialized in
+one checked-in `data/QA/end_to_end_benchmark_review.json` file. A deterministic
+exporter owns that projection, and the canonical Benchmark check rejects it if
+it becomes stale or diverges from the composed sources. The review layout is
+case-first: each question groups its answer, Rubric, Gold Evidence, and exact
+relevant specification versions; the full execution Environment is retained
+once at the end.
+
+The final-answer Judge Prompt contract is frozen as
+`final-answer-rubric-judge/v1.0`. It accepts only Question, Reference Answer,
+Rubric, and Candidate Answer; excludes Environment, Gold Evidence, citations,
+and Workflow traces; and requires one ordered `full`, `partial`, or `none`
+assessment with verbatim Candidate support and a reason for every Rubric Item.
+It explicitly forbids model-authored weights or scores. Provider-neutral
+strict models now enforce complete, unique, ordered Rubric IDs, the
+full/partial/none support policy, and Candidate support substrings after
+whitespace normalization. Deterministic application code attaches frozen
+Benchmark weights, calculates item scores at 1.0/0.5/0.0, sums the 0-100 total,
+and places `score` before `rubric_assessments` in the formal record. The
+bounded execution policy is now implemented: blank answers deterministically
+score zero without a model call; non-empty answers receive at most two
+top-level Judge attempts using the same immutable input; and two invalid or
+failed calls produce `evaluation_failed` with a null score rather than a false
+zero. Attempt count and sanitized failure types are retained, while unexpected
+programming errors remain visible. A resumable saved-answer runner now freezes
+source-artifact hashes, supports simple/complex selection and API or isolated
+Codex judging, and reports overall and per-difficulty scores without rerunning
+research. Calibration remains pending.
 
 The implemented product is now a conversation-centered local 3GPP research
 workspace with an authenticated multi-user API, durable Run/Worker lifecycle,

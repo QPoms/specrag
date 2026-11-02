@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from check_qa_dataset import main as check_qa_dataset
+from check_end_to_end_benchmark import main as check_end_to_end_benchmark
 from check_structure import main as check_structure
 
 
@@ -26,6 +27,9 @@ def main() -> int:
     qa_status = check_qa_dataset()
     if qa_status != 0:
         return qa_status
+    benchmark_status = check_end_to_end_benchmark()
+    if benchmark_status != 0:
+        return benchmark_status
     return int(pytest.main(["-p", "no:cacheprovider", "-q"]))
 
 
