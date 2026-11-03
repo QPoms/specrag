@@ -282,7 +282,7 @@ def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> Non
         manifest["comparison"]
     )
     assert [item.model_id for item in comparison.model_targets] == [
-        "gpt-6-astra",
+        "gpt-5.6-sol",
     ]
     assert comparison.judge_model == "deepseek-v4-pro"
     assert manifest["execution"]["fallback_models"] == []
@@ -292,8 +292,8 @@ def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> Non
         "reasoning_effort": None,
         "supports_native_tools": False,
     }
-    assert manifest["transports"]["candidates"]["gpt-6-astra"] == {
-        "model_id": "gpt-6-astra",
+    assert manifest["transports"]["candidates"]["gpt-5.6-sol"] == {
+        "model_id": "gpt-5.6-sol",
         "structured_api_mode": "responses",
         "reasoning_effort": "high",
         "supports_native_tools": True,

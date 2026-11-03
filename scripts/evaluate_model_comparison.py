@@ -59,7 +59,7 @@ from specrag.models import ResearchBudget
 from specrag.prompts import FINAL_ANSWER_JUDGE_PROMPT_VERSION
 
 
-REQUIRED_MODELS = ("gpt-6-astra",)
+REQUIRED_MODELS = ("gpt-5.6-sol",)
 OPTIONAL_MODELS: tuple[str, ...] = ()
 JUDGE_MODEL = "deepseek-v4-pro"
 

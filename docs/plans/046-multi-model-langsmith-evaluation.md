@@ -12,7 +12,7 @@ final-answer Rubric Judge.
 The first experiment runs every selected Benchmark case once with each active
 candidate model:
 
-- required: `gpt-6-astra`
+- required: `gpt-5.6-sol`
 
 The fixed final-answer Judge is `deepseek-v4-pro`. The experiment records Judge
 scores and execution statistics only. It does not calculate Task Success,
