@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any, Literal
 
@@ -350,10 +351,14 @@ def _probe_artifact(
     *,
     result: Mapping[str, Any],
     binding: Mapping[str, str],
+    attempt_count: int = 1,
 ) -> dict[str, object]:
+    if attempt_count < 1:
+        raise ValueError("probe attempt count must be positive")
     return {
         "schema_version": "specrag.model-probe-artifact/v1",
         "binding": dict(binding),
+        "attempt_count": attempt_count,
         "result": dict(result),
     }
 
@@ -426,6 +431,7 @@ def probe_experiment(
     *,
     timeout_seconds: int,
     agent_factory: Callable[[str, int, ModelTransportProfile], Any] = _agent_factory,
+    retry_sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Probe every candidate and the fixed Judge, persisting secret-free results."""
 
@@ -436,20 +442,25 @@ def probe_experiment(
     manifest_path = experiment_directory / "manifest.json"
     _freeze_json(manifest_path, manifest)
     concurrency = _manifest_concurrency(manifest)
+    max_provider_retries = _manifest_provider_retries(manifest)
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = tuple(
             executor.submit(
-                _probe_candidate,
+                _probe_candidate_with_retries,
                 target,
                 transport_profile=candidate_transports[target.model_id],
                 timeout_seconds=timeout_seconds,
                 agent_factory=agent_factory,
+                max_provider_retries=max_provider_retries,
+                retry_sleep=retry_sleep,
             )
             for target in comparison.model_targets
         )
         results = tuple(future.result() for future in futures)
     failures = False
-    for target, result in zip(comparison.model_targets, results, strict=True):
+    for target, (result, attempt_count) in zip(
+        comparison.model_targets, results, strict=True
+    ):
         _freeze_json(
             _probe_path(experiment_directory, target.model_id),
             _probe_artifact(
@@ -459,25 +470,19 @@ def probe_experiment(
                     manifest_path=manifest_path,
                     transport_profile=candidate_transports[target.model_id],
                 ),
+                attempt_count=attempt_count,
             ),
         )
         failures = failures or (target.required and result.status != "ready")
 
-    try:
-        judge_agent = agent_factory(
-            comparison.judge_model, timeout_seconds, judge_transport
-        )
-        judge_payload = _probe_judge(judge_agent, comparison.judge_model)
-    except Exception as exc:  # noqa: BLE001 - safe probe projection below
-        judge_payload = {
-            "schema_version": "specrag.judge-model-probe/v1",
-            "model_id": comparison.judge_model,
-            "status": "unavailable",
-            "failure_kind": str(
-                getattr(exc, "failure_kind", "configuration")
-            )[:200],
-            "message": "The fixed Judge probe could not be initialized.",
-        }
+    judge_payload, judge_attempt_count = _probe_judge_with_retries(
+        model_id=comparison.judge_model,
+        transport_profile=judge_transport,
+        timeout_seconds=timeout_seconds,
+        agent_factory=agent_factory,
+        max_provider_retries=max_provider_retries,
+        retry_sleep=retry_sleep,
+    )
     _freeze_json(
         _judge_probe_path(experiment_directory),
         _probe_artifact(
@@ -487,6 +492,7 @@ def probe_experiment(
                 manifest_path=manifest_path,
                 transport_profile=judge_transport,
             ),
+            attempt_count=judge_attempt_count,
         ),
     )
     failures = failures or judge_payload["status"] != "ready"
@@ -561,6 +567,70 @@ def _probe_candidate(
     )
 
 
+_RETRYABLE_PROBE_FAILURES = frozenset({
+    "provider_unavailable", "rate_limited", "retryable_transient", "timeout",
+})
+
+
+def _probe_candidate_with_retries(
+    target: ModelTarget,
+    *,
+    transport_profile: ModelTransportProfile,
+    timeout_seconds: int,
+    agent_factory: Callable[[str, int, ModelTransportProfile], Any],
+    max_provider_retries: int,
+    retry_sleep: Callable[[float], None],
+) -> tuple[ModelProbeResult, int]:
+    for attempt in range(1, max_provider_retries + 2):
+        result = _probe_candidate(
+            target,
+            transport_profile=transport_profile,
+            timeout_seconds=timeout_seconds,
+            agent_factory=agent_factory,
+        )
+        if (
+            result.status == "ready"
+            or result.failure_kind not in _RETRYABLE_PROBE_FAILURES
+            or attempt > max_provider_retries
+        ):
+            return result, attempt
+        retry_sleep(min(60.0, 5.0 * (2 ** (attempt - 1))))
+    raise AssertionError("candidate probe retry loop did not terminate")
+
+
+def _probe_judge_with_retries(
+    *,
+    model_id: str,
+    transport_profile: ModelTransportProfile,
+    timeout_seconds: int,
+    agent_factory: Callable[[str, int, ModelTransportProfile], Any],
+    max_provider_retries: int,
+    retry_sleep: Callable[[float], None],
+) -> tuple[dict[str, object], int]:
+    for attempt in range(1, max_provider_retries + 2):
+        try:
+            agent = agent_factory(model_id, timeout_seconds, transport_profile)
+            payload = _probe_judge(agent, model_id)
+        except Exception as exc:  # noqa: BLE001 - safe probe projection below
+            payload = {
+                "schema_version": "specrag.judge-model-probe/v1",
+                "model_id": model_id,
+                "status": "unavailable",
+                "failure_kind": str(
+                    getattr(exc, "failure_kind", "configuration")
+                )[:200],
+                "message": "The fixed Judge probe could not be initialized.",
+            }
+        if (
+            payload["status"] == "ready"
+            or payload.get("failure_kind") not in _RETRYABLE_PROBE_FAILURES
+            or attempt > max_provider_retries
+        ):
+            return payload, attempt
+        retry_sleep(min(60.0, 5.0 * (2 ** (attempt - 1))))
+    raise AssertionError("Judge probe retry loop did not terminate")
+
+
 def _manifest_concurrency(manifest: Mapping[str, Any]) -> int:
     execution = manifest.get("execution")
     if not isinstance(execution, Mapping):
@@ -568,6 +638,16 @@ def _manifest_concurrency(manifest: Mapping[str, Any]) -> int:
     value = execution.get("max_concurrent_models", 2)
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError("manifest max_concurrent_models must be a positive integer")
+    return value
+
+
+def _manifest_provider_retries(manifest: Mapping[str, Any]) -> int:
+    execution = manifest.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ValueError("experiment manifest is missing execution settings")
+    value = execution.get("max_provider_retries")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("manifest max_provider_retries must be non-negative")
     return value
 
 

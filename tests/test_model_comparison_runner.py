@@ -403,6 +403,46 @@ def test_candidate_probes_run_with_frozen_model_concurrency(
     assert maximum == 2
 
 
+def test_candidate_probe_retries_only_transient_provider_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcomes = iter((
+        ModelProbeResult(
+            model_id="gpt-6-astra",
+            status="unavailable",
+            failure_kind="rate_limited",
+            message="retry",
+        ),
+        ModelProbeResult(
+            model_id="gpt-6-astra",
+            status="unavailable",
+            failure_kind="retryable_transient",
+            message="retry",
+        ),
+        ModelProbeResult(
+            model_id="gpt-6-astra",
+            status="ready",
+            observed_model="gpt-6-astra",
+            message="ready",
+        ),
+    ))
+    monkeypatch.setattr(runner, "_probe_candidate", lambda *args, **kwargs: next(outcomes))
+    delays: list[float] = []
+
+    result, attempts = runner._probe_candidate_with_retries(
+        ModelTarget(model_id="gpt-6-astra", required=True),
+        transport_profile=ModelTransportProfile(model_id="gpt-6-astra"),
+        timeout_seconds=1,
+        agent_factory=lambda *args: object(),
+        max_provider_retries=3,
+        retry_sleep=delays.append,
+    )
+
+    assert result.status == "ready"
+    assert attempts == 3
+    assert delays == [5.0, 10.0]
+
+
 def test_workflow_models_run_concurrently_but_report_in_manifest_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
