@@ -6,8 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 from uuid import UUID
 
-
-TraceMetadataValue = str | int | float | bool
+from specrag.infrastructure.langsmith_tracing import (
+    TraceMetadataValue,
+    freeze_trace_metadata,
+    freeze_trace_tags,
+)
 
 
 @dataclass(frozen=True)
@@ -20,17 +23,15 @@ class WorkflowTraceContext:
     metadata: Mapping[str, TraceMetadataValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.run_name.strip():
-            raise ValueError("trace run_name must not be blank")
-        if any(not tag.strip() or tag != tag.strip() for tag in self.tags):
-            raise ValueError("trace tags must be non-blank and trimmed")
-        if len(self.tags) != len(set(self.tags)):
-            raise ValueError("trace tags must be unique")
-        metadata = dict(self.metadata)
-        if any(not key.strip() or key != key.strip() for key in metadata):
-            raise ValueError("trace metadata keys must be non-blank and trimmed")
-        if any(value is None for value in metadata.values()):
-            raise ValueError("trace metadata values must not be null")
+        if (
+            not self.run_name.strip()
+            or self.run_name != self.run_name.strip()
+            or len(self.run_name) > 512
+            or not self.run_name.isprintable()
+        ):
+            raise ValueError("trace run_name must be printable, trimmed, and non-blank")
+        object.__setattr__(self, "tags", freeze_trace_tags(self.tags))
+        object.__setattr__(self, "metadata", freeze_trace_metadata(self.metadata))
 
 
 def workflow_config(

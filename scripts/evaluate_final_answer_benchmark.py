@@ -223,6 +223,75 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _integrity_path(output_directory: Path, question_id: str) -> Path:
+    return output_directory / "integrity" / f"{question_id}.json"
+
+
+def _execution_integrity(
+    *,
+    execution_path: Path,
+    source_path: Path,
+    batch_manifest_path: Path,
+    question_id: str,
+    run_id: str,
+    judge_model: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": "specrag.final-answer-judge-integrity/v1",
+        "question_id": question_id,
+        "run_id": run_id,
+        "judge_model": judge_model,
+        "judge_prompt_version": FINAL_ANSWER_JUDGE_PROMPT_VERSION,
+        "source_artifact": {
+            "path": source_path.resolve().as_posix(),
+            "sha256": _sha256(source_path),
+        },
+        "batch_manifest_sha256": _sha256(batch_manifest_path),
+        "execution_sha256": _sha256(execution_path),
+    }
+
+
+def validate_judge_artifact(
+    *,
+    execution_path: Path,
+    source_path: Path,
+    batch_manifest_path: Path,
+    integrity_path: Path,
+    question_id: str,
+    run_id: str,
+    judge_model: str,
+) -> FinalAnswerJudgeExecution:
+    """Validate one persisted Judge result against all frozen identities."""
+
+    execution = FinalAnswerJudgeExecution.model_validate_json(
+        execution_path.read_text(encoding="utf-8")
+    )
+    if execution.question_id != question_id:
+        raise ValueError("Judge output question ID changed")
+    if execution.run_id != run_id:
+        raise ValueError("Judge output Run ID changed")
+    if execution.judge_prompt_version != FINAL_ANSWER_JUDGE_PROMPT_VERSION:
+        raise ValueError("Judge output prompt version changed")
+    if execution.status == "scored":
+        observed = execution.evaluation.judge_model if execution.evaluation else None
+        if observed != judge_model:
+            raise ValueError("Judge output used a different model")
+    expected = _execution_integrity(
+        execution_path=execution_path,
+        source_path=source_path,
+        batch_manifest_path=batch_manifest_path,
+        question_id=question_id,
+        run_id=run_id,
+        judge_model=judge_model,
+    )
+    if not integrity_path.is_file():
+        raise ValueError(f"missing Judge integrity receipt: {integrity_path}")
+    actual = json.loads(integrity_path.read_text(encoding="utf-8"))
+    if actual != expected:
+        raise ValueError("Judge integrity receipt does not match frozen inputs")
+    return execution
+
+
 def _manifest(
     *,
     args: argparse.Namespace,
@@ -373,7 +442,8 @@ def main(argv: list[str] | None = None) -> int:
         args=args, cases=cases, model=model,
         transport_profile=transport_profile,
     )
-    _freeze_manifest(args.output_directory / "manifest.json", manifest)
+    batch_manifest_path = args.output_directory / "manifest.json"
+    _freeze_manifest(batch_manifest_path, manifest)
 
     agent: LLMApiStructuredAgent | CodexStructuredAgent | None = None
     tracing = build_langsmith_tracing(config) if config is not None else None
@@ -381,13 +451,23 @@ def main(argv: list[str] | None = None) -> int:
     for case in cases:
         question_id = case.task_metadata.task_id
         output_path = args.output_directory / f"{question_id}.json"
+        artifact_path = args.run_directory / f"{question_id}.json"
+        artifact = _artifact_payload(artifact_path)
+        _validate_artifact_case(artifact, case)
+        run_id = _run_id(artifact, question_id=question_id)
         if output_path.exists():
             if not args.resume:
                 raise FileExistsError(
                     f"Judge output already exists; pass --resume: {output_path}"
                 )
-            execution = FinalAnswerJudgeExecution.model_validate_json(
-                output_path.read_text(encoding="utf-8")
+            execution = validate_judge_artifact(
+                execution_path=output_path,
+                source_path=artifact_path,
+                batch_manifest_path=batch_manifest_path,
+                integrity_path=_integrity_path(args.output_directory, question_id),
+                question_id=question_id,
+                run_id=run_id,
+                judge_model=model,
             )
             executions.append(execution)
             print(json.dumps({
@@ -397,9 +477,6 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False), flush=True)
             continue
 
-        artifact_path = args.run_directory / f"{question_id}.json"
-        artifact = _artifact_payload(artifact_path)
-        _validate_artifact_case(artifact, case)
         candidate_answer = _candidate_answer(artifact)
         if candidate_answer is not None and candidate_answer.strip() and agent is None:
             if args.backend == "api":
@@ -437,12 +514,27 @@ def main(argv: list[str] | None = None) -> int:
         with activation:
             execution = execute_final_answer_judge(
                 case=case,
-                run_id=_run_id(artifact, question_id=question_id),
+                run_id=run_id,
                 candidate_answer=candidate_answer,
                 judge=judge,
                 judge_prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
             )
+        if execution.status == "scored":
+            observed = execution.evaluation.judge_model if execution.evaluation else None
+            if observed != model:
+                raise ValueError("Judge output used a different model")
         _write_json(output_path, execution.model_dump(mode="json"))
+        _write_json(
+            _integrity_path(args.output_directory, question_id),
+            _execution_integrity(
+                execution_path=output_path,
+                source_path=artifact_path,
+                batch_manifest_path=batch_manifest_path,
+                question_id=question_id,
+                run_id=run_id,
+                judge_model=model,
+            ),
+        )
         executions.append(execution)
         print(json.dumps({
             "question_id": question_id,

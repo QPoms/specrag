@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -15,7 +14,7 @@ from specrag.models import (
     SpecificationScope,
 )
 
-from .application import ResearchApplication, RuntimeStopped
+from .application import RuntimeStopped
 from .failure import failure_metadata
 from .lifecycle import (
     phase_deadline_context,
@@ -41,6 +40,7 @@ from .run_contracts import (
 from .run_events import RunEventRecorder
 from .run_metrics import aggregate_run_event_metrics
 from .run_access import RunAccessMixin
+from .run_invocation import invoke_run_application
 
 
 class RunHarness(RunAccessMixin):
@@ -425,23 +425,7 @@ class RunHarness(RunAccessMixin):
         self.store.put(active)
         try:
             app = self._application(context, active)
-            if resume:
-                tracing = getattr(app, "tracing", None)
-                activation = (
-                    tracing.activate() if tracing is not None else nullcontext()
-                )
-                with activation:
-                    state = app.workflow.resume(thread_id=active.thread_id)
-            else:
-                assert request is not None
-                state = app.run(
-                    research_id=active.run_id,
-                    question=active.question,
-                    thread_id=active.thread_id,
-                    budget=request.budget,
-                    specfact_ids=active.specfact_ids,
-                    memory_ids=active.memory_ids,
-                )
+            state = invoke_run_application(app, active, request, resume=resume)
         except RuntimeStopped as exc:
             status = "cancelled" if exc.reason == "cancelled" else "timed_out"
             terminal = active.model_copy(

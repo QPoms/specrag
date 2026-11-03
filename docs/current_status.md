@@ -6,9 +6,9 @@ Updated: 2026-11-03
 
 The one-trial multi-model comparison layer is implemented over the existing
 frozen Benchmark, complete Research Workflow, and final-answer Rubric Judge.
-Its required candidate models are `gpt-5.6-sol`, `gpt-6-astra`, and
-`deepseek-v4.1-flash`; `claude-opus-5` joins only after passing the same
-structured-output and two-turn native-tool replay probe. Every model-backed
+Its required candidate model is `gpt-6-astra`, which must pass the
+structured-output and two-turn native-tool replay probe. Retryable Provider
+failures use at most three retries with bounded exponential backoff. Every model-backed
 Workflow stage uses the selected candidate model, cross-model fallback is
 disabled and checked against receipts, and `deepseek-v4-pro` is the fixed
 final-answer Judge. Each case runs once. Reports contain Judge scores, score

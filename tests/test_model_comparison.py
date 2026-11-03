@@ -29,7 +29,7 @@ def _manifest() -> ModelComparisonExperimentManifest:
         ),
         model_targets=(
             ModelTarget(model_id="gpt-5.6-sol", required=True),
-            ModelTarget(model_id="deepseek-v4.1-flash", required=True),
+            ModelTarget(model_id="deepseek-v4-flash-0731", required=True),
             ModelTarget(model_id="claude-opus-5", required=False),
         ),
     )
@@ -44,9 +44,9 @@ def _probes() -> tuple[ModelProbeResult, ...]:
             message="The model passed the workflow capability probe.",
         ),
         ModelProbeResult(
-            model_id="deepseek-v4.1-flash",
+            model_id="deepseek-v4-flash-0731",
             status="ready",
-            observed_model="deepseek-v4.1-flash",
+            observed_model="deepseek-v4-flash-0731",
             message="The model passed the workflow capability probe.",
         ),
         ModelProbeResult(
@@ -115,7 +115,7 @@ def test_input_rejects_results_for_non_ready_model() -> None:
 def test_probe_rejects_model_alias_or_gateway_substitution() -> None:
     with pytest.raises(ValidationError, match="observed a different model"):
         ModelProbeResult(
-            model_id="deepseek-v4.1-flash",
+            model_id="deepseek-v4-flash-0731",
             status="ready",
             observed_model="gpt-5.6-sol",
             message="The gateway substituted another model.",
@@ -135,7 +135,7 @@ def test_completeness_requires_every_case_for_each_ready_model() -> None:
         probes=_probes(),
         results=(
             _result("gpt-5.6-sol", "r17-qa-001"),
-            _result("deepseek-v4.1-flash", "r17-qa-001"),
+            _result("deepseek-v4-flash-0731", "r17-qa-001"),
         ),
     )
 
@@ -149,7 +149,7 @@ def test_completeness_requires_every_case_for_each_ready_model() -> None:
 def test_completeness_rejects_a_required_non_ready_model() -> None:
     probes = list(_probes())
     probes[1] = ModelProbeResult(
-        model_id="deepseek-v4.1-flash",
+        model_id="deepseek-v4-flash-0731",
         status="incompatible",
         failure_kind="native_tool_calling",
         message="The model rejected the required retrieval tool contract.",
@@ -182,14 +182,14 @@ def test_summary_reports_observed_complete_and_common_case_averages() -> None:
                 judge_status="not_run",
                 score=None,
             ),
-            _result("deepseek-v4.1-flash", "r17-qa-001", score=60.0),
+            _result("deepseek-v4-flash-0731", "r17-qa-001", score=60.0),
             _result(
-                "deepseek-v4.1-flash",
+                "deepseek-v4-flash-0731",
                 "r17-qa-002",
                 judge_status="evaluation_failed",
                 score=None,
             ),
-            _result("deepseek-v4.1-flash", "r17-qa-003", score=90.0),
+            _result("deepseek-v4-flash-0731", "r17-qa-003", score=90.0),
         ),
     )
 
@@ -224,7 +224,7 @@ def test_summary_reports_observed_complete_and_common_case_averages() -> None:
     assert first_case.difficulty == "simple"
     assert tuple(item.model_id for item in first_case.model_results) == (
         "gpt-5.6-sol",
-        "deepseek-v4.1-flash",
+        "deepseek-v4-flash-0731",
     )
     assert tuple(item.score for item in first_case.model_results) == (80.0, 60.0)
 

@@ -185,7 +185,7 @@ Final-answer Judge 已将提示词冻结为 `final-answer-rubric-judge/v1.1`，�
 
 现在可以通过 `scripts/evaluate_final_answer_benchmark.py` 评估已保存的 Workflow 产物，而无需重新运行研究。运行器支持 `simple`、`complex` 或全部冻结用例、可恢复输出、API 或隔离 Codex 后端、源产物哈希冻结、逐用例执行记录，以及总体和按难度分组的分数汇总。生成的判定保留在被忽略的 `artifacts/` 树下。
 
-一次试验的多模型比较入口也已实现。候选模型固定为必选的 `gpt-5.6-sol`、`gpt-6-astra`、`deepseek-v4.1-flash`，以及探针成功时加入的可选 `claude-opus-5`；全部模型驱动节点使用同一候选模型，跨模型 fallback 被禁用，最终答案统一由 `deepseek-v4-pro` 盲评。本轮只汇总 Judge 分数、覆盖率和运行统计，不计算 Task Success、Pass@k、Pass^k 或阈值通过率。LangSmith 用于节点和模型调用轨迹监督，本地结构化 Run、Evidence、回执与 Judge 产物仍是评测权威数据。
+一次试验的模型比较入口也已实现。当前候选模型固定为 `gpt-6-astra`，全部模型驱动节点使用该候选模型，跨模型 fallback 被禁用，最终答案统一由 `deepseek-v4-pro` 盲评。对 429、超时和暂时性 Provider 故障最多重试三次，并采用 5/10/20 秒指数退避；协议错误不会重试。本轮只汇总 Judge 分数、覆盖率和运行统计，不计算 Task Success、Pass@k、Pass^k 或阈值通过率。LangSmith 用于节点和模型调用轨迹监督，本地结构化 Run、Evidence、回执与 Judge 产物仍是评测权威数据。
 
 ```powershell
 uv run python scripts/evaluate_model_comparison.py probe artifacts/evaluations/model-comparison/EXP-ID

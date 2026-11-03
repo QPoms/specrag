@@ -190,8 +190,9 @@ class ParallelResearchWorkflow:
         *,
         thread_id: str,
         update: StateUpdate | None = None,
+        trace_context: WorkflowTraceContext | None = None,
     ) -> ParallelResearchState:
-        config = workflow_config(thread_id)
+        config = workflow_config(thread_id, trace_context)
         snapshot = self.graph.get_state(config)
         values = getattr(snapshot, "values", None)
         if values and any(

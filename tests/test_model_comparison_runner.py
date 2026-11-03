@@ -29,9 +29,12 @@ from specrag.infrastructure.llm_contracts import LLMApiMode
 from specrag.infrastructure.model_transport import ModelTransportProfile
 from specrag.interfaces.model_comparison import (
     _safe_failure_summary,
+    benchmark_questions,
     candidate_model_config,
     validate_candidate_receipts,
 )
+from specrag.interfaces import model_comparison as comparison_interface
+from specrag.models import ResearchBudget
 from specrag.prompts import FINAL_ANSWER_JUDGE_PROMPT_VERSION
 
 
@@ -57,14 +60,28 @@ def _small_manifest() -> ModelComparisonExperimentManifest:
     )
 
 
-def _operational_manifest() -> dict[str, object]:
-    comparison = _small_manifest()
-    return {
-        "schema_version": "specrag.model-comparison-operational-manifest/v1",
-        "comparison": comparison.model_dump(mode="json"),
-        "transports": _transports(comparison),
-        "execution": {"budget": {}},
-    }
+def _operational_manifest(
+    comparison: ModelComparisonExperimentManifest | None = None,
+) -> dict[str, object]:
+    active = comparison or _small_manifest()
+    required = tuple(
+        target.model_id for target in active.model_targets if target.required
+    )
+    optional = tuple(
+        target.model_id for target in active.model_targets if not target.required
+    )
+    manifest = runner.build_experiment_manifest(
+        experiment_id=active.experiment_id,
+        required_models=required,
+        optional_models=optional,
+        judge_model=active.judge_model,
+        config=_config(),
+        max_provider_retries=0,
+    )
+    manifest["comparison"] = active.model_dump(mode="json")
+    manifest["transports"] = _transports(active)
+    manifest["execution"]["budget"] = {}
+    return manifest
 
 
 def _transports(
@@ -91,6 +108,52 @@ def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+def _write_ready_probes(
+    directory: Path,
+    manifest: dict[str, object],
+) -> None:
+    manifest_path = directory / "manifest.json"
+    comparison = ModelComparisonExperimentManifest.model_validate(
+        manifest["comparison"]
+    )
+    candidates, judge = runner._transport_profiles(manifest, comparison)
+    for target in comparison.model_targets:
+        result = ModelProbeResult(
+            model_id=target.model_id,
+            status="ready",
+            observed_model=target.model_id,
+            message="ready",
+        ).model_dump(mode="json")
+        _write(
+            runner._probe_path(directory, target.model_id),
+            runner._probe_artifact(
+                result=result,
+                binding=runner._probe_binding(
+                    comparison=comparison,
+                    manifest_path=manifest_path,
+                    transport_profile=candidates[target.model_id],
+                ),
+            ),
+        )
+    _write(
+        runner._judge_probe_path(directory),
+        runner._probe_artifact(
+            result={
+                "schema_version": "specrag.judge-model-probe/v1",
+                "model_id": comparison.judge_model,
+                "status": "ready",
+                "observed_model": comparison.judge_model,
+                "message": "ready",
+            },
+            binding=runner._probe_binding(
+                comparison=comparison,
+                manifest_path=manifest_path,
+                transport_profile=judge,
+            ),
+        ),
+    )
+
+
 def _ready_capability() -> ResearchModelCapability:
     check = ProviderCapabilityCheck(status="ready", message="ready")
     return ResearchModelCapability(
@@ -101,11 +164,11 @@ def _ready_capability() -> ResearchModelCapability:
 
 
 def test_candidate_config_binds_all_roles_and_disables_fallback() -> None:
-    config = candidate_model_config("deepseek-v4.1-flash", _config())
+    config = candidate_model_config("deepseek-v4-flash-0731", _config())
 
-    assert config.secrets.openai_model == "deepseek-v4.1-flash"
-    assert config.secrets.openai_planning_model == "deepseek-v4.1-flash"
-    assert config.secrets.openai_summary_model == "deepseek-v4.1-flash"
+    assert config.secrets.openai_model == "deepseek-v4-flash-0731"
+    assert config.secrets.openai_planning_model == "deepseek-v4-flash-0731"
+    assert config.secrets.openai_summary_model == "deepseek-v4-flash-0731"
     assert config.llm.api_fallback_models == ()
 
 
@@ -132,6 +195,43 @@ def test_workflow_failure_summary_does_not_persist_raw_provider_text() -> None:
     assert "temporarily unavailable" in summary
 
 
+def test_retryable_provider_failure_uses_bounded_exponential_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = load_end_to_end_benchmark()
+    question = benchmark_questions(benchmark, ("r17-qa-001",))[0]
+    delays: list[float] = []
+
+    class RateLimited(RuntimeError):
+        failure_kind = "rate_limited"
+        retryable = True
+        public_message = "The provider rate-limited the request."
+
+    monkeypatch.setattr(
+        comparison_interface,
+        "_run_application",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RateLimited()),
+    )
+
+    artifact = comparison_interface._execute_question_with_retries(
+        app=SimpleNamespace(retrieval_index_fingerprint="index"),
+        question=question,
+        budget=ResearchBudget(),
+        experiment_id="retry-test",
+        benchmark=benchmark,
+        requested_model="gpt-6-astra",
+        trial=1,
+        source_manifest_sha256="a" * 64,
+        source_revision={"commit": "abc", "dirty": False},
+        max_provider_retries=3,
+        retry_sleep=delays.append,
+    )
+
+    assert artifact["workflow_status"] == "failed"
+    assert len(artifact["workflow_attempts"]) == 4
+    assert delays == [5.0, 10.0, 20.0]
+
+
 def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> None:
     manifest = runner.build_experiment_manifest(
         experiment_id="test-experiment",
@@ -142,10 +242,7 @@ def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> Non
         manifest["comparison"]
     )
     assert [item.model_id for item in comparison.model_targets] == [
-        "gpt-5.6-sol",
         "gpt-6-astra",
-        "deepseek-v4.1-flash",
-        "claude-opus-5",
     ]
     assert comparison.judge_model == "deepseek-v4-pro"
     assert manifest["execution"]["fallback_models"] == []
@@ -155,13 +252,14 @@ def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> Non
         "reasoning_effort": None,
         "supports_native_tools": False,
     }
-    assert manifest["transports"]["candidates"]["deepseek-v4.1-flash"] == {
-        "model_id": "deepseek-v4.1-flash",
+    assert manifest["transports"]["candidates"]["gpt-6-astra"] == {
+        "model_id": "gpt-6-astra",
         "structured_api_mode": "responses",
         "reasoning_effort": "high",
         "supports_native_tools": True,
     }
     assert manifest["execution"]["max_concurrent_models"] == 2
+    assert manifest["execution"]["max_provider_retries"] == 3
     assert manifest["execution"]["latency_condition"] == (
         "concurrent_models_not_comparable_to_sequential_baseline"
     )
@@ -181,11 +279,7 @@ def test_probe_blocks_required_initialization_failure_and_skips_optional(
             ModelTarget(model_id="claude-opus-5", required=False),
         )
     })
-    manifest = {
-        "schema_version": "specrag.model-comparison-operational-manifest/v1",
-        "comparison": comparison.model_dump(mode="json"),
-        "transports": _transports(comparison),
-    }
+    manifest = _operational_manifest(comparison)
 
     class FakeAgent:
         def __init__(self, model: str) -> None:
@@ -210,8 +304,8 @@ def test_probe_blocks_required_initialization_failure_and_skips_optional(
     assert result == 1
     required = json.loads((tmp_path / "probes/gpt-5.6-sol.json").read_text())
     optional = json.loads((tmp_path / "probes/claude-opus-5.json").read_text())
-    assert required["status"] == "unavailable"
-    assert optional["status"] == "unavailable"
+    assert required["result"]["status"] == "unavailable"
+    assert optional["result"]["status"] == "unavailable"
     assert "sensitive upstream text" not in json.dumps((required, optional))
 
 
@@ -248,8 +342,8 @@ def test_probe_accepts_ready_candidates_and_fixed_judge(
     assert result == 0
     candidate = json.loads((tmp_path / "probes/gpt-5.6-sol.json").read_text())
     judge = json.loads((tmp_path / "probes/judge.json").read_text())
-    assert candidate["status"] == "ready"
-    assert judge == {
+    assert candidate["result"]["status"] == "ready"
+    assert judge["result"] == {
         "schema_version": "specrag.judge-model-probe/v1",
         "model_id": "deepseek-v4-pro",
         "status": "ready",
@@ -268,12 +362,8 @@ def test_candidate_probes_run_with_frozen_model_concurrency(
             ModelTarget(model_id="model-b", required=True),
         )
     })
-    manifest = {
-        "schema_version": "specrag.model-comparison-operational-manifest/v1",
-        "comparison": comparison.model_dump(mode="json"),
-        "transports": _transports(comparison),
-        "execution": {"max_concurrent_models": 2},
-    }
+    manifest = _operational_manifest(comparison)
+    manifest["execution"]["max_concurrent_models"] = 2
     barrier = threading.Barrier(2)
     lock = threading.Lock()
     active = 0
@@ -324,19 +414,10 @@ def test_workflow_models_run_concurrently_but_report_in_manifest_order(
             ModelTarget(model_id="model-b", required=True),
         )
     })
-    _write(tmp_path / "manifest.json", {
-        "schema_version": "specrag.model-comparison-operational-manifest/v1",
-        "comparison": comparison.model_dump(mode="json"),
-        "transports": _transports(comparison),
-        "execution": {"budget": {}, "max_concurrent_models": 2},
-    })
-    for model in ("model-a", "model-b"):
-        _write(
-            tmp_path / f"probes/{model}.json",
-            ModelProbeResult(
-                model_id=model, status="ready", observed_model=model, message="ready"
-            ).model_dump(mode="json"),
-        )
+    manifest = _operational_manifest(comparison)
+    manifest["execution"]["max_concurrent_models"] = 2
+    _write(tmp_path / "manifest.json", manifest)
+    _write_ready_probes(tmp_path, manifest)
     barrier = threading.Barrier(2)
     lock = threading.Lock()
     active = 0
@@ -369,19 +450,20 @@ def test_judge_phase_uses_fixed_model_and_only_completed_workflows(
 ) -> None:
     manifest = _operational_manifest()
     _write(tmp_path / "manifest.json", manifest)
-    _write(
-        tmp_path / "probes/gpt-5.6-sol.json",
-        ModelProbeResult(
-            model_id="gpt-5.6-sol", status="ready",
-            observed_model="gpt-5.6-sol", message="ready",
-        ).model_dump(mode="json"),
-    )
-    _write(tmp_path / "probes/judge.json", {
-        "model_id": "deepseek-v4-pro", "status": "ready",
-    })
+    _write_ready_probes(tmp_path, manifest)
     run_dir = tmp_path / "runs/gpt-5.6-sol"
-    _write(run_dir / "r17-qa-001.json", {"workflow_status": "failed"})
-    _write(run_dir / "r17-qa-007.json", {"workflow_status": "completed"})
+    monkeypatch.setattr(
+        runner,
+        "_validated_workflow_artifact",
+        lambda **kwargs: (
+            run_dir / f"{kwargs['question'].question_id}.json",
+            {"workflow_status": (
+                "completed"
+                if kwargs["question"].question_id == "r17-qa-007"
+                else "failed"
+            )},
+        ),
+    )
     calls: list[list[str]] = []
     monkeypatch.setattr(
         runner.final_answer_runner,
@@ -407,19 +489,14 @@ def test_judge_phase_uses_fixed_model_and_only_completed_workflows(
     assert "--resume" in calls[0]
 
 
-def test_summary_keeps_workflow_failure_separate_from_no_answer(tmp_path: Path) -> None:
+def test_summary_keeps_workflow_failure_separate_from_no_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     manifest = _operational_manifest()
     _write(tmp_path / "manifest.json", manifest)
-    _write(
-        tmp_path / "probes/gpt-5.6-sol.json",
-        ModelProbeResult(
-            model_id="gpt-5.6-sol", status="ready",
-            observed_model="gpt-5.6-sol", message="ready",
-        ).model_dump(mode="json"),
-    )
+    _write_ready_probes(tmp_path, manifest)
     run_dir = tmp_path / "runs/gpt-5.6-sol"
-    _write(run_dir / "r17-qa-001.json", {"workflow_status": "failed"})
-    _write(run_dir / "r17-qa-007.json", {"workflow_status": "completed"})
     case = next(
         item for item in load_end_to_end_benchmark().cases
         if item.task_metadata.task_id == "r17-qa-007"
@@ -431,10 +508,19 @@ def test_summary_keeps_workflow_failure_separate_from_no_answer(tmp_path: Path) 
         judge=lambda *args, **kwargs: pytest.fail("Judge must not be called"),
         judge_prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
     )
-    _write(
-        tmp_path / "judgments/gpt-5.6-sol/r17-qa-007.json",
-        no_answer.model_dump(mode="json"),
+    monkeypatch.setattr(
+        runner,
+        "_validated_workflow_artifact",
+        lambda **kwargs: (
+            run_dir / f"{kwargs['question'].question_id}.json",
+            {"workflow_status": (
+                "completed"
+                if kwargs["question"].question_id == "r17-qa-007"
+                else "failed"
+            )},
+        ),
     )
+    monkeypatch.setattr(runner, "_validate_judge_batch", lambda **kwargs: (no_answer,))
 
     summary = runner.summarize_experiment(tmp_path)
 
@@ -457,4 +543,4 @@ def test_script_help_works_when_executed_by_path() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "{probe,run,judge,summarize}" in result.stdout
+    assert "{langsmith-check,probe,run,judge,summarize}" in result.stdout

@@ -83,6 +83,7 @@ def test_build_tracing_requires_both_flag_and_key() -> None:
             langsmith_api_key=key,
             langsmith_project="experiment",
             langsmith_endpoint="",
+            langsmith_workspace_id="",
         ))
 
     assert build_langsmith_tracing(config(enabled=False, key="key")).enabled is False
@@ -90,6 +91,69 @@ def test_build_tracing_requires_both_flag_and_key() -> None:
     active = build_langsmith_tracing(config(enabled=True, key="key"))
     assert active.enabled is True
     assert active.project_name == "experiment"
+
+
+def test_preflight_requires_trace_write_and_read_round_trip() -> None:
+    calls: list[str] = []
+
+    class Client:
+        def create_run(self, name, inputs, run_type, **kwargs):
+            assert name == "specrag.langsmith.preflight"
+            assert inputs == {"probe": "trace-write-read"}
+            assert run_type == "chain"
+            calls.append("create")
+            self.run_id = kwargs["id"]
+
+        def flush(self, *, timeout):
+            assert timeout == 10.0
+            calls.append("flush")
+
+        def read_run(self, run_id):
+            assert run_id == self.run_id
+            calls.append("read")
+            return SimpleNamespace(id=run_id)
+
+    client = Client()
+    tracing = LangSmithTracing(
+        enabled=True,
+        project_name="comparison",
+        _api_key="secret-key",
+        _workspace_id="workspace-id",
+        _runtime_loader=lambda: (
+            lambda **kwargs: client,
+            contextmanager(lambda: (yield))(),
+        ),
+    )
+
+    result = tracing.preflight()
+
+    assert result.status == "ready"
+    assert calls == ["create", "flush", "read"]
+
+
+def test_preflight_classifies_wrapped_http_403_without_leaking_details() -> None:
+    def client_factory(**kwargs):
+        class Client:
+            def create_run(self, *args, **kwargs):
+                raise RuntimeError("LangSmith request failed with HTTP 403")
+
+        return Client()
+
+    tracing = LangSmithTracing(
+        enabled=True,
+        project_name="comparison",
+        _api_key="secret-key",
+        _runtime_loader=lambda: (
+            client_factory,
+            contextmanager(lambda: (yield))(),
+        ),
+    )
+
+    result = tracing.preflight()
+
+    assert result.status == "unavailable"
+    assert result.failure_kind == "authentication_or_configuration"
+    assert result.retryable is False
 
 
 def test_workflow_trace_context_reaches_langgraph_root_config() -> None:

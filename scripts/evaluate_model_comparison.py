@@ -38,6 +38,10 @@ from specrag.infrastructure.model_capabilities import (
     probe_research_model_capability,
 )
 from specrag.infrastructure.llm_contracts import LLMApiMode
+from specrag.infrastructure.langsmith_tracing import (
+    LangSmithPreflightError,
+    build_langsmith_tracing,
+)
 from specrag.infrastructure.model_transport import ModelTransportProfile
 from specrag.infrastructure.structured_agent import (
     LLMApiStructuredAgent,
@@ -48,18 +52,25 @@ from specrag.interfaces.model_comparison import (
     candidate_model_config,
     run_model_cell,
     validate_candidate_receipts,
+    validate_model_cell_artifact,
 )
 from specrag.models import ResearchBudget
 from specrag.prompts import FINAL_ANSWER_JUDGE_PROMPT_VERSION
 
 
-REQUIRED_MODELS = (
-    "gpt-5.6-sol",
-    "gpt-6-astra",
-    "deepseek-v4.1-flash",
-)
-OPTIONAL_MODELS = ("claude-opus-5",)
+REQUIRED_MODELS = ("gpt-6-astra",)
+OPTIONAL_MODELS: tuple[str, ...] = ()
 JUDGE_MODEL = "deepseek-v4-pro"
+
+
+def _require_langsmith_ready(config: AppConfig | None = None) -> None:
+    """Block every paid formal phase until trace write/read is verified."""
+
+    result = build_langsmith_tracing(config or load_config()).require_ready()
+    if result.status != "ready":
+        raise ValueError(
+            "LangSmith tracing must be enabled and pass its write/read preflight"
+        )
 
 
 class _JudgeProbeOutput(BaseModel):
@@ -72,6 +83,10 @@ def _parser() -> argparse.ArgumentParser:
         description="Probe, run, judge, and summarize the model comparison."
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser(
+        "langsmith-check",
+        help="verify LangSmith project access and a synthetic trace write/read",
+    )
     for name in ("probe", "run", "judge", "summarize"):
         command = commands.add_parser(name)
         command.add_argument("experiment_directory", type=Path)
@@ -85,6 +100,7 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--optional-model", dest="optional_models", action="append")
     probe.add_argument("--judge-model", default=JUDGE_MODEL)
     probe.add_argument("--max-concurrent-models", type=int, default=2)
+    probe.add_argument("--provider-retries", type=int, default=3)
     return parser
 
 
@@ -120,13 +136,41 @@ def _source_revision() -> dict[str, object]:
             [*prefix, "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True,
             capture_output=True, text=True,
         ).stdout.strip()
-        dirty = bool(subprocess.run(
-            [*prefix, "status", "--porcelain", "--untracked-files=no"],
-            cwd=REPO_ROOT, check=True, capture_output=True, text=True,
-        ).stdout.strip())
+        status = subprocess.run(
+            [*prefix, "status", "--porcelain", "--untracked-files=all"],
+            cwd=REPO_ROOT, check=True, capture_output=True,
+        ).stdout
+        diff = subprocess.run(
+            [*prefix, "diff", "--binary", "HEAD", "--"],
+            cwd=REPO_ROOT, check=True, capture_output=True,
+        ).stdout
+        untracked = subprocess.run(
+            [*prefix, "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=REPO_ROOT, check=True, capture_output=True,
+        ).stdout
     except (OSError, subprocess.CalledProcessError):
-        return {"git_commit": "unavailable", "dirty": None}
-    return {"git_commit": commit, "dirty": dirty}
+        return {
+            "git_commit": "unavailable",
+            "dirty": None,
+            "worktree_sha256": "unavailable",
+        }
+    fingerprint = hashlib.sha256()
+    fingerprint.update(status)
+    fingerprint.update(b"\0DIFF\0")
+    fingerprint.update(diff)
+    for encoded_path in untracked.split(b"\0"):
+        if not encoded_path:
+            continue
+        fingerprint.update(b"\0UNTRACKED\0")
+        fingerprint.update(encoded_path)
+        path = REPO_ROOT / encoded_path.decode(sys.getfilesystemencoding())
+        if path.is_file():
+            fingerprint.update(path.read_bytes())
+    return {
+        "git_commit": commit,
+        "dirty": bool(status.strip()),
+        "worktree_sha256": fingerprint.hexdigest(),
+    }
 
 
 def _sha256_json(value: object) -> str:
@@ -134,6 +178,18 @@ def _sha256_json(value: object) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _validate_current_source_revision(manifest: Mapping[str, Any]) -> None:
+    frozen = manifest.get("source_revision")
+    if not isinstance(frozen, Mapping):
+        raise ValueError("experiment manifest is missing its source revision")
+    if dict(frozen) != _source_revision():
+        raise ValueError("current Git revision differs from frozen experiment revision")
 
 
 def build_experiment_manifest(
@@ -145,12 +201,17 @@ def build_experiment_manifest(
     budget: ResearchBudget | None = None,
     config: AppConfig | None = None,
     max_concurrent_models: int = 2,
+    max_provider_retries: int = 3,
 ) -> dict[str, object]:
     """Build the immutable experiment input without evaluator-only case data."""
 
     benchmark = load_end_to_end_benchmark()
     required = tuple(_normalized_models(required_models, label="required"))
-    optional = tuple(_normalized_models(optional_models, label="optional"))
+    optional = (
+        tuple(_normalized_models(optional_models, label="optional"))
+        if optional_models
+        else ()
+    )
     if set(required) & set(optional):
         raise ValueError("required and optional model sets must not overlap")
     slugs = tuple(_model_slug(model) for model in (*required, *optional))
@@ -164,6 +225,8 @@ def build_experiment_manifest(
         raise ValueError("experiment ID must not be blank")
     if max_concurrent_models < 1:
         raise ValueError("max_concurrent_models must be positive")
+    if max_provider_retries < 0:
+        raise ValueError("max_provider_retries must be non-negative")
     active_budget = budget or ResearchBudget(
         max_iterations=3,
         max_tool_calls=6,
@@ -222,6 +285,7 @@ def build_experiment_manifest(
             "execution_order": "concurrent_models_sequential_questions",
             "cache_condition": "warm_cache",
             "max_concurrent_models": max_concurrent_models,
+            "max_provider_retries": max_provider_retries,
             "latency_condition": (
                 "concurrent_models_not_comparable_to_sequential_baseline"
             ),
@@ -265,6 +329,49 @@ def _probe_path(directory: Path, model_id: str) -> Path:
 
 def _judge_probe_path(directory: Path) -> Path:
     return directory / "probes" / "judge.json"
+
+
+def _probe_binding(
+    *,
+    comparison: ModelComparisonExperimentManifest,
+    manifest_path: Path,
+    transport_profile: ModelTransportProfile,
+) -> dict[str, str]:
+    return {
+        "experiment_id": comparison.experiment_id,
+        "manifest_sha256": _sha256(manifest_path),
+        "transport_profile_sha256": _sha256_json(
+            transport_profile.model_dump(mode="json")
+        ),
+    }
+
+
+def _probe_artifact(
+    *,
+    result: Mapping[str, Any],
+    binding: Mapping[str, str],
+) -> dict[str, object]:
+    return {
+        "schema_version": "specrag.model-probe-artifact/v1",
+        "binding": dict(binding),
+        "result": dict(result),
+    }
+
+
+def _load_probe_artifact(
+    path: Path,
+    *,
+    binding: Mapping[str, str],
+) -> dict[str, Any]:
+    artifact = _load_object(path)
+    if artifact.get("schema_version") != "specrag.model-probe-artifact/v1":
+        raise ValueError(f"probe artifact has an unknown schema: {path}")
+    if artifact.get("binding") != dict(binding):
+        raise ValueError(f"probe artifact binding changed: {path}")
+    result = artifact.get("result")
+    if not isinstance(result, dict):
+        raise ValueError(f"probe artifact result must contain an object: {path}")
+    return result
 
 
 def _agent_factory(
@@ -322,10 +429,12 @@ def probe_experiment(
 ) -> int:
     """Probe every candidate and the fixed Judge, persisting secret-free results."""
 
+    _validate_current_source_revision(manifest)
     comparison = _comparison_manifest(manifest)
     candidate_transports, judge_transport = _transport_profiles(manifest, comparison)
     experiment_directory.mkdir(parents=True, exist_ok=True)
-    _freeze_json(experiment_directory / "manifest.json", manifest)
+    manifest_path = experiment_directory / "manifest.json"
+    _freeze_json(manifest_path, manifest)
     concurrency = _manifest_concurrency(manifest)
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = tuple(
@@ -343,7 +452,14 @@ def probe_experiment(
     for target, result in zip(comparison.model_targets, results, strict=True):
         _freeze_json(
             _probe_path(experiment_directory, target.model_id),
-            result.model_dump(mode="json"),
+            _probe_artifact(
+                result=result.model_dump(mode="json"),
+                binding=_probe_binding(
+                    comparison=comparison,
+                    manifest_path=manifest_path,
+                    transport_profile=candidate_transports[target.model_id],
+                ),
+            ),
         )
         failures = failures or (target.required and result.status != "ready")
 
@@ -362,8 +478,19 @@ def probe_experiment(
             )[:200],
             "message": "The fixed Judge probe could not be initialized.",
         }
-    _freeze_json(_judge_probe_path(experiment_directory), judge_payload)
+    _freeze_json(
+        _judge_probe_path(experiment_directory),
+        _probe_artifact(
+            result=judge_payload,
+            binding=_probe_binding(
+                comparison=comparison,
+                manifest_path=manifest_path,
+                transport_profile=judge_transport,
+            ),
+        ),
+    )
     failures = failures or judge_payload["status"] != "ready"
+    _validate_current_source_revision(manifest)
     return 1 if failures else 0
 
 
@@ -488,11 +615,37 @@ def _probe_judge(agent: Any, model_id: str) -> dict[str, object]:
 
 def _load_probes(
     directory: Path,
+    manifest: Mapping[str, Any],
     comparison: ModelComparisonExperimentManifest,
 ) -> tuple[ModelProbeResult, ...]:
+    candidate_transports, _ = _transport_profiles(manifest, comparison)
+    manifest_path = directory / "manifest.json"
     return tuple(
-        ModelProbeResult.model_validate(_load_object(_probe_path(directory, target.model_id)))
+        ModelProbeResult.model_validate(_load_probe_artifact(
+            _probe_path(directory, target.model_id),
+            binding=_probe_binding(
+                comparison=comparison,
+                manifest_path=manifest_path,
+                transport_profile=candidate_transports[target.model_id],
+            ),
+        ))
         for target in comparison.model_targets
+    )
+
+
+def _load_judge_probe(
+    directory: Path,
+    manifest: Mapping[str, Any],
+    comparison: ModelComparisonExperimentManifest,
+) -> dict[str, Any]:
+    _, judge_transport = _transport_profiles(manifest, comparison)
+    return _load_probe_artifact(
+        _judge_probe_path(directory),
+        binding=_probe_binding(
+            comparison=comparison,
+            manifest_path=directory / "manifest.json",
+            transport_profile=judge_transport,
+        ),
     )
 
 
@@ -513,12 +666,108 @@ def _ready_targets(
     )
 
 
+def _validated_workflow_artifact(
+    *,
+    directory: Path,
+    manifest_path: Path,
+    comparison: ModelComparisonExperimentManifest,
+    target: ModelTarget,
+    question: Any,
+) -> tuple[Path, dict[str, Any]]:
+    path = directory / "runs" / _model_slug(target.model_id) / f"{question.question_id}.json"
+    artifact = _load_object(path)
+    validate_model_cell_artifact(
+        artifact,
+        experiment_id=comparison.experiment_id,
+        requested_model=target.model_id,
+        trial=1,
+        source_manifest_sha256=_sha256(manifest_path),
+        question=question,
+    )
+    return path, artifact
+
+
+def _expected_judge_manifest(
+    *,
+    comparison: ModelComparisonExperimentManifest,
+    target: ModelTarget,
+    judge_transport: ModelTransportProfile,
+    completed: Sequence[tuple[Any, Path]],
+) -> dict[str, object]:
+    difficulty_by_id = {
+        item.question_id: item.difficulty for item in comparison.cases
+    }
+    return {
+        "schema_version": "specrag.final-answer-judge-batch/v1",
+        "benchmark_id": comparison.benchmark_id,
+        "benchmark_version": comparison.benchmark_version,
+        "judge_prompt_version": comparison.judge_prompt_version,
+        "backend": "api",
+        "configured_model": comparison.judge_model,
+        "transport_profile": judge_transport.model_dump(mode="json"),
+        "difficulty": "all",
+        "question_ids": [question.question_id for question, _ in completed],
+        "source_artifacts": [
+            {
+                "question_id": question.question_id,
+                "difficulty": difficulty_by_id[question.question_id],
+                "path": path.resolve().as_posix(),
+                "sha256": _sha256(path),
+            }
+            for question, path in completed
+        ],
+    }
+
+
+def _validate_judge_batch(
+    *,
+    directory: Path,
+    comparison: ModelComparisonExperimentManifest,
+    target: ModelTarget,
+    judge_transport: ModelTransportProfile,
+    completed: Sequence[tuple[Any, Path, Mapping[str, Any]]],
+) -> tuple[FinalAnswerJudgeExecution, ...]:
+    judgment_directory = directory / "judgments" / _model_slug(target.model_id)
+    manifest_path = judgment_directory / "manifest.json"
+    expected_manifest = _expected_judge_manifest(
+        comparison=comparison,
+        target=target,
+        judge_transport=judge_transport,
+        completed=tuple((question, path) for question, path, _ in completed),
+    )
+    if _load_object(manifest_path) != expected_manifest:
+        raise ValueError(f"Judge batch manifest changed: {manifest_path}")
+    expected_names = {f"{question.question_id}.json" for question, _, _ in completed}
+    actual_names = {path.name for path in judgment_directory.glob("r17-qa-*.json")}
+    if actual_names != expected_names:
+        raise ValueError("Judge result set does not match completed Workflow artifacts")
+    integrity_directory = judgment_directory / "integrity"
+    integrity_names = {path.name for path in integrity_directory.glob("*.json")}
+    if integrity_names != expected_names:
+        raise ValueError("Judge integrity receipt set is incomplete or unexpected")
+    return tuple(
+        final_answer_runner.validate_judge_artifact(
+            execution_path=judgment_directory / f"{question.question_id}.json",
+            source_path=source_path,
+            batch_manifest_path=manifest_path,
+            integrity_path=integrity_directory / f"{question.question_id}.json",
+            question_id=question.question_id,
+            run_id=final_answer_runner._run_id(
+                artifact, question_id=question.question_id
+            ),
+            judge_model=comparison.judge_model,
+        )
+        for question, source_path, artifact in completed
+    )
+
+
 def run_experiment(directory: Path, *, resume: bool) -> int:
     manifest_path = directory / "manifest.json"
     manifest = _load_object(manifest_path)
+    _validate_current_source_revision(manifest)
     comparison = _comparison_manifest(manifest)
     candidate_transports, _ = _transport_profiles(manifest, comparison)
-    probes = _load_probes(directory, comparison)
+    probes = _load_probes(directory, manifest, comparison)
     ready = _ready_targets(comparison, probes)
     for target in ready:
         expected = ModelTransportProfile(model_id=target.model_id)
@@ -532,6 +781,16 @@ def run_experiment(directory: Path, *, resume: bool) -> int:
     )
     budget = ResearchBudget.model_validate(manifest["execution"]["budget"])
     concurrency = _manifest_concurrency(manifest)
+    execution = manifest.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ValueError("experiment manifest is missing execution settings")
+    max_provider_retries = execution.get("max_provider_retries")
+    if (
+        not isinstance(max_provider_retries, int)
+        or isinstance(max_provider_retries, bool)
+        or max_provider_retries < 0
+    ):
+        raise ValueError("manifest max_provider_retries must be non-negative")
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = tuple(
             executor.submit(
@@ -547,6 +806,7 @@ def run_experiment(directory: Path, *, resume: bool) -> int:
                 resume=resume,
                 benchmark=benchmark,
                 emit_progress=False,
+                max_provider_retries=max_provider_retries,
             )
             for target in ready
         )
@@ -565,30 +825,45 @@ def run_experiment(directory: Path, *, resume: bool) -> int:
             }, ensure_ascii=False), flush=True)
     if failures:
         raise ValueError("model comparison cells failed: " + ", ".join(failures))
+    _validate_current_source_revision(manifest)
     return max(outcomes, default=0)
 
 
 def judge_experiment(directory: Path, *, resume: bool, timeout_seconds: int) -> int:
-    manifest = _load_object(directory / "manifest.json")
+    manifest_path = directory / "manifest.json"
+    manifest = _load_object(manifest_path)
+    _validate_current_source_revision(manifest)
     comparison = _comparison_manifest(manifest)
     _, judge_transport = _transport_profiles(manifest, comparison)
-    probes = _load_probes(directory, comparison)
+    probes = _load_probes(directory, manifest, comparison)
     ready = _ready_targets(comparison, probes)
-    judge_probe = _load_object(_judge_probe_path(directory))
+    judge_probe = _load_judge_probe(directory, manifest, comparison)
     if (
         judge_probe.get("status") != "ready"
         or judge_probe.get("model_id") != comparison.judge_model
     ):
         raise ValueError("fixed Judge probe is not ready")
     result = 0
+    benchmark = load_end_to_end_benchmark()
+    questions = benchmark_questions(
+        benchmark, tuple(case.question_id for case in comparison.cases)
+    )
     for target in ready:
         run_directory = directory / "runs" / _model_slug(target.model_id)
+        artifacts = tuple(
+            _validated_workflow_artifact(
+                directory=directory,
+                manifest_path=manifest_path,
+                comparison=comparison,
+                target=target,
+                question=question,
+            )
+            for question in questions
+        )
         completed_ids = tuple(
-            case.question_id
-            for case in comparison.cases
-            if _load_object(run_directory / f"{case.question_id}.json").get(
-                "workflow_status"
-            ) == "completed"
+            question.question_id
+            for question, (_, artifact) in zip(questions, artifacts, strict=True)
+            if artifact["workflow_status"] == "completed"
         )
         if not completed_ids:
             continue
@@ -611,19 +886,49 @@ def judge_experiment(directory: Path, *, resume: bool, timeout_seconds: int) -> 
         if resume:
             argv.append("--resume")
         result = max(result, final_answer_runner.main(argv))
+    _validate_current_source_revision(manifest)
     return result
 
 
 def summarize_experiment(directory: Path) -> dict[str, object]:
-    manifest = _load_object(directory / "manifest.json")
+    manifest_path = directory / "manifest.json"
+    manifest = _load_object(manifest_path)
+    _validate_current_source_revision(manifest)
     comparison = _comparison_manifest(manifest)
-    probes = _load_probes(directory, comparison)
+    probes = _load_probes(directory, manifest, comparison)
     ready = _ready_targets(comparison, probes)
+    _, judge_transport = _transport_profiles(manifest, comparison)
+    benchmark = load_end_to_end_benchmark()
+    questions = benchmark_questions(
+        benchmark, tuple(case.question_id for case in comparison.cases)
+    )
     results: list[ModelCaseResult] = []
     for target in ready:
-        slug = _model_slug(target.model_id)
-        for case in comparison.cases:
-            run = _load_object(directory / "runs" / slug / f"{case.question_id}.json")
+        validated = tuple(
+            (
+                question,
+                *_validated_workflow_artifact(
+                    directory=directory,
+                    manifest_path=manifest_path,
+                    comparison=comparison,
+                    target=target,
+                    question=question,
+                ),
+            )
+            for question in questions
+        )
+        completed = tuple(
+            item for item in validated if item[2]["workflow_status"] == "completed"
+        )
+        executions = _validate_judge_batch(
+            directory=directory,
+            comparison=comparison,
+            target=target,
+            judge_transport=judge_transport,
+            completed=completed,
+        ) if completed else ()
+        execution_by_id = {item.question_id: item for item in executions}
+        for case, (_, _, run) in zip(comparison.cases, validated, strict=True):
             if run.get("workflow_status") == "failed":
                 results.append(ModelCaseResult(
                     model_id=target.model_id,
@@ -633,12 +938,7 @@ def summarize_experiment(directory: Path) -> dict[str, object]:
                     score=None,
                 ))
                 continue
-            judgment_path = directory / "judgments" / slug / f"{case.question_id}.json"
-            if not judgment_path.is_file():
-                raise ValueError(f"missing Judge result: {judgment_path}")
-            execution = FinalAnswerJudgeExecution.model_validate_json(
-                judgment_path.read_text(encoding="utf-8")
-            )
+            execution = execution_by_id[case.question_id]
             results.append(ModelCaseResult(
                 model_id=target.model_id,
                 question_id=case.question_id,
@@ -652,6 +952,7 @@ def summarize_experiment(directory: Path) -> dict[str, object]:
         results=tuple(results),
     ))
     payload = summary.model_dump(mode="json")
+    _validate_current_source_revision(manifest)
     _write_json(directory / "comparison.json", payload)
     for model in summary.model_summaries:
         _write_json(
@@ -664,7 +965,17 @@ def summarize_experiment(directory: Path) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "langsmith-check":
+            result = build_langsmith_tracing(load_config()).preflight()
+            print(json.dumps({
+                "status": result.status,
+                "failure_kind": result.failure_kind,
+                "retryable": result.retryable,
+            }, ensure_ascii=False), flush=True)
+            return 0 if result.status == "ready" else 1
         if args.command == "probe":
+            config = load_config()
+            _require_langsmith_ready(config)
             experiment_id = args.experiment_id or (
                 "specrag-model-comparison-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
             )
@@ -673,7 +984,9 @@ def main(argv: list[str] | None = None) -> int:
                 required_models=tuple(args.required_models or REQUIRED_MODELS),
                 optional_models=tuple(args.optional_models or OPTIONAL_MODELS),
                 judge_model=args.judge_model,
+                config=config,
                 max_concurrent_models=args.max_concurrent_models,
+                max_provider_retries=args.provider_retries,
             )
             return probe_experiment(
                 args.experiment_directory,
@@ -681,8 +994,10 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_seconds=args.timeout_seconds,
             )
         if args.command == "run":
+            _require_langsmith_ready()
             return run_experiment(args.experiment_directory, resume=args.resume)
         if args.command == "judge":
+            _require_langsmith_ready()
             return judge_experiment(
                 args.experiment_directory,
                 resume=args.resume,
@@ -691,7 +1006,12 @@ def main(argv: list[str] | None = None) -> int:
         payload = summarize_experiment(args.experiment_directory)
         print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
         return 0
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (
+        LangSmithPreflightError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         print(f"model comparison: {exc}", file=sys.stderr)
         return 2
 

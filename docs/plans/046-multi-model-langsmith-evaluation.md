@@ -12,10 +12,7 @@ final-answer Rubric Judge.
 The first experiment runs every selected Benchmark case once with each active
 candidate model:
 
-- required: `gpt-5.6-sol`
 - required: `gpt-6-astra`
-- required: `deepseek-v4.1-flash`
-- optional: `claude-opus-5`
 
 The fixed final-answer Judge is `deepseek-v4-pro`. The experiment records Judge
 scores and execution statistics only. It does not calculate Task Success,
@@ -126,6 +123,10 @@ than a child of the candidate Workflow trace.
   when tracing is unavailable.
 - Ensure all OpenAI-compatible model calls can be associated with the active
   trace without changing their business contracts.
+- Bind the LangSmith client to the configured workspace, and run a secret-safe
+  read-only preflight before every formal probe, Workflow, or Judge phase.
+- Freeze an allowlisted scalar metadata projection and preserve the same local
+  Run/thread correlation fields when a checkpointed Workflow resumes.
 
 ### C. Experiment Runner and CLI
 
@@ -174,6 +175,9 @@ than a child of the candidate Workflow trace.
    tracing carries searchable correlation metadata without replacing local
    audit data.
 10. The canonical repository gate passes.
+11. Enabled tracing fails before the first model call when its credential,
+    endpoint, or workspace preflight is unavailable; no provider body or key is
+    retained in the failure.
 
 ## Operational safety note
 

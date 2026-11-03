@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 import hashlib
 import inspect
 import json
 from pathlib import Path
+import time
 import uuid
 from typing import Any
 
@@ -18,6 +19,13 @@ from specrag.evaluation import EndToEndBenchmark, load_end_to_end_benchmark
 from specrag.infrastructure.structured_agent import capture_agent_receipts
 from specrag.interfaces.baseline_inputs import BaselineQuestion
 from specrag.interfaces.baseline_metadata import benchmark_metadata
+from specrag.interfaces.model_comparison_attempts import (
+    build_attempt_audit,
+    safe_failure_details,
+    safe_failure_summary as _safe_failure_summary,
+    validate_attempt_history,
+    validate_candidate_receipts,
+)
 from specrag.models import ResearchBudget
 from specrag.orchestration import ResearchState
 from specrag.orchestration.application import (
@@ -80,6 +88,8 @@ def run_model_cell(
     config: AppConfig | None = None,
     benchmark: EndToEndBenchmark | None = None,
     emit_progress: bool = True,
+    max_provider_retries: int = 0,
+    retry_sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Execute one model over an ordered case set with fail-closed resume."""
 
@@ -91,6 +101,8 @@ def run_model_cell(
         raise ValueError("requested model must not be blank")
     if trial != 1:
         raise ValueError("Model Comparison V1 requires trial=1")
+    if max_provider_retries < 0:
+        raise ValueError("max_provider_retries must be non-negative")
     if not questions:
         raise ValueError("model comparison cell requires at least one question")
     if not source_manifest_path.is_file():
@@ -111,6 +123,7 @@ def run_model_cell(
         "source_manifest_sha256": source_manifest_sha256,
         "requested_model": normalized_model,
         "trial": trial,
+        "max_provider_retries": max_provider_retries,
         "question_ids": [item.question_id for item in questions],
         "benchmark": benchmark_metadata(app, questions, budget),
     }
@@ -126,7 +139,7 @@ def run_model_cell(
                     f"comparison Run already exists; pass --resume: {path}"
                 )
             artifact = _load_json_object(path)
-            _validate_resumed_artifact(
+            validate_model_cell_artifact(
                 artifact,
                 experiment_id=normalized_experiment,
                 requested_model=normalized_model,
@@ -140,67 +153,15 @@ def run_model_cell(
                 print(json.dumps(summary, ensure_ascii=False), flush=True)
             continue
 
-        trace = _workflow_trace_metadata(
-            experiment_id=normalized_experiment,
-            benchmark=active_benchmark,
-            requested_model=normalized_model,
-            question_id=question.question_id,
-            trial=trial,
+        artifact = _execute_question_with_retries(
+            app=app, question=question, budget=budget,
+            experiment_id=normalized_experiment, benchmark=active_benchmark,
+            requested_model=normalized_model, trial=trial,
+            source_manifest_sha256=source_manifest_sha256,
             source_revision=cell_manifest["benchmark"]["source_revision"],
-            index_fingerprint=app.retrieval_index_fingerprint,
+            max_provider_retries=max_provider_retries,
+            retry_sleep=retry_sleep,
         )
-        started = datetime.now(UTC)
-        receipts: list[Any] = []
-        thread_id = f"{question.question_id}-{uuid.uuid4().hex}"
-        try:
-            with capture_agent_receipts() as receipts:
-                state = _run_application(
-                    app,
-                    question=question,
-                    thread_id=thread_id,
-                    budget=budget,
-                    trace=trace,
-                )
-            receipt_payload = [item.model_dump(mode="json") for item in receipts]
-            validate_candidate_receipts(receipt_payload, normalized_model)
-            artifact = {
-                "schema_version": "specrag.baseline-run/v1",
-                "experiment": _experiment_identity(
-                    experiment_id=normalized_experiment,
-                    requested_model=normalized_model,
-                    trial=trial,
-                    source_manifest_sha256=source_manifest_sha256,
-                ),
-                "workflow_status": "completed",
-                "question": _question_identity(question),
-                "question_input_sha256": _question_sha256(question),
-                "started_at": started.isoformat(),
-                "finished_at": datetime.now(UTC).isoformat(),
-                "thread_id": thread_id,
-                "trace": trace,
-                "model_receipts": receipt_payload,
-                "state": TypeAdapter(ResearchState).dump_python(state, mode="json"),
-            }
-        except Exception as exc:  # noqa: BLE001 - retain bounded cell failure
-            receipt_payload = [item.model_dump(mode="json") for item in receipts]
-            artifact = {
-                "schema_version": "specrag.baseline-run/v1",
-                "experiment": _experiment_identity(
-                    experiment_id=normalized_experiment,
-                    requested_model=normalized_model,
-                    trial=trial,
-                    source_manifest_sha256=source_manifest_sha256,
-                ),
-                "workflow_status": "failed",
-                "question": _question_identity(question),
-                "question_input_sha256": _question_sha256(question),
-                "started_at": started.isoformat(),
-                "finished_at": datetime.now(UTC).isoformat(),
-                "thread_id": thread_id,
-                "trace": trace,
-                "model_receipts": receipt_payload,
-                "error": _safe_failure_summary(exc),
-            }
         _write_json(path, artifact)
         summary = _artifact_summary(artifact, resumed=False)
         summaries.append(summary)
@@ -223,24 +184,89 @@ def run_model_cell(
     return 1 if any(item["workflow_status"] == "failed" for item in summaries) else 0
 
 
-def validate_candidate_receipts(
-    receipts: Sequence[Mapping[str, Any]],
+def _execute_question_with_retries(
+    *,
+    app: ResearchApplication,
+    question: BaselineQuestion,
+    budget: ResearchBudget,
+    experiment_id: str,
+    benchmark: EndToEndBenchmark,
     requested_model: str,
-) -> None:
-    """Reject any final or attempted model outside the experiment cell."""
-
-    for index, receipt in enumerate(receipts, start=1):
-        observed = str(receipt.get("model") or "")
-        attempted = tuple(str(value) for value in receipt.get("attempted_models", ()))
-        if observed != requested_model:
-            raise ValueError(
-                f"candidate receipt {index} used {observed or 'unknown'}, "
-                f"expected {requested_model}"
+    trial: int,
+    source_manifest_sha256: str,
+    source_revision: object,
+    max_provider_retries: int,
+    retry_sleep: Callable[[float], None],
+) -> dict[str, object]:
+    attempts: list[dict[str, object]] = []
+    base = {
+        "schema_version": "specrag.baseline-run/v1",
+        "experiment": _experiment_identity(
+            experiment_id=experiment_id, requested_model=requested_model,
+            trial=trial, source_manifest_sha256=source_manifest_sha256,
+        ),
+        "question": _question_identity(question),
+        "question_input_sha256": _question_sha256(question),
+    }
+    for attempt in range(1, max_provider_retries + 2):
+        trace = _workflow_trace_metadata(
+            experiment_id=experiment_id, benchmark=benchmark,
+            requested_model=requested_model, question_id=question.question_id,
+            trial=trial, workflow_attempt=attempt, source_revision=source_revision,
+            index_fingerprint=app.retrieval_index_fingerprint,
+        )
+        started = datetime.now(UTC)
+        receipts: list[Any] = []
+        thread_id = f"{question.question_id}-a{attempt}-{uuid.uuid4().hex}"
+        try:
+            with capture_agent_receipts() as receipts:
+                state = _run_application(
+                    app, question=question, thread_id=thread_id,
+                    budget=budget, trace=trace,
+                )
+            receipt_payload = [item.model_dump(mode="json") for item in receipts]
+            validate_candidate_receipts(receipt_payload, requested_model)
+            attempts.append(build_attempt_audit(
+                attempt=attempt, status="completed", started=started,
+                thread_id=thread_id, trace=trace, receipts=receipt_payload,
+                failure=None, previous=attempts,
+            ))
+            return {
+                **base, "workflow_status": "completed",
+                "started_at": attempts[0]["started_at"],
+                "finished_at": attempts[-1]["finished_at"],
+                "thread_id": thread_id, "trace": trace,
+                "model_receipts": receipt_payload,
+                "workflow_attempts": attempts,
+                "state": TypeAdapter(ResearchState).dump_python(state, mode="json"),
+            }
+        except Exception as exc:  # noqa: BLE001 - bounded provider boundary
+            receipt_payload = [item.model_dump(mode="json") for item in receipts]
+            failure = safe_failure_details(exc)
+            will_retry = bool(
+                failure["retryable_provider_failure"]
+                and attempt <= max_provider_retries
             )
-        if any(model != requested_model for model in attempted):
-            raise ValueError(
-                f"candidate receipt {index} contains cross-model fallback attempts"
-            )
+            retry_delay = min(60.0, 5.0 * (2 ** (attempt - 1)))
+            if will_retry:
+                failure["retry_delay_seconds"] = retry_delay
+            attempts.append(build_attempt_audit(
+                attempt=attempt, status="failed", started=started,
+                thread_id=thread_id, trace=trace, receipts=receipt_payload,
+                failure=failure, previous=attempts,
+            ))
+            if not will_retry:
+                return {
+                    **base, "workflow_status": "failed",
+                    "started_at": attempts[0]["started_at"],
+                    "finished_at": attempts[-1]["finished_at"],
+                    "thread_id": thread_id, "trace": trace,
+                    "model_receipts": receipt_payload,
+                    "workflow_attempts": attempts,
+                    "error": _safe_failure_summary(exc),
+                }
+            retry_sleep(retry_delay)
+    raise AssertionError("workflow retry loop did not terminate")
 
 
 def _run_application(
@@ -278,6 +304,7 @@ def _workflow_trace_metadata(
     requested_model: str,
     question_id: str,
     trial: int,
+    workflow_attempt: int,
     source_revision: object,
     index_fingerprint: str,
 ) -> dict[str, object]:
@@ -292,17 +319,22 @@ def _workflow_trace_metadata(
         "candidate_model": requested_model,
         "question_id": question_id,
         "trial": trial,
+        "workflow_attempt": workflow_attempt,
         "git_commit": git_commit,
         "index_fingerprint": index_fingerprint,
     }
     return {
         "correlation_id": str(correlation_id),
-        "run_name": f"workflow:{requested_model}:{question_id}:trial-{trial}",
+        "run_name": (
+            f"workflow:{requested_model}:{question_id}:trial-{trial}:"
+            f"attempt-{workflow_attempt}"
+        ),
         "tags": [
             "specrag:model-comparison",
             "phase:workflow",
             f"model:{requested_model}",
             f"question:{question_id}",
+            f"attempt:{workflow_attempt}",
         ],
         "metadata": metadata,
     }
@@ -341,7 +373,7 @@ def _validate_environment(
         raise ValueError("live corpus document snapshot differs from Benchmark")
 
 
-def _validate_resumed_artifact(
+def validate_model_cell_artifact(
     artifact: Mapping[str, Any],
     *,
     experiment_id: str,
@@ -371,7 +403,14 @@ def _validate_resumed_artifact(
         not isinstance(item, Mapping) for item in receipts
     ):
         raise ValueError("resumed comparison artifact has invalid model receipts")
-    validate_candidate_receipts(receipts, requested_model)
+    validate_attempt_history(artifact, requested_model)
+    validate_candidate_receipts(
+        receipts, requested_model, require_nonempty=(status == "completed")
+    )
+    if status == "completed" and not isinstance(artifact.get("state"), Mapping):
+        raise ValueError("completed comparison artifact is missing Workflow state")
+    if status == "failed" and not isinstance(artifact.get("error"), str):
+        raise ValueError("failed comparison artifact is missing its safe error")
 
 
 def _artifact_summary(
@@ -389,24 +428,15 @@ def _artifact_summary(
         "workflow_status": str(artifact.get("workflow_status") or "failed"),
         "resume_status": "resumed" if resumed else "executed",
         "stop_reason": state_mapping.get("stop_reason"),
+        "workflow_attempt_count": len(artifact.get("workflow_attempts", ())),
+        "workflow_retry_count": max(
+            0, len(artifact.get("workflow_attempts", ())) - 1
+        ),
     }
     if artifact.get("workflow_status") == "failed":
         error = str(artifact.get("error") or "UnknownError")
         result["error_type"] = error.split(":", 1)[0]
     return result
-
-
-def _safe_failure_summary(exc: Exception) -> str:
-    """Persist only the stable provider taxonomy and allowlisted explanation."""
-
-    failure_kind = str(getattr(exc, "failure_kind", "unknown"))[:200]
-    public_message = getattr(exc, "public_message", None)
-    message = (
-        public_message.strip()[:1000]
-        if isinstance(public_message, str) and public_message.strip()
-        else "The comparison Workflow failed."
-    )
-    return f"{type(exc).__name__}:{failure_kind}: {message}"
 
 
 def _experiment_identity(
@@ -489,5 +519,6 @@ __all__ = [
     "benchmark_questions",
     "candidate_model_config",
     "run_model_cell",
+    "validate_model_cell_artifact",
     "validate_candidate_receipts",
 ]

@@ -145,12 +145,16 @@ class ModelCaseResult(_StrictModel):
     workflow_status: WorkflowStatus
     judge_status: ComparisonJudgeStatus
     score: float | None = Field(default=None, ge=0.0, le=100.0)
+    workflow_attempt_count: int = Field(default=1, ge=1)
+    workflow_retry_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _coherent_result(self) -> "ModelCaseResult":
         identifiers = (self.model_id, self.question_id)
         if any(not value.strip() or value != value.strip() for value in identifiers):
             raise ValueError("model_id and question_id must be non-blank and trimmed")
+        if self.workflow_retry_count != self.workflow_attempt_count - 1:
+            raise ValueError("workflow retry count must equal attempt count minus one")
         if self.workflow_status == "failed":
             if self.judge_status != "not_run" or self.score is not None:
                 raise ValueError(
@@ -253,6 +257,9 @@ class ModelScoreSummary(_StrictModel):
     no_answer_count: int = Field(ge=0)
     workflow_failed_count: int = Field(ge=0)
     judge_failed_count: int = Field(ge=0)
+    workflow_attempt_count: int = Field(ge=1)
+    workflow_retry_count: int = Field(ge=0)
+    retried_case_count: int = Field(ge=0)
     overall: ScoreSliceSummary
     simple: ScoreSliceSummary
     complex: ScoreSliceSummary
@@ -269,6 +276,14 @@ class ModelScoreSummary(_StrictModel):
         )
         if categorized != self.expected_case_count:
             raise ValueError("model outcome counts must cover every expected case")
+        if self.workflow_attempt_count != (
+            self.expected_case_count + self.workflow_retry_count
+        ):
+            raise ValueError("workflow attempts must equal cases plus retries")
+        if self.retried_case_count > self.expected_case_count:
+            raise ValueError("retried case count exceeds expected cases")
+        if self.retried_case_count > self.workflow_retry_count:
+            raise ValueError("retried cases cannot exceed retry attempts")
         if self.overall.expected_count != self.expected_case_count:
             raise ValueError("overall slice must cover every expected case")
         if self.simple.expected_count + self.complex.expected_count != (
@@ -432,6 +447,15 @@ def summarize_model_comparison(
             ),
             judge_failed_count=sum(
                 item.judge_status == "evaluation_failed" for item in results
+            ),
+            workflow_attempt_count=sum(
+                item.workflow_attempt_count for item in results
+            ),
+            workflow_retry_count=sum(
+                item.workflow_retry_count for item in results
+            ),
+            retried_case_count=sum(
+                item.workflow_retry_count > 0 for item in results
             ),
             overall=_score_slice(results, expected_count=len(results)),
             simple=_score_slice(simple, expected_count=len(simple)),

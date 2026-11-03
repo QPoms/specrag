@@ -37,6 +37,7 @@ class Secrets(BaseSettings):
     langsmith_tracing: bool = False
     langsmith_project: str = ""
     langsmith_endpoint: str = ""
+    langsmith_workspace_id: str = ""
 
 _PROJECT_SECRET_ENV_FIELDS = {
     "OPENAI_BASE_URL": "openai_base_url",
@@ -48,6 +49,7 @@ _PROJECT_SECRET_ENV_FIELDS = {
     "LANGSMITH_TRACING": "langsmith_tracing",
     "LANGSMITH_PROJECT": "langsmith_project",
     "LANGSMITH_ENDPOINT": "langsmith_endpoint",
+    "LANGSMITH_WORKSPACE_ID": "langsmith_workspace_id",
 }
 
 
