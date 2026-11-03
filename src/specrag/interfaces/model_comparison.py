@@ -79,6 +79,7 @@ def run_model_cell(
     application: ResearchApplication | None = None,
     config: AppConfig | None = None,
     benchmark: EndToEndBenchmark | None = None,
+    emit_progress: bool = True,
 ) -> int:
     """Execute one model over an ordered case set with fail-closed resume."""
 
@@ -135,7 +136,8 @@ def run_model_cell(
             )
             summary = _artifact_summary(artifact, resumed=True)
             summaries.append(summary)
-            print(json.dumps(summary, ensure_ascii=False), flush=True)
+            if emit_progress:
+                print(json.dumps(summary, ensure_ascii=False), flush=True)
             continue
 
         trace = _workflow_trace_metadata(
@@ -202,7 +204,8 @@ def run_model_cell(
         _write_json(path, artifact)
         summary = _artifact_summary(artifact, resumed=False)
         summaries.append(summary)
-        print(json.dumps(summary, ensure_ascii=False), flush=True)
+        if emit_progress:
+            print(json.dumps(summary, ensure_ascii=False), flush=True)
 
     _reject_unexpected_artifacts(
         output_directory,

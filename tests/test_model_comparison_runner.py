@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +126,10 @@ def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> Non
     ]
     assert comparison.judge_model == "deepseek-v4-pro"
     assert manifest["execution"]["fallback_models"] == []
+    assert manifest["execution"]["max_concurrent_models"] == 2
+    assert manifest["execution"]["latency_condition"] == (
+        "concurrent_models_not_comparable_to_sequential_baseline"
+    )
     serialized = json.dumps(manifest).lower()
     assert "reference_answer" not in serialized
     assert "gold_evidence" not in serialized
@@ -214,6 +220,109 @@ def test_probe_accepts_ready_candidates_and_fixed_judge(
         "observed_model": "deepseek-v4-pro",
         "message": "The fixed Judge passed its strict structured-output probe.",
     }
+
+
+def test_candidate_probes_run_with_frozen_model_concurrency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    comparison = _small_manifest().model_copy(update={
+        "model_targets": (
+            ModelTarget(model_id="model-a", required=True),
+            ModelTarget(model_id="model-b", required=True),
+        )
+    })
+    manifest = {
+        "schema_version": "specrag.model-comparison-operational-manifest/v1",
+        "comparison": comparison.model_dump(mode="json"),
+        "execution": {"max_concurrent_models": 2},
+    }
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = 0
+    maximum = 0
+
+    class FakeAgent:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        def parse(self, **kwargs):
+            return SimpleNamespace(receipt=SimpleNamespace(model=self.model))
+
+    def capability(agent):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
+        return _ready_capability()
+
+    @contextmanager
+    def fake_capture():
+        yield [SimpleNamespace(model_dump=lambda **kwargs: {"model": "fake"})]
+
+    monkeypatch.setattr(runner, "probe_research_model_capability", capability)
+    monkeypatch.setattr(runner, "validate_candidate_receipts", lambda *args: None)
+    monkeypatch.setattr(runner, "capture_agent_receipts", fake_capture)
+
+    assert runner.probe_experiment(
+        tmp_path,
+        manifest,
+        timeout_seconds=1,
+        agent_factory=lambda model, timeout: FakeAgent(model),
+    ) == 0
+    assert maximum == 2
+
+
+def test_workflow_models_run_concurrently_but_report_in_manifest_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    comparison = _small_manifest().model_copy(update={
+        "model_targets": (
+            ModelTarget(model_id="model-a", required=True),
+            ModelTarget(model_id="model-b", required=True),
+        )
+    })
+    _write(tmp_path / "manifest.json", {
+        "schema_version": "specrag.model-comparison-operational-manifest/v1",
+        "comparison": comparison.model_dump(mode="json"),
+        "execution": {"budget": {}, "max_concurrent_models": 2},
+    })
+    for model in ("model-a", "model-b"):
+        _write(
+            tmp_path / f"probes/{model}.json",
+            ModelProbeResult(
+                model_id=model, status="ready", observed_model=model, message="ready"
+            ).model_dump(mode="json"),
+        )
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = 0
+    maximum = 0
+
+    def fake_cell(**kwargs):
+        nonlocal active, maximum
+        assert kwargs["emit_progress"] is False
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+        barrier.wait(timeout=2)
+        if kwargs["requested_model"] == "model-a":
+            time.sleep(0.02)
+        with lock:
+            active -= 1
+        return 0
+
+    monkeypatch.setattr(runner, "run_model_cell", fake_cell)
+
+    assert runner.run_experiment(tmp_path, resume=False) == 0
+    assert maximum == 2
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [item["model_id"] for item in lines] == ["model-a", "model-b"]
 
 
 def test_judge_phase_uses_fixed_model_and_only_completed_workflows(

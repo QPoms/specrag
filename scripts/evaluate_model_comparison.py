@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -81,6 +82,7 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--model", dest="required_models", action="append")
     probe.add_argument("--optional-model", dest="optional_models", action="append")
     probe.add_argument("--judge-model", default=JUDGE_MODEL)
+    probe.add_argument("--max-concurrent-models", type=int, default=2)
     return parser
 
 
@@ -140,6 +142,7 @@ def build_experiment_manifest(
     judge_model: str = JUDGE_MODEL,
     budget: ResearchBudget | None = None,
     config: AppConfig | None = None,
+    max_concurrent_models: int = 2,
 ) -> dict[str, object]:
     """Build the immutable experiment input without evaluator-only case data."""
 
@@ -157,6 +160,8 @@ def build_experiment_manifest(
     normalized_experiment = experiment_id.strip()
     if not normalized_experiment:
         raise ValueError("experiment ID must not be blank")
+    if max_concurrent_models < 1:
+        raise ValueError("max_concurrent_models must be positive")
     active_budget = budget or ResearchBudget(
         max_iterations=3,
         max_tool_calls=6,
@@ -198,8 +203,12 @@ def build_experiment_manifest(
         "execution": {
             "trial_count_per_model": 1,
             "question_order": "benchmark_order",
-            "execution_order": "sequential_models_sequential_questions",
+            "execution_order": "concurrent_models_sequential_questions",
             "cache_condition": "warm_cache",
+            "max_concurrent_models": max_concurrent_models,
+            "latency_condition": (
+                "concurrent_models_not_comparable_to_sequential_baseline"
+            ),
             "fallback_models": [],
             "budget": active_budget.model_dump(mode="json"),
         },
@@ -270,72 +279,24 @@ def probe_experiment(
     comparison = _comparison_manifest(manifest)
     experiment_directory.mkdir(parents=True, exist_ok=True)
     _freeze_json(experiment_directory / "manifest.json", manifest)
-    failures = False
-    for target in comparison.model_targets:
-        try:
-            agent = agent_factory(target.model_id, timeout_seconds)
-            with capture_agent_receipts() as receipts:
-                capability = probe_research_model_capability(agent)
-            payloads = [item.model_dump(mode="json") for item in receipts]
-        except Exception as exc:  # noqa: BLE001 - safe probe projection below
-            result = ModelProbeResult(
-                model_id=target.model_id,
-                status="unavailable",
-                failure_kind=str(
-                    getattr(exc, "failure_kind", "configuration")
-                )[:200],
-                message=(
-                    "The required model probe could not be initialized."
-                    if target.required
-                    else (
-                        "The optional model probe could not be initialized "
-                        "and was skipped."
-                    )
-                ),
+    concurrency = _manifest_concurrency(manifest)
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = tuple(
+            executor.submit(
+                _probe_candidate,
+                target,
+                timeout_seconds=timeout_seconds,
+                agent_factory=agent_factory,
             )
-            _freeze_json(
-                _probe_path(experiment_directory, target.model_id),
-                result.model_dump(mode="json"),
-            )
-            failures = failures or target.required
-            continue
-        status: Literal["ready", "incompatible", "unavailable"]
-        observed: str | None = None
-        failure_kind: str | None = None
-        if capability.status == "ready":
-            try:
-                if not payloads:
-                    raise ValueError("probe produced no model receipts")
-                validate_candidate_receipts(payloads, target.model_id)
-            except ValueError:
-                status = "incompatible"
-                failure_kind = "model_contaminated"
-            else:
-                status = "ready"
-                observed = target.model_id
-        else:
-            failure_kind = _capability_failure_kind(capability)
-            status = (
-                "incompatible"
-                if failure_kind in {"invalid_request", "structured_output", "unknown"}
-                else "unavailable"
-            )
-        result = ModelProbeResult(
-            model_id=target.model_id,
-            status=status,
-            observed_model=observed,
-            failure_kind=failure_kind,
-            message=(
-                "The model passed the structured-output and native-tool replay probes."
-                if status == "ready"
-                else (
-                    "The required model is incompatible with the research contract."
-                    if target.required
-                    else "The optional model is unavailable or incompatible and was skipped."
-                )
-            ),
+            for target in comparison.model_targets
         )
-        _freeze_json(_probe_path(experiment_directory, target.model_id), result.model_dump(mode="json"))
+        results = tuple(future.result() for future in futures)
+    failures = False
+    for target, result in zip(comparison.model_targets, results, strict=True):
+        _freeze_json(
+            _probe_path(experiment_directory, target.model_id),
+            result.model_dump(mode="json"),
+        )
         failures = failures or (target.required and result.status != "ready")
 
     try:
@@ -354,6 +315,82 @@ def probe_experiment(
     _freeze_json(_judge_probe_path(experiment_directory), judge_payload)
     failures = failures or judge_payload["status"] != "ready"
     return 1 if failures else 0
+
+
+def _probe_candidate(
+    target: ModelTarget,
+    *,
+    timeout_seconds: int,
+    agent_factory: Callable[[str, int], Any],
+) -> ModelProbeResult:
+    """Probe one candidate without writing shared files or emitting output."""
+
+    try:
+        agent = agent_factory(target.model_id, timeout_seconds)
+        with capture_agent_receipts() as receipts:
+            capability = probe_research_model_capability(agent)
+        payloads = [item.model_dump(mode="json") for item in receipts]
+    except Exception as exc:  # noqa: BLE001 - safe probe projection below
+        return ModelProbeResult(
+            model_id=target.model_id,
+            status="unavailable",
+            failure_kind=str(
+                getattr(exc, "failure_kind", "configuration")
+            )[:200],
+            message=(
+                "The required model probe could not be initialized."
+                if target.required
+                else (
+                    "The optional model probe could not be initialized and was skipped."
+                )
+            ),
+        )
+    status: Literal["ready", "incompatible", "unavailable"]
+    observed: str | None = None
+    failure_kind: str | None = None
+    if capability.status == "ready":
+        try:
+            if not payloads:
+                raise ValueError("probe produced no model receipts")
+            validate_candidate_receipts(payloads, target.model_id)
+        except ValueError:
+            status = "incompatible"
+            failure_kind = "model_contaminated"
+        else:
+            status = "ready"
+            observed = target.model_id
+    else:
+        failure_kind = _capability_failure_kind(capability)
+        status = (
+            "incompatible"
+            if failure_kind in {"invalid_request", "structured_output", "unknown"}
+            else "unavailable"
+        )
+    return ModelProbeResult(
+        model_id=target.model_id,
+        status=status,
+        observed_model=observed,
+        failure_kind=failure_kind,
+        message=(
+            "The model passed the structured-output and native-tool replay probes."
+            if status == "ready"
+            else (
+                "The required model is incompatible with the research contract."
+                if target.required
+                else "The optional model is unavailable or incompatible and was skipped."
+            )
+        ),
+    )
+
+
+def _manifest_concurrency(manifest: Mapping[str, Any]) -> int:
+    execution = manifest.get("execution")
+    if not isinstance(execution, Mapping):
+        return 2
+    value = execution.get("max_concurrent_models", 2)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("manifest max_concurrent_models must be a positive integer")
+    return value
 
 
 def _capability_failure_kind(capability: ResearchModelCapability) -> str:
@@ -436,21 +473,41 @@ def run_experiment(directory: Path, *, resume: bool) -> int:
         benchmark, tuple(case.question_id for case in comparison.cases)
     )
     budget = ResearchBudget.model_validate(manifest["execution"]["budget"])
-    result = 0
-    for target in ready:
-        result = max(result, run_model_cell(
-            experiment_id=comparison.experiment_id,
-            source_manifest_path=manifest_path,
-            requested_model=target.model_id,
-            questions=questions,
-            output_directory=directory / "runs" / _model_slug(target.model_id),
-            budget=budget,
-            trial=1,
-            release=benchmark.manifest.environment.release,
-            resume=resume,
-            benchmark=benchmark,
-        ))
-    return result
+    concurrency = _manifest_concurrency(manifest)
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = tuple(
+            executor.submit(
+                run_model_cell,
+                experiment_id=comparison.experiment_id,
+                source_manifest_path=manifest_path,
+                requested_model=target.model_id,
+                questions=questions,
+                output_directory=directory / "runs" / _model_slug(target.model_id),
+                budget=budget,
+                trial=1,
+                release=benchmark.manifest.environment.release,
+                resume=resume,
+                benchmark=benchmark,
+                emit_progress=False,
+            )
+            for target in ready
+        )
+        outcomes: list[int] = []
+        failures: list[str] = []
+        for target, future in zip(ready, futures, strict=True):
+            try:
+                outcome = future.result()
+            except Exception as exc:  # noqa: BLE001 - safe coordinator projection
+                failures.append(f"{target.model_id}:{type(exc).__name__}")
+                outcome = 1
+            outcomes.append(outcome)
+            print(json.dumps({
+                "model_id": target.model_id,
+                "status": "completed" if outcome == 0 else "failed",
+            }, ensure_ascii=False), flush=True)
+    if failures:
+        raise ValueError("model comparison cells failed: " + ", ".join(failures))
+    return max(outcomes, default=0)
 
 
 def judge_experiment(directory: Path, *, resume: bool, timeout_seconds: int) -> int:
@@ -553,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
                 required_models=tuple(args.required_models or REQUIRED_MODELS),
                 optional_models=tuple(args.optional_models or OPTIONAL_MODELS),
                 judge_model=args.judge_model,
+                max_concurrent_models=args.max_concurrent_models,
             )
             return probe_experiment(
                 args.experiment_directory,
