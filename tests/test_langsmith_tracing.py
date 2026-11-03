@@ -156,6 +156,23 @@ def test_preflight_classifies_wrapped_http_403_without_leaking_details() -> None
     assert result.retryable is False
 
 
+def test_model_comparison_attempt_is_allowed_trace_metadata() -> None:
+    trace = WorkflowTraceContext(
+        run_id=uuid4(),
+        run_name="workflow:gpt-6-astra:r17-qa-001:trial-1:attempt-2",
+        tags=("phase:workflow", "attempt:2"),
+        metadata={
+            "experiment_id": "experiment",
+            "candidate_model": "gpt-6-astra",
+            "question_id": "r17-qa-001",
+            "trial": 1,
+            "workflow_attempt": 2,
+        },
+    )
+
+    assert trace.metadata["workflow_attempt"] == 2
+
+
 def test_workflow_trace_context_reaches_langgraph_root_config() -> None:
     class Graph:
         def __init__(self) -> None:

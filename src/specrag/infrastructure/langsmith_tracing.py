@@ -37,6 +37,7 @@ _SAFE_METADATA_KEYS = frozenset({
     "resume",
     "thread_id",
     "trial",
+    "workflow_attempt",
 })
 
 
