@@ -1,80 +1,67 @@
-# SpecRAG coding rules
+# SpecRAG 编码规则
 
-These rules apply to every human- or AI-authored change in this repository.
+本规则适用于本仓库中由人或 AI 编写的所有变更。
 
-## Before changing code
+## 修改代码前
 
-- Read `docs/current_status.md` and
-  `docs/architecture/package_boundaries.md`.
-- For a cross-package feature or architectural change, create or update one
-  numbered plan under `docs/plans/`. Small local fixes do not need a plan.
-- Extend the existing implementation. Do not create a parallel implementation
-  to avoid understanding the current one.
+- 阅读 `docs/current_status.md` 和
+  `docs/architecture/package_boundaries.md`。
+- 对于跨包功能或架构变更，在 `docs/plans/` 下创建或更新一份带编号的计划。
+  小型局部修复无需计划。
+- 扩展现有实现。不得为了逃避理解现有代码而创建平行实现。
 
-## Package boundaries
+## 包边界
 
-- `models`: dependency-free domain and transport models.
-- `retrieval`: corpus discovery, indexing, search, fusion, reranking, and
-  retrieval planning.
-- `tools`: small agent-callable capabilities and their registry.
-- `agents`: bounded agent loops; orchestration belongs here, retrieval
-  algorithms and provider SDK calls do not.
-- `orchestration`: routing and supervision across multiple agents.
-- `evidence`: provenance, validation, sufficiency, gap analysis, and synthesis.
-- `memory`: User/Project Core Memory, Topic recall, reviewed extraction, and maintenance.
-- `access`: authentication-independent authorization policy and local identity services.
-- `specfacts`: reviewed, workspace-scoped specification fact lifecycle and lookup hints.
-- `interfaces`: CLI parsing and application command composition.
-- `infrastructure`: LLM, embedding, vector-store, and persistence adapters.
-- `evaluation`: offline metrics and benchmark runners only.
-- `prompts`: versioned prompt text only; provider calls and workflow logic stay
-  in their owning packages.
+- `models`：无依赖的领域模型和传输模型。
+- `retrieval`：语料发现、索引、搜索、融合、重排和检索规划。
+- `tools`：供智能体调用的小型能力及其注册表。
+- `agents`：有界智能体循环；编排属于此处，但检索算法和提供商 SDK 调用不属于此处。
+- `orchestration`：多个智能体之间的路由与监督。
+- `evidence`：来源追踪、验证、充分性判断、缺口分析和综合。
+- `memory`：用户/项目核心记忆、主题召回、经审查的提取结果和维护。
+- `access`：与认证无关的授权策略和本地身份服务。
+- `specfacts`：经过审查、限定于工作区的规范事实生命周期和查找提示。
+- `interfaces`：CLI 解析和应用命令组合。
+- `infrastructure`：LLM、嵌入、向量存储和持久化适配器。
+- `evaluation`：仅包含离线指标和基准测试运行器。
+- `prompts`：仅包含带版本的提示词文本；提供商调用和工作流逻辑应保留在其所属包中。
 
-Only create a package when working code needs it. Do not add empty scaffolding.
-Dependencies must point inward according to
-`docs/architecture/package_boundaries.md`.
+仅当可运行代码确实需要时才创建新包。不得添加空脚手架。
+依赖方向必须符合 `docs/architecture/package_boundaries.md`。
 
-## LangGraph runtime boundary
+## LangGraph 运行时边界
 
-- LangGraph imports belong only in `orchestration`.
-- Graph nodes manage state transitions, routing, loops, parallel scheduling,
-  checkpoints, and recovery. They call injected business services instead of
-  implementing retrieval, evidence, memory, or domain judgment inline.
-- Domain, retrieval, tools, agents, evidence, memory, infrastructure, and
-  evaluation packages must remain usable without importing LangGraph.
-- LangGraph checkpoint state is runtime state. It is never a substitute for
-  validated long-term domain memory.
+- LangGraph 导入只能出现在 `orchestration` 中。
+- 图节点负责状态转换、路由、循环、并行调度、检查点和恢复。节点应调用注入的业务服务，
+  不得内联实现检索、证据、记忆或领域判断。
+- 领域、检索、工具、智能体、证据、记忆、基础设施和评估包必须在不导入 LangGraph 的情况下仍可使用。
+- LangGraph 检查点状态属于运行时状态，绝不能替代经过验证的长期领域记忆。
 
-## No version graveyards
+## 禁止版本坟场
 
-- Never add version suffixes such as `_v2`, `_v11`, `_new`, `_old`, `_final`,
-  `_backup`, or `_temp` to Python modules.
-- Use Git history for implementation versions. Persisted wire formats may have
-  an explicit `schema_version`, but each schema has one active implementation.
-- When replacing an implementation, update its callers and delete the replaced
-  code and tests in the same change.
-- There must be one supported CLI and one documented path for each workflow.
+- 不得为 Python 模块添加 `_v2`、`_v11`、`_new`、`_old`、`_final`、
+  `_backup` 或 `_temp` 等版本后缀。
+- 使用 Git 历史记录实现版本。持久化传输格式可以包含显式的 `schema_version`，
+  但每个架构只能有一个当前有效的实现。
+- 替换实现时，在同一变更中更新其调用方，并删除被替换的代码和测试。
+- 每个工作流只能有一个受支持的 CLI 和一条有文档说明的使用路径。
 
-## Agent and evidence rules
+## 智能体与证据规则
 
-- Agent loops must have explicit state, bounded turns/tool calls, and recorded
-  stop reasons.
-- Models may propose queries or hypotheses; only source-backed content may be
-  promoted to evidence.
-- Every evidence item must retain source path, document hash, and locator.
-- Provider-specific code belongs in `infrastructure`; agents depend on stable
-  interfaces rather than SDK details.
+- 智能体循环必须具备显式状态、有限的轮次/工具调用次数，以及有记录的停止原因。
+- 模型可以提出查询或假设；只有具备来源支持的内容才能提升为证据。
+- 每条证据都必须保留来源路径、文档哈希和定位信息。
+- 提供商专用代码属于 `infrastructure`；智能体应依赖稳定接口，而不是 SDK 细节。
 
-## Repository hygiene
+## 仓库卫生
 
-- Generated indexes, runs, reports, caches, and downloaded model weights never
-  belong under `src/` and must remain ignored by Git.
-- Tests follow the active package structure. Delete tests for deleted behavior.
-- Do not add another dependency manifest; `pyproject.toml` is authoritative.
-- Update `README.md` and `docs/current_status.md` when the supported workflow or
-  package layout changes.
+- 生成的索引、运行记录、报告、缓存和下载的模型权重绝不能放在 `src/` 下，
+  并且必须保持被 Git 忽略。
+- 测试应遵循当前有效的包结构。删除行为时，同时删除对应测试。
+- 不得添加其他依赖清单；`pyproject.toml` 是唯一权威来源。
+- 当受支持的工作流或包布局发生变化时，更新 `README.md` 和 `docs/current_status.md`。
 
-Before finishing a change, run the canonical quality gate:
+完成变更前，运行标准质量门禁：
 
 ```text
 python scripts/check.py
