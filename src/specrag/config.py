@@ -31,6 +31,12 @@ class Secrets(BaseSettings):
     # are empty, OPENAI_MODEL remains the shared fallback.
     openai_planning_model: str = ""
     openai_summary_model: str = ""
+    # Optional LangSmith settings use the same allowlisted project-secret
+    # loader without exporting credentials into the parent shell.
+    langsmith_api_key: str = ""
+    langsmith_tracing: bool = False
+    langsmith_project: str = ""
+    langsmith_endpoint: str = ""
 
 _PROJECT_SECRET_ENV_FIELDS = {
     "OPENAI_BASE_URL": "openai_base_url",
@@ -38,6 +44,10 @@ _PROJECT_SECRET_ENV_FIELDS = {
     "OPENAI_MODEL": "openai_model",
     "OPENAI_PLANNING_MODEL": "openai_planning_model",
     "OPENAI_SUMMARY_MODEL": "openai_summary_model",
+    "LANGSMITH_API_KEY": "langsmith_api_key",
+    "LANGSMITH_TRACING": "langsmith_tracing",
+    "LANGSMITH_PROJECT": "langsmith_project",
+    "LANGSMITH_ENDPOINT": "langsmith_endpoint",
 }
 
 

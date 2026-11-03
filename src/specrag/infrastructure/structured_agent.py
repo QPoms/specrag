@@ -1,5 +1,4 @@
 """Isolated Codex CLI adapter for schema-constrained agents."""
-
 from __future__ import annotations
 from contextlib import nullcontext
 import hashlib
@@ -49,7 +48,6 @@ def _canonical_json(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -430,6 +428,8 @@ class LLMApiStructuredAgent:
             retry_max_delay_seconds=settings.llm.api_retry_max_delay_seconds,
             deadline_at=deadline_at,
             budget_manager=build_token_budget_manager(settings),
+            langsmith_tracing_enabled=bool(
+                secrets.langsmith_tracing and secrets.langsmith_api_key.strip()),
         )
 
     def _receipt(

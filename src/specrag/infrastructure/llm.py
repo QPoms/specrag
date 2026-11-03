@@ -5,7 +5,6 @@ Callers submit a purpose, fixed instructions, a JSON-compatible public task,
 and a strict Pydantic output type.  Only a parsed model and a redacted receipt
 cross back into the analyzer layer.
 """
-
 from __future__ import annotations
 
 import hashlib
@@ -27,6 +26,7 @@ from specrag.models import (
     NativeFunctionDefinition,
 )
 from .llm_budget import build_token_budget_manager
+from .langsmith_tracing import wrap_openai_client
 from .model_deadline import ModelCallDeadline
 from .llm_contracts import (
     LLMApiMode,
@@ -36,7 +36,6 @@ from .llm_contracts import (
     StructuredLLMClient,
     StructuredLLMResponse,
 )
-
 from .api_errors import (
     ProviderFailure,
     StructuredLLMError,
@@ -44,7 +43,6 @@ from .api_errors import (
     is_retryable_provider_error,
     safe_structured_llm_error,
 )
-
 
 def _canonical_json(value: Any) -> str:
     if isinstance(value, BaseModel):
@@ -114,6 +112,7 @@ class OpenAIStructuredClient:
         deadline_at: datetime | None = None,
         client: Any | None = None,
         budget_manager: TokenBudgetManager | None = None,
+        langsmith_tracing_enabled: bool = False,
     ) -> None:
         if not api_key:
             raise ValueError("OPENAI_API_KEY is required for SPEC LLM mapping")
@@ -159,7 +158,7 @@ class OpenAIStructuredClient:
             }
             if base_url:
                 kwargs["base_url"] = base_url
-            client = OpenAI(**kwargs)
+            client = wrap_openai_client(OpenAI(**kwargs), enabled=langsmith_tracing_enabled)
         self._client = client
 
     def __repr__(self) -> str:
@@ -191,6 +190,8 @@ class OpenAIStructuredClient:
             ),
             retry_max_delay_seconds=config.llm.api_retry_max_delay_seconds,
             budget_manager=build_token_budget_manager(config),
+            langsmith_tracing_enabled=bool(
+                secrets.langsmith_tracing and secrets.langsmith_api_key.strip()),
         )
 
     def _preflight(

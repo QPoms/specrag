@@ -21,6 +21,7 @@ from .parallel import (
     build_parallel_research_workflow,
     new_parallel_research_state,
 )
+from .tracing import WorkflowTraceContext
 from .checkpointing import SQLiteCheckpointManager
 from .harness import RunHarness, RunInspection, RunStore
 from .worker import RunJob, RunQueue, RunWorker
@@ -64,6 +65,7 @@ __all__ = [
     "ParallelResearchState",
     "ParallelResearcherHandler",
     "ParallelResearchWorkflow",
+    "WorkflowTraceContext",
     "build_parallel_research_workflow",
     "new_parallel_research_state",
     "RunHarness",

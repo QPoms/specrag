@@ -34,6 +34,7 @@ from .task_execution import (
     ready_tasks,
     terminalize_tasks,
 )
+from .tracing import WorkflowTraceContext, workflow_config
 from .workflow import (
     ResearchNodeHandlers,
     StateUpdate,
@@ -169,23 +170,18 @@ class ParallelResearchWorkflow:
 
     graph: Any
 
-    @staticmethod
-    def _config(thread_id: str) -> dict[str, dict[str, str]]:
-        if not thread_id.strip():
-            raise ValueError("thread_id must not be blank")
-        return {"configurable": {"thread_id": thread_id}}
-
     def invoke(
         self,
         state: ParallelResearchState,
         *,
         thread_id: str,
+        trace_context: WorkflowTraceContext | None = None,
     ) -> ParallelResearchState:
         return cast(
             ParallelResearchState,
             self.graph.invoke(
                 _normalize_parallel_state(state),
-                config=self._config(thread_id),
+                config=workflow_config(thread_id, trace_context),
             ),
         )
 
@@ -195,7 +191,7 @@ class ParallelResearchWorkflow:
         thread_id: str,
         update: StateUpdate | None = None,
     ) -> ParallelResearchState:
-        config = self._config(thread_id)
+        config = workflow_config(thread_id)
         snapshot = self.graph.get_state(config)
         values = getattr(snapshot, "values", None)
         if values and any(
@@ -213,10 +209,10 @@ class ParallelResearchWorkflow:
         return cast(ParallelResearchState, self.graph.invoke(None, config=config))
 
     def checkpoint(self, *, thread_id: str) -> Any:
-        return self.graph.get_state(self._config(thread_id))
+        return self.graph.get_state(workflow_config(thread_id))
 
     def update(self, *, thread_id: str, update: StateUpdate) -> None:
-        self.graph.update_state(self._config(thread_id), dict(update))
+        self.graph.update_state(workflow_config(thread_id), dict(update))
 
 
 def new_parallel_research_state(
@@ -593,6 +589,7 @@ __all__ = [
     "ParallelResearchState",
     "ParallelResearcherHandler",
     "ParallelResearchWorkflow",
+    "WorkflowTraceContext",
     "build_parallel_research_workflow",
     "new_parallel_research_state",
 ]

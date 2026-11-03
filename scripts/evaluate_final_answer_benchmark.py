@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -24,6 +25,7 @@ from specrag.infrastructure.structured_agent import (
     CodexStructuredAgent,
     LLMApiStructuredAgent,
 )
+from specrag.infrastructure.langsmith_tracing import build_langsmith_tracing
 from specrag.prompts import (
     FINAL_ANSWER_JUDGE_INSTRUCTIONS,
     FINAL_ANSWER_JUDGE_PROMPT_VERSION,
@@ -52,6 +54,18 @@ def _parser() -> argparse.ArgumentParser:
         choices=("api", "codex"),
         default="api",
     )
+    parser.add_argument(
+        "--judge-model",
+        "--model",
+        dest="judge_model",
+        help=(
+            "explicit API Judge model; overrides both the default and summary "
+            "model while preserving the configured endpoint and credentials"
+        ),
+    )
+    parser.add_argument("--trace-experiment-id")
+    parser.add_argument("--trace-candidate-model")
+    parser.add_argument("--trace-trial", type=int, default=1)
     return parser
 
 
@@ -84,15 +98,24 @@ class _StructuredJudge:
         )
 
 
-def _single_request_config() -> AppConfig:
+def _single_request_config(*, judge_model: str | None = None) -> AppConfig:
     """Disable adapter retries so the execution policy owns both attempts."""
 
     base = load_config()
+    secrets = base.secrets
+    if judge_model is not None:
+        normalized = judge_model.strip()
+        if not normalized:
+            raise ValueError("--judge-model must not be blank")
+        secrets = secrets.model_copy(update={
+            "openai_model": normalized,
+            "openai_summary_model": normalized,
+        })
     llm = base.llm.model_copy(update={
         "api_max_retries": 0,
         "api_fallback_models": (),
     })
-    return base.model_copy(update={"llm": llm})
+    return base.model_copy(update={"llm": llm, "secrets": secrets})
 
 
 def _selected_cases(
@@ -306,17 +329,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     config: AppConfig | None = None
     if args.backend == "api":
-        config = _single_request_config()
+        config = _single_request_config(judge_model=args.judge_model)
         model = _configured_model(config)
         if not model:
             raise ValueError("no summary or default model is configured")
+        if args.judge_model is not None and model != args.judge_model.strip():
+            raise ValueError("explicit Judge model override was not applied")
     else:
+        if args.judge_model is not None:
+            raise ValueError("--judge-model is only valid with --backend api")
         model = "codex_managed_default"
     args.output_directory.mkdir(parents=True, exist_ok=True)
     manifest = _manifest(args=args, cases=cases, model=model)
     _freeze_manifest(args.output_directory / "manifest.json", manifest)
 
     agent: LLMApiStructuredAgent | CodexStructuredAgent | None = None
+    tracing = build_langsmith_tracing(config) if config is not None else None
     executions: list[FinalAnswerJudgeExecution] = []
     for case in cases:
         question_id = case.task_metadata.task_id
@@ -359,13 +387,28 @@ def main(argv: list[str] | None = None) -> int:
                     sandbox="read-only",
                 )
         judge = _StructuredJudge(agent) if agent is not None else _NoCallJudge()
-        execution = execute_final_answer_judge(
-            case=case,
-            run_id=_run_id(artifact, question_id=question_id),
-            candidate_answer=candidate_answer,
-            judge=judge,
-            judge_prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
+        activation = (
+            tracing.activate(
+                tags=("specrag:model-comparison", "phase:judge"),
+                metadata={
+                    "experiment_id": args.trace_experiment_id,
+                    "phase": "judge",
+                    "candidate_model": args.trace_candidate_model,
+                    "question_id": question_id,
+                    "trial": args.trace_trial,
+                },
+            )
+            if tracing is not None and args.trace_experiment_id
+            else nullcontext()
         )
+        with activation:
+            execution = execute_final_answer_judge(
+                case=case,
+                run_id=_run_id(artifact, question_id=question_id),
+                candidate_answer=candidate_answer,
+                judge=judge,
+                judge_prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
+            )
         _write_json(output_path, execution.model_dump(mode="json"))
         executions.append(execution)
         print(json.dumps({

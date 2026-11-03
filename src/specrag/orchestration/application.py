@@ -22,6 +22,10 @@ from specrag.infrastructure.research_assessors import (
     StructuredEvidenceSynthesisGenerator,
     StructuredTaskSufficiencyAssessor,
 )
+from specrag.infrastructure.langsmith_tracing import (
+    LangSmithTracing,
+    build_langsmith_tracing,
+)
 from specrag.infrastructure.receipt_capture import record_agent_receipt
 from specrag.infrastructure.research_planning import (
     StructuredPlanResponse,
@@ -51,6 +55,7 @@ from .judge_handler import EvidenceSufficiencyHandler
 from .parallel import (
     ParallelResearcherHandler,
     ParallelResearchWorkflow,
+    WorkflowTraceContext,
     build_parallel_research_workflow,
 )
 from .state import ResearchState, new_research_state
@@ -128,6 +133,7 @@ class ResearchApplication:
     corpus_scope: CorpusScope
     corpus_documents: tuple[CorpusSourceDocument, ...]
     retrieval_index_fingerprint: str
+    tracing: LangSmithTracing
 
     def run(
         self,
@@ -139,6 +145,7 @@ class ResearchApplication:
         plan: ResearchPlan | None = None,
         specfact_ids: tuple[str, ...] = (),
         memory_ids: tuple[str, ...] = (),
+        trace_context: WorkflowTraceContext | None = None,
     ) -> ResearchState:
         state = new_research_state(
             research_id=research_id,
@@ -150,7 +157,12 @@ class ResearchApplication:
         if plan is not None:
             state["research_plan"] = plan
             state["research_tasks"] = plan.tasks
-        return self.workflow.invoke(state, thread_id=thread_id)
+        with self.tracing.activate():
+            return self.workflow.invoke(
+                state,
+                thread_id=thread_id,
+                trace_context=trace_context,
+            )
 
 
 @dataclass(frozen=True)
@@ -494,6 +506,7 @@ def build_research_application(
         corpus_scope=active_retriever.corpus_scope,
         corpus_documents=active_retriever.documents,
         retrieval_index_fingerprint=active_retriever.fingerprint,
+        tracing=build_langsmith_tracing(app_config),
     )
 
 

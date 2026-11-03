@@ -179,11 +179,22 @@ uv run python scripts/check_end_to_end_benchmark.py
 
 Benchmark 契约和整理规则记录在 [`docs/end_to_end_benchmark.md`](docs/end_to_end_benchmark.md) 和 [`docs/plans/044-final-answer-benchmark.md`](docs/plans/044-final-answer-benchmark.md)。完整的 50 用例人工审查视图以单个已签入文件形式保存在 [`data/QA/end_to_end_benchmark_review.json`](data/QA/end_to_end_benchmark_review.json)；标准检查会保证它与组合后的源数据一致。
 
-Final-answer Judge 已将提示词冻结为 `final-answer-rubric-judge/v1.0`，位置为 [`src/specrag/prompts/rubric_judge.py`](src/specrag/prompts/rubric_judge.py)。它只评判 Question、Reference Answer、Rubric 和 Candidate Answer，并返回有序条目等级，而不是由模型生成的分数。严格模型会拒绝缺失、重复或乱序的 Rubric ID，也会拒绝空白规范化后不存在于 Candidate 中的支持文本。应用代码附加各项 Benchmark 权重，将 `full/partial/none` 映射为 `1.0/0.5/0.0`，并计算 0–100 分。已保存答案的批处理运行器已经实现；人工校准仍待完成。参见 [`docs/plans/045-final-answer-judge.md`](docs/plans/045-final-answer-judge.md)。
+Final-answer Judge 已将提示词冻结为 `final-answer-rubric-judge/v1.1`，位置为 [`src/specrag/prompts/rubric_judge.py`](src/specrag/prompts/rubric_judge.py)。它只评判 Question、Reference Answer、Rubric 和 Candidate Answer，并返回有序条目等级，而不是由模型生成的分数。严格模型会拒绝缺失、重复或乱序的 Rubric ID。应用代码附加各项 Benchmark 权重，将 `full/partial/none` 映射为 `1.0/0.5/0.0`，并计算 0–100 分。已保存答案的批处理运行器已经实现；人工校准仍待完成。参见 [`docs/plans/045-final-answer-judge.md`](docs/plans/045-final-answer-judge.md)。
 
 有界执行策略也已实现。空白 Workflow 答案会绕过模型，以确定性方式得到零分，且每项都标为 `none`。非空答案最多允许针对同一不可变输入进行两次顶层 Judge 尝试。如果两次尝试都验证失败或提供商失败，执行会记录 `evaluation_failed` 和空分数，而不是错误报告零分；无需重新运行 Research Workflow，即可再次评判已保存的答案。人工校准仍待完成。
 
 现在可以通过 `scripts/evaluate_final_answer_benchmark.py` 评估已保存的 Workflow 产物，而无需重新运行研究。运行器支持 `simple`、`complex` 或全部冻结用例、可恢复输出、API 或隔离 Codex 后端、源产物哈希冻结、逐用例执行记录，以及总体和按难度分组的分数汇总。生成的判定保留在被忽略的 `artifacts/` 树下。
+
+一次试验的多模型比较入口也已实现。候选模型固定为必选的 `gpt-5.6-sol`、`gpt-6-astra`、`deepseek-v4.1-flash`，以及探针成功时加入的可选 `claude-opus-5`；全部模型驱动节点使用同一候选模型，跨模型 fallback 被禁用，最终答案统一由 `deepseek-v4-pro` 盲评。本轮只汇总 Judge 分数、覆盖率和运行统计，不计算 Task Success、Pass@k、Pass^k 或阈值通过率。LangSmith 用于节点和模型调用轨迹监督，本地结构化 Run、Evidence、回执与 Judge 产物仍是评测权威数据。
+
+```powershell
+uv run python scripts/evaluate_model_comparison.py probe artifacts/evaluations/model-comparison/EXP-ID
+uv run python scripts/evaluate_model_comparison.py run artifacts/evaluations/model-comparison/EXP-ID --resume
+uv run python scripts/evaluate_model_comparison.py judge artifacts/evaluations/model-comparison/EXP-ID --resume
+uv run python scripts/evaluate_model_comparison.py summarize artifacts/evaluations/model-comparison/EXP-ID
+```
+
+正式探针前必须配置并轮换 `.env` 中的 OpenAI-compatible 代理和 LangSmith 凭据。能力探针验证严格结构化输出和 Researcher 两轮原生工具 replay；必选模型失败会阻止正式批次，可选 Claude 失败则明确记录并跳过。完整契约见 [`docs/plans/046-multi-model-langsmith-evaluation.md`](docs/plans/046-multi-model-langsmith-evaluation.md)。
 
 端到端基线使用同一批 50 个可回答的 Release 17 问题，但不会注入经审查的中间任务或证据。其唯一质量汇总指标是 `Task Success Rate`：Run 必须生成正常答案，在没有重大错误或无依据结论的情况下回答核心结论，正确引用支持核心结论的证据，并遵守请求的语料范围。每项决定都经过人工审查；失败和预算耗尽的 Run 仍计入分母。
 

@@ -4,6 +4,36 @@ Updated: 2026-11-03
 
 ## Current state
 
+The one-trial multi-model comparison layer is implemented over the existing
+frozen Benchmark, complete Research Workflow, and final-answer Rubric Judge.
+Its required candidate models are `gpt-5.6-sol`, `gpt-6-astra`, and
+`deepseek-v4.1-flash`; `claude-opus-5` joins only after passing the same
+structured-output and two-turn native-tool replay probe. Every model-backed
+Workflow stage uses the selected candidate model, cross-model fallback is
+disabled and checked against receipts, and `deepseek-v4-pro` is the fixed
+final-answer Judge. Each case runs once. Reports contain Judge scores, score
+coverage, common-case averages, and separate Workflow/Judge/no-answer counts;
+they deliberately contain no Task Success, threshold, Pass@k, or Pass^k.
+
+The supported entry point is `scripts/evaluate_model_comparison.py`, with
+`probe`, `run`, `judge`, and `summarize` phases. The experiment manifest freezes
+the ordered model/case matrix, Benchmark and Environment, budget, source
+revision, empty fallback policy, and safe tracing configuration. Run and Judge
+artifacts are atomic and resumable, and stale model, question, manifest,
+Benchmark, Git, budget, corpus, index, or source-artifact inputs fail closed.
+Optional LangSmith tracing now correlates the experiment, candidate model,
+question, trial, local Run, graph nodes, and wrapped OpenAI-compatible calls;
+the existing local Run Events, receipts, Evidence state, and Judge artifacts
+remain authoritative. Reference Answers, Rubrics, and Gold Evidence never
+enter the candidate Workflow or its trace metadata.
+
+No live capability probe or formal 150/200-Run comparison has been started.
+An initial read-only audit accidentally exposed the current proxy and LangSmith
+credentials to an internal tool log, without checking them into the repository.
+Both credential classes must be rotated before live validation. The design and
+execution contract are recorded in
+`docs/plans/046-multi-model-langsmith-evaluation.md`.
+
 The final-answer Benchmark V1 is now frozen as
 `specrag-release17-final-answer` version `1.0.0`. It composes the existing 50
 Release 17 questions (34 simple, 16 complex), reviewed Reference Answers and

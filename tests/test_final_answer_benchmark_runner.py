@@ -9,10 +9,12 @@ from scripts.evaluate_final_answer_benchmark import (
     _parser,
     _candidate_answer,
     _run_id,
+    _single_request_config,
     _selected_cases,
     _summary,
     _validate_artifact_case,
 )
+from specrag.config import AppConfig, Secrets
 from specrag.evaluation import execute_final_answer_judge, load_end_to_end_benchmark
 from specrag.prompts import FINAL_ANSWER_JUDGE_PROMPT_VERSION
 
@@ -40,6 +42,22 @@ def test_runner_exposes_explicit_api_and_codex_backends() -> None:
     args = _parser().parse_args(["runs", "outputs", "--backend", "codex"])
 
     assert args.backend == "codex"
+
+
+def test_explicit_judge_model_overrides_summary_and_disables_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = AppConfig(secrets=Secrets(_env_file=None))
+    monkeypatch.setattr(
+        "scripts.evaluate_final_answer_benchmark.load_config", lambda: base
+    )
+
+    config = _single_request_config(judge_model="deepseek-v4-pro")
+
+    assert config.secrets.openai_model == "deepseek-v4-pro"
+    assert config.secrets.openai_summary_model == "deepseek-v4-pro"
+    assert config.llm.api_fallback_models == ()
+    assert config.llm.api_max_retries == 0
 
 
 def test_runner_extracts_saved_answer_and_run_identity() -> None:

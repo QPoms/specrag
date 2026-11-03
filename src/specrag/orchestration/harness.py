@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -425,7 +426,12 @@ class RunHarness(RunAccessMixin):
         try:
             app = self._application(context, active)
             if resume:
-                state = app.workflow.resume(thread_id=active.thread_id)
+                tracing = getattr(app, "tracing", None)
+                activation = (
+                    tracing.activate() if tracing is not None else nullcontext()
+                )
+                with activation:
+                    state = app.workflow.resume(thread_id=active.thread_id)
             else:
                 assert request is not None
                 state = app.run(

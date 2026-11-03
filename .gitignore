@@ -23,6 +23,8 @@ tmp/
 all-test-temp-unique-*/
 specrag.pytest-tmp-*/
 pytest-cache-files-*/
+pytest-stage*/
+specrag.tmppytest-quality-gate/
 .torch_cuda/
 .tmp_*.py
 
