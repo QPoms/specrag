@@ -224,7 +224,7 @@ def _execute_question_with_retries(
                     app, question=question, thread_id=thread_id,
                     budget=budget, trace=trace,
                 )
-            receipt_payload = [item.model_dump(mode="json") for item in receipts]
+            receipt_payload = [dict(item) for item in state["model_receipts"]]
             validate_candidate_receipts(receipt_payload, requested_model)
             attempts.append(build_attempt_audit(
                 attempt=attempt, status="completed", started=started,

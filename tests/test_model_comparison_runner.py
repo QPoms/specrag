@@ -36,6 +36,7 @@ from specrag.interfaces.model_comparison import (
 from specrag.interfaces import model_comparison as comparison_interface
 from specrag.models import ResearchBudget
 from specrag.prompts import FINAL_ANSWER_JUDGE_PROMPT_VERSION
+from specrag.orchestration import new_research_state
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -230,6 +231,45 @@ def test_retryable_provider_failure_uses_bounded_exponential_backoff(
     assert artifact["workflow_status"] == "failed"
     assert len(artifact["workflow_attempts"]) == 4
     assert delays == [5.0, 10.0, 20.0]
+
+
+def test_completed_workflow_uses_authoritative_state_receipts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = load_end_to_end_benchmark()
+    question = benchmark_questions(benchmark, ("r17-qa-001",))[0]
+    state = new_research_state(
+        research_id="research-1",
+        user_question=question.question,
+    )
+    state["model_receipts"] = ({
+        "model": "gpt-6-astra",
+        "attempted_models": ["gpt-6-astra"],
+    },)
+    monkeypatch.setattr(
+        comparison_interface,
+        "_run_application",
+        lambda *args, **kwargs: state,
+    )
+
+    artifact = comparison_interface._execute_question_with_retries(
+        app=SimpleNamespace(retrieval_index_fingerprint="index"),
+        question=question,
+        budget=ResearchBudget(),
+        experiment_id="receipt-test",
+        benchmark=benchmark,
+        requested_model="gpt-6-astra",
+        trial=1,
+        source_manifest_sha256="a" * 64,
+        source_revision={"commit": "abc", "dirty": False},
+        max_provider_retries=0,
+        retry_sleep=lambda delay: pytest.fail("sleep is not expected"),
+    )
+
+    assert artifact["workflow_status"] == "completed"
+    assert artifact["model_receipts"] == [
+        {"model": "gpt-6-astra", "attempted_models": ["gpt-6-astra"]}
+    ]
 
 
 def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> None:
