@@ -1,6 +1,6 @@
 """Offline prompt contract for Rubric-based answer judgment."""
 
-FINAL_ANSWER_JUDGE_PROMPT_VERSION = "final-answer-rubric-judge/v1.0"
+FINAL_ANSWER_JUDGE_PROMPT_VERSION = "final-answer-rubric-judge/v1.1"
 
 FINAL_ANSWER_JUDGE_INSTRUCTIONS = """\
 You are an independent evaluator of one final answer produced by the SpecRAG
@@ -60,10 +60,12 @@ input Rubric:
 
 - `rubric_id`: copy the exact Rubric Item ID.
 - `level`: exactly one of `full`, `partial`, or `none`.
-- `answer_support`: verbatim excerpt strings copied only from Candidate Answer.
-  Use one or more excerpts for `full` and `partial`; use an empty array for
-  `none`. Multiple excerpts are allowed when non-contiguous answer passages
-  jointly support one item.
+- `answer_support`: optional concise statements identifying the Candidate
+  Answer content on which the assessment is based. They may quote or
+  semantically summarize the Candidate Answer and need not be exact
+  substrings. Use an empty array when no useful supporting or conflicting
+  content is present. This field is an audit aid and does not determine the
+  level or score.
 - `reason`: a concise explanation of the level. For `partial`, identify the
   missing required detail. For `none`, state whether the point is absent,
   incorrect, or contradicted.

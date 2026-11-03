@@ -5,7 +5,7 @@ from specrag.prompts import (
 
 
 def test_final_answer_judge_prompt_has_frozen_contract() -> None:
-    assert FINAL_ANSWER_JUDGE_PROMPT_VERSION == "final-answer-rubric-judge/v1.0"
+    assert FINAL_ANSWER_JUDGE_PROMPT_VERSION == "final-answer-rubric-judge/v1.1"
     for semantic_input in (
         "Question",
         "Reference Answer",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,7 +16,6 @@ _LEVEL_RATIOS: dict[JudgmentLevel, float] = {
     "partial": 0.5,
     "none": 0.0,
 }
-
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -53,10 +51,6 @@ class JudgeRubricAssessment(_StrictModel):
             raise ValueError("reason must not be blank")
         if any(not excerpt.strip() for excerpt in self.answer_support):
             raise ValueError("answer_support excerpts must not be blank")
-        if self.level == "none" and self.answer_support:
-            raise ValueError("none assessment must use empty answer_support")
-        if self.level != "none" and not self.answer_support:
-            raise ValueError("full and partial assessments require answer_support")
         return self
 
 
@@ -95,10 +89,6 @@ class ScoredRubricAssessment(_StrictModel):
         expected_score = round(self.weight * expected_ratio, 1)
         if self.awarded_score != expected_score:
             raise ValueError("awarded_score must equal weight * score_ratio")
-        if self.level == "none" and self.answer_support:
-            raise ValueError("none assessment must use empty answer_support")
-        if self.level != "none" and not self.answer_support:
-            raise ValueError("full and partial assessments require answer_support")
         if any(not excerpt.strip() for excerpt in self.answer_support):
             raise ValueError("answer_support excerpts must not be blank")
         if not self.reason.strip():
@@ -187,20 +177,12 @@ def score_rubric_judgment(
             "in input order"
         )
 
-    normalized_candidate = _normalize_whitespace(judge_input.candidate_answer)
     scored: list[ScoredRubricAssessment] = []
     for rubric_item, assessment in zip(
         rubric_items,
         judgment.rubric_assessments,
         strict=True,
     ):
-        for excerpt in assessment.answer_support:
-            normalized_excerpt = _normalize_whitespace(excerpt)
-            if normalized_excerpt not in normalized_candidate:
-                raise ValueError(
-                    f"{assessment.rubric_id} answer_support is not a Candidate "
-                    "Answer substring after whitespace normalization"
-                )
         ratio = _LEVEL_RATIOS[assessment.level]
         scored.append(
             ScoredRubricAssessment(
@@ -224,11 +206,6 @@ def score_rubric_judgment(
         judge_model=judge_model,
         judge_prompt_version=judge_prompt_version,
     )
-
-
-def _normalize_whitespace(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
-
 
 __all__ = [
     "FinalAnswerEvaluation",

@@ -22,7 +22,7 @@ RUNS = ROOT / "artifacts/runs/end-to-end/20261018-formal-50"
 
 
 class _ForbiddenJudge:
-    def __call__(self, judge_input):
+    def __call__(self, judge_input, *, correction=None):
         raise AssertionError("Judge must not be called for an empty answer")
 
 

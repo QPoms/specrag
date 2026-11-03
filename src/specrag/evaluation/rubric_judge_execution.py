@@ -48,7 +48,12 @@ class JudgeCallResult(_StrictModel):
 class FinalAnswerJudge(Protocol):
     """Injected one-call boundary; provider adapters implement this protocol."""
 
-    def __call__(self, judge_input: FinalAnswerJudgeInput) -> JudgeCallResult: ...
+    def __call__(
+        self,
+        judge_input: FinalAnswerJudgeInput,
+        *,
+        correction: str | None = None,
+    ) -> JudgeCallResult: ...
 
 
 class JudgeAttemptFailure(_StrictModel):
@@ -148,9 +153,10 @@ def execute_final_answer_judge(
         candidate_answer=candidate_answer,
     )
     failures: list[JudgeAttemptFailure] = []
+    correction: str | None = None
     for attempt in range(1, MAX_JUDGE_ATTEMPTS + 1):
         try:
-            result = judge(judge_input)
+            result = judge(judge_input, correction=correction)
         except Exception as exc:  # noqa: BLE001 - provider boundary is injected
             if not _is_expected_judge_call_failure(exc):
                 raise
@@ -177,6 +183,7 @@ def execute_final_answer_judge(
             )
         except ValueError as exc:
             failures.append(_attempt_failure(attempt=attempt, exc=exc))
+            correction = _correction_instruction(exc)
 
     return FinalAnswerJudgeExecution(
         question_id=question_id,
@@ -265,6 +272,18 @@ def _is_expected_judge_call_failure(exc: Exception) -> bool:
     return isinstance(exc, TimeoutError) or isinstance(
         getattr(exc, "failure_kind", None),
         str,
+    )
+
+
+def _correction_instruction(exc: ValueError) -> str:
+    """Return bounded repair guidance without adding a fifth semantic input."""
+
+    return (
+        "Your previous structured output failed deterministic validation: "
+        f"{str(exc)[:500]}. Re-evaluate every Rubric Item and return a complete "
+        "replacement object with every Rubric Item exactly once and in input "
+        "order. Use only full, partial, or none as the level. Do not return "
+        "weights or scores."
     )
 
 

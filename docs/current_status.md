@@ -1,6 +1,6 @@
 # Current project status
 
-Updated: 2026-11-02
+Updated: 2026-11-03
 
 ## Current state
 
@@ -24,14 +24,15 @@ relevant specification versions; the full execution Environment is retained
 once at the end.
 
 The final-answer Judge Prompt contract is frozen as
-`final-answer-rubric-judge/v1.0`. It accepts only Question, Reference Answer,
+`final-answer-rubric-judge/v1.1`. It accepts only Question, Reference Answer,
 Rubric, and Candidate Answer; excludes Environment, Gold Evidence, citations,
 and Workflow traces; and requires one ordered `full`, `partial`, or `none`
-assessment with verbatim Candidate support and a reason for every Rubric Item.
+assessment with optional Candidate support notes and a reason for every Rubric Item.
 It explicitly forbids model-authored weights or scores. Provider-neutral
 strict models now enforce complete, unique, ordered Rubric IDs, the
-full/partial/none support policy, and Candidate support substrings after
-whitespace normalization. Deterministic application code attaches frozen
+full/partial/none level policy, while `answer_support` is non-scoring audit text
+that may quote or summarize the Candidate Answer and is not substring-validated.
+Deterministic application code attaches frozen
 Benchmark weights, calculates item scores at 1.0/0.5/0.0, sums the 0-100 total,
 and places `score` before `rubric_assessments` in the formal record. The
 bounded execution policy is now implemented: blank answers deterministically
@@ -43,6 +44,15 @@ programming errors remain visible. A resumable saved-answer runner now freezes
 source-artifact hashes, supports simple/complex selection and API or isolated
 Codex judging, and reports overall and per-difficulty scores without rerunning
 research. Calibration remains pending.
+
+The first complete `final-answer-rubric-judge/v1.1` API batch finished on
+2026-11-03 with 50 numeric results and no Judge execution failures. All 49
+non-empty Workflow answers were scored on the first API call; the single blank
+answer received the deterministic no-answer zero without a call. The diagnostic
+mean was 87.0 overall, 90.2 for simple cases, and 80.3 for complex cases. The 33
+cases that already had numeric results in the prior Codex-backed batch retained
+exactly the same status and score. Human calibration is still required before
+these automated scores become a reviewed baseline.
 
 The implemented product is now a conversation-centered local 3GPP research
 workspace with an authenticated multi-user API, durable Run/Worker lifecycle,

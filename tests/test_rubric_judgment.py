@@ -181,37 +181,44 @@ def test_scoring_rejects_missing_or_out_of_order_rubric_ids(
         )
 
 
-def test_scoring_rejects_support_not_copied_from_candidate_answer() -> None:
+def test_scoring_accepts_semantic_support_not_copied_from_candidate_answer() -> None:
     judgment = FinalAnswerJudgmentDraft(
         rubric_assessments=(
             JudgeRubricAssessment(
                 rubric_id="R1",
                 level="full",
-                answer_support=("This text is invented by the Judge.",),
-                reason="Purported support.",
+                answer_support=("The answer gives the conclusion and condition.",),
+                reason="The Candidate Answer semantically covers the item.",
             ),
             JudgeRubricAssessment(
                 rubric_id="R2",
                 level="none",
-                answer_support=(),
+                answer_support=("The answer merely mentions A.",),
                 reason="Absent.",
             ),
         ),
         overall_reasoning="One item was purportedly covered.",
     )
 
-    with pytest.raises(ValueError, match="not a Candidate Answer substring"):
-        score_rubric_judgment(
-            question_id="r17-qa-001",
-            run_id="run-001",
-            judge_input=_judge_input(),
-            judgment=judgment,
-            judge_model="judge-model",
-            judge_prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
-        )
+    evaluation = score_rubric_judgment(
+        question_id="r17-qa-001",
+        run_id="run-001",
+        judge_input=_judge_input(),
+        judgment=judgment,
+        judge_model="judge-model",
+        judge_prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
+    )
+
+    assert evaluation.score == 60.0
+    assert evaluation.rubric_assessments[0].answer_support == (
+        "The answer gives the conclusion and condition.",
+    )
+    assert evaluation.rubric_assessments[1].answer_support == (
+        "The answer merely mentions A.",
+    )
 
 
-def test_judge_draft_rejects_scores_and_invalid_support_policy() -> None:
+def test_judge_draft_rejects_scores_but_support_is_optional_audit_text() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         FinalAnswerJudgmentDraft.model_validate(
             {
@@ -228,18 +235,18 @@ def test_judge_draft_rejects_scores_and_invalid_support_policy() -> None:
             }
         )
 
-    with pytest.raises(ValidationError, match="require answer_support"):
-        JudgeRubricAssessment(
-            rubric_id="R1",
-            level="partial",
-            answer_support=(),
-            reason="Incomplete.",
-        )
+    partial = JudgeRubricAssessment(
+        rubric_id="R1",
+        level="partial",
+        answer_support=(),
+        reason="Incomplete.",
+    )
+    contradicted = JudgeRubricAssessment(
+        rubric_id="R1",
+        level="none",
+        answer_support=("The Candidate Answer reverses the relationship.",),
+        reason="Contradicted.",
+    )
 
-    with pytest.raises(ValidationError, match="empty answer_support"):
-        JudgeRubricAssessment(
-            rubric_id="R1",
-            level="none",
-            answer_support=("unsupported",),
-            reason="Absent.",
-        )
+    assert partial.answer_support == ()
+    assert contradicted.answer_support

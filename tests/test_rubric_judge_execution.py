@@ -23,9 +23,16 @@ class _SequenceJudge:
     def __init__(self, outcomes: Iterable[JudgeCallResult | Exception]) -> None:
         self._outcomes = iter(outcomes)
         self.inputs: list[FinalAnswerJudgeInput] = []
+        self.corrections: list[str | None] = []
 
-    def __call__(self, judge_input: FinalAnswerJudgeInput) -> JudgeCallResult:
+    def __call__(
+        self,
+        judge_input: FinalAnswerJudgeInput,
+        *,
+        correction: str | None = None,
+    ) -> JudgeCallResult:
         self.inputs.append(judge_input)
+        self.corrections.append(correction)
         outcome = next(self._outcomes)
         if isinstance(outcome, Exception):
             raise outcome
@@ -84,11 +91,13 @@ def test_empty_candidate_is_deterministic_zero_without_judge_call() -> None:
 def test_invalid_first_output_retries_same_input_then_scores() -> None:
     case = load_end_to_end_benchmark(ROOT).cases[0]
     candidate = "The candidate states the supported conclusion."
+    incomplete = _draft(support="A semantic summary.")
+    incomplete = FinalAnswerJudgmentDraft(
+        rubric_assessments=incomplete.rubric_assessments[:-1],
+        overall_reasoning=incomplete.overall_reasoning,
+    )
     judge = _SequenceJudge((
-        JudgeCallResult(
-            judgment=_draft(support="Invented support."),
-            judge_model="judge-model",
-        ),
+        JudgeCallResult(judgment=incomplete, judge_model="judge-model"),
         JudgeCallResult(
             judgment=_draft(support="supported conclusion"),
             judge_model="judge-model",
@@ -110,6 +119,8 @@ def test_invalid_first_output_retries_same_input_then_scores() -> None:
     assert result.attempt_failures[0].failure_kind == "invalid_output"
     assert len(judge.inputs) == 2
     assert judge.inputs[0] is judge.inputs[1]
+    assert judge.corrections[0] is None
+    assert "every Rubric Item exactly once" in str(judge.corrections[1])
 
 
 def test_timeout_retries_once_and_can_recover() -> None:
@@ -135,6 +146,7 @@ def test_timeout_retries_once_and_can_recover() -> None:
     assert result.attempt_count == 2
     assert result.attempt_failures[0].failure_kind == "timeout"
     assert result.attempt_failures[0].message == "Judge call timed out."
+    assert judge.corrections == [None, None]
 
 
 def test_two_provider_failures_produce_no_score() -> None:

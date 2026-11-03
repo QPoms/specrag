@@ -62,11 +62,19 @@ class _StructuredJudge:
     ) -> None:
         self._agent = agent
 
-    def __call__(self, judge_input: FinalAnswerJudgeInput) -> JudgeCallResult:
+    def __call__(
+        self,
+        judge_input: FinalAnswerJudgeInput,
+        *,
+        correction: str | None = None,
+    ) -> JudgeCallResult:
+        instructions = FINAL_ANSWER_JUDGE_INSTRUCTIONS
+        if correction is not None:
+            instructions = f"{instructions.rstrip()}\n\n{correction}\n"
         response = self._agent.parse(
             purpose="judge final-answer Rubric coverage",
             prompt_version=FINAL_ANSWER_JUDGE_PROMPT_VERSION,
-            instructions=FINAL_ANSWER_JUDGE_INSTRUCTIONS,
+            instructions=instructions,
             input_payload=judge_input,
             output_type=FinalAnswerJudgmentDraft,
         )
@@ -374,7 +382,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 class _NoCallJudge:
-    def __call__(self, judge_input: FinalAnswerJudgeInput) -> JudgeCallResult:
+    def __call__(
+        self,
+        judge_input: FinalAnswerJudgeInput,
+        *,
+        correction: str | None = None,
+    ) -> JudgeCallResult:
         raise AssertionError("blank Candidate Answer must bypass the Judge")
 
 
