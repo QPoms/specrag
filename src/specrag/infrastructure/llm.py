@@ -7,7 +7,6 @@ cross back into the analyzer layer.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from datetime import datetime
@@ -28,6 +27,13 @@ from specrag.models import (
 from .llm_budget import build_token_budget_manager
 from .langsmith_tracing import wrap_openai_client
 from .model_deadline import ModelCallDeadline
+from .model_transport import transport_reasoning_options
+from .llm_serialization import (
+    canonical_json as _canonical_json,
+    responses_output_payload as _responses_output_payload,
+    responses_tool_payload as _responses_tool_payload,
+    sha256_text as _sha256,
+)
 from .llm_contracts import (
     LLMApiMode,
     LLMCallReceipt,
@@ -43,36 +49,6 @@ from .api_errors import (
     is_retryable_provider_error,
     safe_structured_llm_error,
 )
-
-def _canonical_json(value: Any) -> str:
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-def _responses_tool_payload(definition: NativeFunctionDefinition) -> dict[str, Any]:
-    return {
-        "type": "function", "name": definition.name,
-        "description": definition.description,
-        "parameters": definition.parameters,
-        "strict": definition.strict,
-    }
-
-
-def _responses_output_payload(output: NativeFunctionCallOutput) -> dict[str, Any]:
-    return {
-        "type": "function_call_output", "call_id": output.call_id,
-        "output": _canonical_json(output.output),
-    }
-
-
-def _sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
 
 def _is_retryable_provider_error(exc: Exception) -> bool:
     return is_retryable_provider_error(exc)
@@ -102,7 +78,7 @@ class OpenAIStructuredClient:
         model: str,
         base_url: str = "",
         api_mode: LLMApiMode = LLMApiMode.RESPONSES,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = "low",
         max_output_tokens: int = 8_000,
         timeout_seconds: float = 120.0,
         max_retries: int = 8,
@@ -249,16 +225,20 @@ class OpenAIStructuredClient:
                 attempted_models.append(candidate_model)
                 try:
                     if self._api_mode == LLMApiMode.RESPONSES:
-                        raw = self._client.responses.parse(
+                        request_options: dict[str, Any] = dict(
                             model=candidate_model,
                             instructions=instructions,
                             input=input_json,
                             text_format=output_type,
-                            reasoning={"effort": self._reasoning_effort},
                             max_output_tokens=self._max_output_tokens,
                             store=False,
                             timeout=self._deadline.request_timeout(),
+                            **transport_reasoning_options(
+                                self._reasoning_effort,
+                                api_mode=LLMApiMode.RESPONSES,
+                            ),
                         )
+                        raw = self._client.responses.parse(**request_options)
                         status = getattr(raw, "status", "completed")
                         if status != "completed":
                             incomplete = getattr(raw, "incomplete_details", None)
@@ -273,18 +253,22 @@ class OpenAIStructuredClient:
                         input_tokens = getattr(usage, "input_tokens", None)
                         output_tokens = getattr(usage, "output_tokens", None)
                     else:
-                        raw = self._client.chat.completions.parse(
+                        request_options = dict(
                             model=candidate_model,
                             messages=(
                                 {"role": "system", "content": instructions},
                                 {"role": "user", "content": input_json},
                             ),
                             response_format=output_type,
-                            reasoning_effort=self._reasoning_effort,
                             max_completion_tokens=self._max_output_tokens,
                             store=False,
                             timeout=self._deadline.request_timeout(),
+                            **transport_reasoning_options(
+                                self._reasoning_effort,
+                                api_mode=LLMApiMode.CHAT_COMPLETIONS,
+                            ),
                         )
+                        raw = self._client.chat.completions.parse(**request_options)
                         choice = raw.choices[0]
                         finish_reason = getattr(choice, "finish_reason", "stop")
                         if finish_reason != "stop":
@@ -465,9 +449,12 @@ class OpenAIStructuredClient:
                         "tools": tool_payloads,
                         "tool_choice": "required",
                         "parallel_tool_calls": True,
-                        "reasoning": {"effort": self._reasoning_effort},
                         "max_output_tokens": self._max_output_tokens,
                         "store": False,
+                        **transport_reasoning_options(
+                            self._reasoning_effort,
+                            api_mode=LLMApiMode.RESPONSES,
+                        ),
                     }
                     if max_tool_calls is not None:
                         kwargs["max_tool_calls"] = max_tool_calls

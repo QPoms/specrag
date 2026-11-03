@@ -27,6 +27,7 @@ from .model_capabilities import (
     probe_native_tool_capability,
     probe_research_model_capability,
 )
+from .model_transport import ModelTransportProfile
 from .sqlite_stores import SQLiteMemoryStore, SQLiteRunStore, SQLiteSpecFactStore
 from .run_queue import SQLiteRunQueue
 from .result_store import SQLiteResearchResultStore
@@ -65,6 +66,7 @@ __all__ = [
     "probe_research_model_capability",
     "ProviderCapabilityCheck",
     "ResearchModelCapability",
+    "ModelTransportProfile",
     "SQLiteRunStore",
     "SQLiteRunQueue",
     "SQLiteResearchResultStore",

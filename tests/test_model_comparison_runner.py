@@ -25,6 +25,8 @@ from specrag.infrastructure.model_capabilities import (
     ProviderCapabilityCheck,
     ResearchModelCapability,
 )
+from specrag.infrastructure.llm_contracts import LLMApiMode
+from specrag.infrastructure.model_transport import ModelTransportProfile
 from specrag.interfaces.model_comparison import (
     _safe_failure_summary,
     candidate_model_config,
@@ -56,10 +58,31 @@ def _small_manifest() -> ModelComparisonExperimentManifest:
 
 
 def _operational_manifest() -> dict[str, object]:
+    comparison = _small_manifest()
     return {
         "schema_version": "specrag.model-comparison-operational-manifest/v1",
-        "comparison": _small_manifest().model_dump(mode="json"),
+        "comparison": comparison.model_dump(mode="json"),
+        "transports": _transports(comparison),
         "execution": {"budget": {}},
+    }
+
+
+def _transports(
+    comparison: ModelComparisonExperimentManifest,
+) -> dict[str, object]:
+    return {
+        "candidates": {
+            target.model_id: ModelTransportProfile(
+                model_id=target.model_id
+            ).model_dump(mode="json")
+            for target in comparison.model_targets
+        },
+        "judge": ModelTransportProfile(
+            model_id=comparison.judge_model,
+            structured_api_mode=LLMApiMode.CHAT_COMPLETIONS,
+            reasoning_effort=None,
+            supports_native_tools=False,
+        ).model_dump(mode="json"),
     }
 
 
@@ -126,6 +149,18 @@ def test_operational_manifest_has_fixed_models_and_no_evaluator_payload() -> Non
     ]
     assert comparison.judge_model == "deepseek-v4-pro"
     assert manifest["execution"]["fallback_models"] == []
+    assert manifest["transports"]["judge"] == {
+        "model_id": "deepseek-v4-pro",
+        "structured_api_mode": "chat_completions",
+        "reasoning_effort": None,
+        "supports_native_tools": False,
+    }
+    assert manifest["transports"]["candidates"]["deepseek-v4.1-flash"] == {
+        "model_id": "deepseek-v4.1-flash",
+        "structured_api_mode": "responses",
+        "reasoning_effort": "high",
+        "supports_native_tools": True,
+    }
     assert manifest["execution"]["max_concurrent_models"] == 2
     assert manifest["execution"]["latency_condition"] == (
         "concurrent_models_not_comparable_to_sequential_baseline"
@@ -149,6 +184,7 @@ def test_probe_blocks_required_initialization_failure_and_skips_optional(
     manifest = {
         "schema_version": "specrag.model-comparison-operational-manifest/v1",
         "comparison": comparison.model_dump(mode="json"),
+        "transports": _transports(comparison),
     }
 
     class FakeAgent:
@@ -158,7 +194,7 @@ def test_probe_blocks_required_initialization_failure_and_skips_optional(
         def parse(self, **kwargs):
             return SimpleNamespace(receipt=SimpleNamespace(model=self.model))
 
-    def factory(model: str, timeout: int):
+    def factory(model: str, timeout: int, transport_profile):
         if model in {"gpt-5.6-sol", "claude-opus-5"}:
             raise RuntimeError("sensitive upstream text must not be persisted")
         return FakeAgent(model)
@@ -206,7 +242,7 @@ def test_probe_accepts_ready_candidates_and_fixed_judge(
         tmp_path,
         manifest,
         timeout_seconds=1,
-        agent_factory=lambda model, timeout: FakeAgent(model),
+        agent_factory=lambda model, timeout, profile: FakeAgent(model),
     )
 
     assert result == 0
@@ -235,6 +271,7 @@ def test_candidate_probes_run_with_frozen_model_concurrency(
     manifest = {
         "schema_version": "specrag.model-comparison-operational-manifest/v1",
         "comparison": comparison.model_dump(mode="json"),
+        "transports": _transports(comparison),
         "execution": {"max_concurrent_models": 2},
     }
     barrier = threading.Barrier(2)
@@ -271,7 +308,7 @@ def test_candidate_probes_run_with_frozen_model_concurrency(
         tmp_path,
         manifest,
         timeout_seconds=1,
-        agent_factory=lambda model, timeout: FakeAgent(model),
+        agent_factory=lambda model, timeout, profile: FakeAgent(model),
     ) == 0
     assert maximum == 2
 
@@ -290,6 +327,7 @@ def test_workflow_models_run_concurrently_but_report_in_manifest_order(
     _write(tmp_path / "manifest.json", {
         "schema_version": "specrag.model-comparison-operational-manifest/v1",
         "comparison": comparison.model_dump(mode="json"),
+        "transports": _transports(comparison),
         "execution": {"budget": {}, "max_concurrent_models": 2},
     })
     for model in ("model-a", "model-b"):
@@ -354,6 +392,10 @@ def test_judge_phase_uses_fixed_model_and_only_completed_workflows(
     assert runner.judge_experiment(tmp_path, resume=True, timeout_seconds=7) == 0
     assert len(calls) == 1
     assert calls[0][calls[0].index("--judge-model") + 1] == "deepseek-v4-pro"
+    assert calls[0][calls[0].index("--judge-api-mode") + 1] == "chat_completions"
+    assert calls[0][calls[0].index("--judge-reasoning-effort") + 1] == (
+        "provider_default"
+    )
     assert calls[0][calls[0].index("--trace-experiment-id") + 1] == (
         "comparison-test"
     )

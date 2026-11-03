@@ -26,6 +26,8 @@ from specrag.infrastructure.structured_agent import (
     LLMApiStructuredAgent,
 )
 from specrag.infrastructure.langsmith_tracing import build_langsmith_tracing
+from specrag.infrastructure.llm_contracts import LLMApiMode
+from specrag.infrastructure.model_transport import ModelTransportProfile
 from specrag.prompts import (
     FINAL_ANSWER_JUDGE_INSTRUCTIONS,
     FINAL_ANSWER_JUDGE_PROMPT_VERSION,
@@ -66,6 +68,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trace-experiment-id")
     parser.add_argument("--trace-candidate-model")
     parser.add_argument("--trace-trial", type=int, default=1)
+    parser.add_argument(
+        "--judge-api-mode",
+        choices=("responses", "chat_completions"),
+        default="responses",
+    )
+    parser.add_argument(
+        "--judge-reasoning-effort",
+        default="high",
+        help="reasoning effort or provider_default to omit the provider field",
+    )
     return parser
 
 
@@ -216,6 +228,7 @@ def _manifest(
     args: argparse.Namespace,
     cases: tuple[BenchmarkCase, ...],
     model: str,
+    transport_profile: ModelTransportProfile,
 ) -> dict[str, object]:
     artifacts = []
     for case in cases:
@@ -237,6 +250,7 @@ def _manifest(
         "judge_prompt_version": FINAL_ANSWER_JUDGE_PROMPT_VERSION,
         "backend": args.backend,
         "configured_model": model,
+        "transport_profile": transport_profile.model_dump(mode="json"),
         "difficulty": args.difficulty,
         "question_ids": [case.task_metadata.task_id for case in cases],
         "source_artifacts": artifacts,
@@ -328,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
     )
     config: AppConfig | None = None
+    transport_profile: ModelTransportProfile | None = None
     if args.backend == "api":
         config = _single_request_config(judge_model=args.judge_model)
         model = _configured_model(config)
@@ -335,12 +350,29 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("no summary or default model is configured")
         if args.judge_model is not None and model != args.judge_model.strip():
             raise ValueError("explicit Judge model override was not applied")
+        transport_profile = ModelTransportProfile(
+            model_id=model,
+            structured_api_mode=LLMApiMode(args.judge_api_mode),
+            reasoning_effort=(
+                None
+                if args.judge_reasoning_effort == "provider_default"
+                else args.judge_reasoning_effort
+            ),
+            supports_native_tools=False,
+        )
     else:
         if args.judge_model is not None:
             raise ValueError("--judge-model is only valid with --backend api")
         model = "codex_managed_default"
+        transport_profile = ModelTransportProfile(
+            model_id=model,
+            supports_native_tools=False,
+        )
     args.output_directory.mkdir(parents=True, exist_ok=True)
-    manifest = _manifest(args=args, cases=cases, model=model)
+    manifest = _manifest(
+        args=args, cases=cases, model=model,
+        transport_profile=transport_profile,
+    )
     _freeze_manifest(args.output_directory / "manifest.json", manifest)
 
     agent: LLMApiStructuredAgent | CodexStructuredAgent | None = None
@@ -378,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
                     reasoning_effort="high",
                     timeout_seconds=args.timeout_seconds,
                     config=config,
+                    transport_profile=transport_profile,
                 )
             else:
                 agent = CodexStructuredAgent(

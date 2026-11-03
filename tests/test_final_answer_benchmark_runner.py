@@ -44,6 +44,17 @@ def test_runner_exposes_explicit_api_and_codex_backends() -> None:
     assert args.backend == "codex"
 
 
+def test_runner_accepts_explicit_judge_transport() -> None:
+    args = _parser().parse_args([
+        "runs", "outputs", "--judge-model", "deepseek-v4-pro",
+        "--judge-api-mode", "chat_completions",
+        "--judge-reasoning-effort", "provider_default",
+    ])
+
+    assert args.judge_api_mode == "chat_completions"
+    assert args.judge_reasoning_effort == "provider_default"
+
+
 def test_explicit_judge_model_overrides_summary_and_disables_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

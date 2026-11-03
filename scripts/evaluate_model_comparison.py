@@ -37,6 +37,8 @@ from specrag.infrastructure.model_capabilities import (
     ResearchModelCapability,
     probe_research_model_capability,
 )
+from specrag.infrastructure.llm_contracts import LLMApiMode
+from specrag.infrastructure.model_transport import ModelTransportProfile
 from specrag.infrastructure.structured_agent import (
     LLMApiStructuredAgent,
     capture_agent_receipts,
@@ -195,11 +197,25 @@ def build_experiment_manifest(
         "sources": [item.model_dump(mode="json") for item in benchmark.manifest.sources],
         "environment": benchmark.manifest.environment.model_dump(mode="json"),
     }
+    candidate_transports = {
+        model: ModelTransportProfile(model_id=model).model_dump(mode="json")
+        for model in (*required, *optional)
+    }
+    judge_transport = ModelTransportProfile(
+        model_id=normalized_judge,
+        structured_api_mode=LLMApiMode.CHAT_COMPLETIONS,
+        reasoning_effort=None,
+        supports_native_tools=False,
+    )
     return {
         "schema_version": "specrag.model-comparison-operational-manifest/v1",
         "comparison": comparison.model_dump(mode="json"),
         "benchmark": benchmark_projection,
         "benchmark_sha256": _sha256_json(benchmark_projection),
+        "transports": {
+            "candidates": candidate_transports,
+            "judge": judge_transport.model_dump(mode="json"),
+        },
         "execution": {
             "trial_count_per_model": 1,
             "question_order": "benchmark_order",
@@ -251,7 +267,11 @@ def _judge_probe_path(directory: Path) -> Path:
     return directory / "probes" / "judge.json"
 
 
-def _agent_factory(model_id: str, timeout_seconds: int) -> LLMApiStructuredAgent:
+def _agent_factory(
+    model_id: str,
+    timeout_seconds: int,
+    transport_profile: ModelTransportProfile,
+) -> LLMApiStructuredAgent:
     config = candidate_model_config(model_id)
     config = config.model_copy(update={
         "llm": config.llm.model_copy(update={
@@ -264,7 +284,33 @@ def _agent_factory(model_id: str, timeout_seconds: int) -> LLMApiStructuredAgent
         reasoning_effort="high",
         timeout_seconds=timeout_seconds,
         config=config,
+        transport_profile=transport_profile,
     )
+
+
+def _transport_profiles(
+    manifest: Mapping[str, Any],
+    comparison: ModelComparisonExperimentManifest,
+) -> tuple[dict[str, ModelTransportProfile], ModelTransportProfile]:
+    value = manifest.get("transports")
+    if not isinstance(value, Mapping):
+        raise ValueError("experiment manifest is missing transport profiles")
+    candidates_value = value.get("candidates")
+    if not isinstance(candidates_value, Mapping):
+        raise ValueError("experiment manifest is missing candidate transports")
+    expected = tuple(target.model_id for target in comparison.model_targets)
+    if tuple(candidates_value) != expected:
+        raise ValueError("candidate transport order does not match model targets")
+    candidates = {
+        model_id: ModelTransportProfile.model_validate(candidates_value[model_id])
+        for model_id in expected
+    }
+    if any(profile.model_id != model_id for model_id, profile in candidates.items()):
+        raise ValueError("candidate transport profile model mismatch")
+    judge = ModelTransportProfile.model_validate(value.get("judge"))
+    if judge.model_id != comparison.judge_model:
+        raise ValueError("Judge transport profile model mismatch")
+    return candidates, judge
 
 
 def probe_experiment(
@@ -272,11 +318,12 @@ def probe_experiment(
     manifest: Mapping[str, Any],
     *,
     timeout_seconds: int,
-    agent_factory: Callable[[str, int], Any] = _agent_factory,
+    agent_factory: Callable[[str, int, ModelTransportProfile], Any] = _agent_factory,
 ) -> int:
     """Probe every candidate and the fixed Judge, persisting secret-free results."""
 
     comparison = _comparison_manifest(manifest)
+    candidate_transports, judge_transport = _transport_profiles(manifest, comparison)
     experiment_directory.mkdir(parents=True, exist_ok=True)
     _freeze_json(experiment_directory / "manifest.json", manifest)
     concurrency = _manifest_concurrency(manifest)
@@ -285,6 +332,7 @@ def probe_experiment(
             executor.submit(
                 _probe_candidate,
                 target,
+                transport_profile=candidate_transports[target.model_id],
                 timeout_seconds=timeout_seconds,
                 agent_factory=agent_factory,
             )
@@ -300,7 +348,9 @@ def probe_experiment(
         failures = failures or (target.required and result.status != "ready")
 
     try:
-        judge_agent = agent_factory(comparison.judge_model, timeout_seconds)
+        judge_agent = agent_factory(
+            comparison.judge_model, timeout_seconds, judge_transport
+        )
         judge_payload = _probe_judge(judge_agent, comparison.judge_model)
     except Exception as exc:  # noqa: BLE001 - safe probe projection below
         judge_payload = {
@@ -320,13 +370,14 @@ def probe_experiment(
 def _probe_candidate(
     target: ModelTarget,
     *,
+    transport_profile: ModelTransportProfile,
     timeout_seconds: int,
-    agent_factory: Callable[[str, int], Any],
+    agent_factory: Callable[[str, int, ModelTransportProfile], Any],
 ) -> ModelProbeResult:
     """Probe one candidate without writing shared files or emitting output."""
 
     try:
-        agent = agent_factory(target.model_id, timeout_seconds)
+        agent = agent_factory(target.model_id, timeout_seconds, transport_profile)
         with capture_agent_receipts() as receipts:
             capability = probe_research_model_capability(agent)
         payloads = [item.model_dump(mode="json") for item in receipts]
@@ -466,8 +517,15 @@ def run_experiment(directory: Path, *, resume: bool) -> int:
     manifest_path = directory / "manifest.json"
     manifest = _load_object(manifest_path)
     comparison = _comparison_manifest(manifest)
+    candidate_transports, _ = _transport_profiles(manifest, comparison)
     probes = _load_probes(directory, comparison)
     ready = _ready_targets(comparison, probes)
+    for target in ready:
+        expected = ModelTransportProfile(model_id=target.model_id)
+        if candidate_transports[target.model_id] != expected:
+            raise ValueError(
+                "Workflow candidate transport must use Responses/high/native tools"
+            )
     benchmark = load_end_to_end_benchmark()
     questions = benchmark_questions(
         benchmark, tuple(case.question_id for case in comparison.cases)
@@ -513,6 +571,7 @@ def run_experiment(directory: Path, *, resume: bool) -> int:
 def judge_experiment(directory: Path, *, resume: bool, timeout_seconds: int) -> int:
     manifest = _load_object(directory / "manifest.json")
     comparison = _comparison_manifest(manifest)
+    _, judge_transport = _transport_profiles(manifest, comparison)
     probes = _load_probes(directory, comparison)
     ready = _ready_targets(comparison, probes)
     judge_probe = _load_object(_judge_probe_path(directory))
@@ -538,6 +597,10 @@ def judge_experiment(directory: Path, *, resume: bool, timeout_seconds: int) -> 
             str(directory / "judgments" / _model_slug(target.model_id)),
             "--backend", "api",
             "--judge-model", comparison.judge_model,
+            "--judge-api-mode", judge_transport.structured_api_mode.value,
+            "--judge-reasoning-effort", (
+                judge_transport.reasoning_effort or "provider_default"
+            ),
             "--trace-experiment-id", comparison.experiment_id,
             "--trace-candidate-model", target.model_id,
             "--trace-trial", "1",

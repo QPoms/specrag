@@ -1,7 +1,6 @@
 """Isolated Codex CLI adapter for schema-constrained agents."""
 from __future__ import annotations
 from contextlib import nullcontext
-import hashlib
 import json
 import os
 import re
@@ -16,6 +15,9 @@ from typing import Any, Generic, Literal, Mapping, Sequence, TypeVar
 from pydantic import BaseModel
 from .llm import LLMApiMode, LLMCallReceipt, NativeToolLLMResponse, OpenAIStructuredClient
 from .llm_budget import build_token_budget_manager
+from .model_transport import ModelTransportProfile, resolve_transport_profile
+from .llm_serialization import canonical_json as _canonical_json
+from .llm_serialization import sha256_text as _sha256
 from .agent_errors import CodexAgentError, public_error_fields
 from .receipt_capture import (
     CodexAgentReceipt,
@@ -39,19 +41,6 @@ class CodexAgentToolResponse:
     calls: tuple[NativeFunctionCall, ...]
     replay_items: tuple[dict[str, Any], ...]
     receipt: CodexAgentReceipt
-def _canonical_json(value: Any) -> str:
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-def _sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def resolve_codex_executable(explicit: Path | None = None) -> Path:
     if explicit is not None:
         candidate = explicit.resolve()
@@ -65,7 +54,6 @@ def resolve_codex_executable(explicit: Path | None = None) -> Path:
     raise FileNotFoundError(
         "Codex CLI was not found on PATH; install it or pass an executable"
     )
-
 
 def _codex_version(executable: Path) -> str:
     try:
@@ -82,7 +70,6 @@ def _codex_version(executable: Path) -> str:
         return "unknown"
     value = completed.stdout.strip()
     return value if completed.returncode == 0 and value else "unknown"
-
 
 def _event_metadata(stdout: str) -> tuple[str, int | None, int | None]:
     thread_id = ""
@@ -373,7 +360,6 @@ class CodexStructuredAgent:
         _record_agent_receipt(result.receipt)
         return result
 
-
 class LLMApiStructuredAgent:
     """API-backed implementation with the same parse interface as Codex.
     This backend is deliberately limited to structured LLM calls.  It cannot
@@ -389,6 +375,7 @@ class LLMApiStructuredAgent:
         reasoning_effort: str = "high",
         timeout_seconds: int = 600,
         api_mode: LLMApiMode = LLMApiMode.RESPONSES,
+        transport_profile: ModelTransportProfile | None = None,
         config: AppConfig | None = None, deadline_at: datetime | None = None,
     ) -> None:
         if timeout_seconds < 1:
@@ -410,14 +397,21 @@ class LLMApiStructuredAgent:
                 "API backend requires OPENAI_MODEL, a role-specific model, "
                 "or an explicit model"
             )
+        profile = resolve_transport_profile(
+            model_id=selected_model,
+            api_mode=api_mode,
+            reasoning_effort=reasoning_effort,
+            explicit=transport_profile,
+        )
         self._model = selected_model
-        self._reasoning_effort = reasoning_effort.strip() or "high"
+        self._reasoning_effort = profile.reasoning_effort or "provider_default"
+        self._supports_native_tools = profile.supports_native_tools
         self._client = OpenAIStructuredClient(
             api_key=secrets.openai_api_key,
             base_url=secrets.openai_base_url,
             model=selected_model,
-            api_mode=api_mode,
-            reasoning_effort=self._reasoning_effort,
+            api_mode=profile.structured_api_mode,
+            reasoning_effort=profile.reasoning_effort,
             timeout_seconds=float(timeout_seconds),
             max_retries=settings.llm.api_max_retries,
             fallback_models=tuple(
@@ -520,6 +514,12 @@ class LLMApiStructuredAgent:
         prior_outputs: Sequence[NativeFunctionCallOutput] = (),
         max_tool_calls: int | None = None,
     ) -> CodexAgentToolResponse:
+        if not self._supports_native_tools:
+            raise CodexAgentError(
+                "configured model transport does not support native tools",
+                failure_kind="invalid_request",
+                retryable=False,
+            )
         started = time.perf_counter()
         try:
             response: NativeToolLLMResponse = self._client.call_tools(
