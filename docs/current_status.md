@@ -1,25 +1,31 @@
 # Current project status
 
-Updated: 2026-11-03
+Updated: 2026-11-04
 
 ## Current state
 
 The one-trial multi-model comparison layer is implemented over the existing
 frozen Benchmark, complete Research Workflow, and final-answer Rubric Judge.
-Its required candidate model is `gpt-5.6-sol`, which must pass the
-structured-output and two-turn native-tool replay probe. Retryable Provider
-failures use at most three retries with bounded exponential backoff. Every model-backed
-Workflow stage uses the selected candidate model, cross-model fallback is
-disabled and checked against receipts, and `deepseek-v4-pro` is the fixed
-final-answer Judge. Each case runs once. Reports contain Judge scores, score
-coverage, common-case averages, and separate Workflow/Judge/no-answer counts;
-they deliberately contain no Task Success, threshold, Pass@k, or Pass^k.
+The completed formal batches cover `gpt-5.6-sol` and `gpt-6-astra`; each model
+first passed the structured-output and two-turn native-tool replay probe.
+Retryable Provider failures use at most three retries with bounded exponential
+backoff. Every model-backed Workflow stage uses the selected candidate model,
+cross-model fallback is disabled and checked against receipts, and
+`deepseek-v4-pro` is the fixed final-answer Judge. Each case runs once. Reports
+contain Judge scores, score coverage, common-case averages, and separate
+Workflow/Judge/no-answer counts; they deliberately contain no Task Success,
+threshold, Pass@k, or Pass^k.
 
 The supported entry point is `scripts/evaluate_model_comparison.py`, with
-`probe`, `run`, `judge`, and `summarize` phases. The experiment manifest freezes
-the ordered model/case matrix, Benchmark and Environment, budget, source
-revision, empty fallback policy, and safe tracing configuration. Run and Judge
-artifacts are atomic and resumable, and stale model, question, manifest,
+`probe`, `run`, `judge`, `summarize`, and offline cross-experiment `analyze`
+phases. The analysis consumes two or more compatible `comparison.json` files,
+records their SHA-256 provenance, and emits deterministic JSON and Markdown
+with coverage, paired overall/simple/complex deltas, higher/equal/lower counts,
+and a status-preserving per-question matrix. It fails closed when Benchmark,
+Judge, ordered questions, or difficulty labels differ. The experiment manifest
+freezes the ordered model/case matrix, Benchmark and Environment, budget,
+source revision, empty fallback policy, and safe tracing configuration. Run and
+Judge artifacts are atomic and resumable, and stale model, question, manifest,
 Benchmark, Git, budget, corpus, index, or source-artifact inputs fail closed.
 Optional LangSmith tracing now correlates the experiment, candidate model,
 question, trial, local Run, graph nodes, and wrapped OpenAI-compatible calls;
@@ -27,12 +33,15 @@ the existing local Run Events, receipts, Evidence state, and Judge artifacts
 remain authoritative. Reference Answers, Rubrics, and Gold Evidence never
 enter the candidate Workflow or its trace metadata.
 
-No live capability probe or formal 150/200-Run comparison has been started.
-An initial read-only audit accidentally exposed the current proxy and LangSmith
-credentials to an internal tool log, without checking them into the repository.
-Both credential classes must be rotated before live validation. The design and
-execution contract are recorded in
-`docs/plans/046-multi-model-langsmith-evaluation.md`.
+Both current 50-case batches completed their Workflow and Judge phases. The
+`gpt-5.6-sol` batch scored 92.4 overall with 50 scored answers. The
+`gpt-6-astra` batch scored 90.8 overall with 48 scored answers and two explicit
+`no_answer` zeroes. Both used the same frozen Benchmark and
+`deepseek-v4-pro` Judge. These are descriptive single-trial results: they do not
+measure repeat-run reliability, establish statistical significance, or define
+a success threshold. The execution contract is recorded in
+`docs/plans/046-multi-model-langsmith-evaluation.md`; the offline paired-analysis
+contract is recorded in `docs/plans/047-cross-experiment-analysis.md`.
 
 The final-answer Benchmark V1 is now frozen as
 `specrag-release17-final-answer` version `1.0.0`. It composes the existing 50

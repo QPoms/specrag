@@ -185,16 +185,17 @@ Final-answer Judge 已将提示词冻结为 `final-answer-rubric-judge/v1.1`，�
 
 现在可以通过 `scripts/evaluate_final_answer_benchmark.py` 评估已保存的 Workflow 产物，而无需重新运行研究。运行器支持 `simple`、`complex` 或全部冻结用例、可恢复输出、API 或隔离 Codex 后端、源产物哈希冻结、逐用例执行记录，以及总体和按难度分组的分数汇总。生成的判定保留在被忽略的 `artifacts/` 树下。
 
-一次试验的模型比较入口也已实现。当前候选模型固定为 `gpt-5.6-sol`，全部模型驱动节点使用该候选模型，跨模型 fallback 被禁用，最终答案统一由 `deepseek-v4-pro` 盲评。对 429、超时和暂时性 Provider 故障最多重试三次，并采用 5/10/20 秒指数退避；协议错误不会重试。本轮只汇总 Judge 分数、覆盖率和运行统计，不计算 Task Success、Pass@k、Pass^k 或阈值通过率。LangSmith 用于节点和模型调用轨迹监督，本地结构化 Run、Evidence、回执与 Judge 产物仍是评测权威数据。
+一次试验的模型比较入口也已实现。当前已完成 `gpt-5.6-sol` 和 `gpt-6-astra` 两个 50 题批次；每个批次的全部模型驱动节点都使用同一候选模型，跨模型 fallback 被禁用，最终答案统一由 `deepseek-v4-pro` 盲评。`gpt-5.6-sol` 的总体得分为 92.4（50 个 scored），`gpt-6-astra` 为 90.8（48 个 scored，另有两个明确的 `no_answer` 零分）。对 429、超时和暂时性 Provider 故障最多重试三次，并采用 5/10/20 秒指数退避；协议错误不会重试。本轮只汇总 Judge 分数、覆盖率和运行统计，不计算 Task Success、Pass@k、Pass^k 或阈值通过率。LangSmith 用于节点和模型调用轨迹监督，本地结构化 Run、Evidence、回执与 Judge 产物仍是评测权威数据。
 
 ```powershell
 uv run python scripts/evaluate_model_comparison.py probe artifacts/evaluations/model-comparison/EXP-ID
 uv run python scripts/evaluate_model_comparison.py run artifacts/evaluations/model-comparison/EXP-ID --resume
 uv run python scripts/evaluate_model_comparison.py judge artifacts/evaluations/model-comparison/EXP-ID --resume
 uv run python scripts/evaluate_model_comparison.py summarize artifacts/evaluations/model-comparison/EXP-ID
+uv run python scripts/evaluate_model_comparison.py analyze artifacts/evaluations/model-comparison/analysis/REPORT-ID artifacts/evaluations/model-comparison/EXP-A/comparison.json artifacts/evaluations/model-comparison/EXP-B/comparison.json
 ```
 
-正式探针前必须配置并轮换 `.env` 中的 OpenAI-compatible 代理和 LangSmith 凭据。能力探针验证严格结构化输出和 Researcher 两轮原生工具 replay；必选模型失败会阻止正式批次，可选 Claude 失败则明确记录并跳过。完整契约见 [`docs/plans/046-multi-model-langsmith-evaluation.md`](docs/plans/046-multi-model-langsmith-evaluation.md)。
+`analyze` 是纯离线步骤：它要求各输入使用相同的 Benchmark、Judge、题目顺序和难度标签，记录输入文件 SHA-256，并生成配对分差、胜/平/负计数和保留 Judge 状态的逐题矩阵。当前每个模型只有一次 trial，因此这些结果只适合作为固定 Benchmark 上的描述性比较，不能解释为稳定性或统计显著性。正式探针前必须配置并轮换 `.env` 中的 OpenAI-compatible 代理和 LangSmith 凭据。能力探针验证严格结构化输出和 Researcher 两轮原生工具 replay；必选模型失败会阻止正式批次，可选 Claude 失败则明确记录并跳过。完整执行契约见 [`docs/plans/046-multi-model-langsmith-evaluation.md`](docs/plans/046-multi-model-langsmith-evaluation.md)，离线分析契约见 [`docs/plans/047-cross-experiment-analysis.md`](docs/plans/047-cross-experiment-analysis.md)。
 
 端到端基线使用同一批 50 个可回答的 Release 17 问题，但不会注入经审查的中间任务或证据。其唯一质量汇总指标是 `Task Success Rate`：Run 必须生成正常答案，在没有重大错误或无依据结论的情况下回答核心结论，正确引用支持核心结论的证据，并遵守请求的语料范围。每项决定都经过人工审查；失败和预算耗尽的 Run 仍计入分母。
 

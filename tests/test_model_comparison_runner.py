@@ -623,4 +623,4 @@ def test_script_help_works_when_executed_by_path() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "{langsmith-check,probe,run,judge,summarize}" in result.stdout
+    assert "{langsmith-check,probe,run,judge,summarize,analyze}" in result.stdout

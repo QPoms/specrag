@@ -25,13 +25,17 @@ except ImportError:  # direct ``python scripts/...`` execution
 from specrag.config import AppConfig, REPO_ROOT, load_config
 from specrag.evaluation import (
     ComparisonCase,
+    CrossExperimentSource,
     FinalAnswerJudgeExecution,
     ModelCaseResult,
     ModelComparisonExperimentManifest,
     ModelComparisonInput,
+    ModelComparisonSummary,
     ModelProbeResult,
     ModelTarget,
+    analyze_cross_experiments,
     load_end_to_end_benchmark,
+    render_cross_experiment_markdown,
     summarize_model_comparison,
 )
 from specrag.infrastructure.model_capabilities import (
@@ -102,6 +106,13 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--judge-model", default=JUDGE_MODEL)
     probe.add_argument("--max-concurrent-models", type=int, default=2)
     probe.add_argument("--provider-retries", type=int, default=3)
+    analyze = commands.add_parser(
+        "analyze",
+        help="compare two or more compatible comparison.json artifacts",
+    )
+    analyze.add_argument("output_directory", type=Path)
+    analyze.add_argument("comparison_summaries", type=Path, nargs="+")
+    analyze.add_argument("--top-deltas", type=int, default=10)
     return parser
 
 
@@ -112,6 +123,17 @@ def _write_json(path: Path, value: object) -> None:
         json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    temporary.replace(path)
+
+
+def _freeze_text(path: Path, content: str) -> None:
+    if path.is_file():
+        if path.read_text(encoding="utf-8") != content:
+            raise ValueError(f"analysis output already exists with different content: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(content, encoding="utf-8")
     temporary.replace(path)
 
 
@@ -1042,6 +1064,52 @@ def summarize_experiment(directory: Path) -> dict[str, object]:
     return payload
 
 
+def analyze_experiments(
+    output_directory: Path,
+    comparison_summaries: Sequence[Path],
+    *,
+    top_deltas: int = 10,
+) -> dict[str, object]:
+    """Analyze frozen summaries without invoking Workflow, Judge, or LangSmith."""
+
+    if len(comparison_summaries) < 2:
+        raise ValueError("analyze requires at least two comparison summaries")
+    if top_deltas < 1:
+        raise ValueError("top-deltas must be at least one")
+    sources: list[CrossExperimentSource] = []
+    for path in comparison_summaries:
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"JSON file must contain an object: {path}")
+        summary = ModelComparisonSummary.model_validate(value)
+        sources.append(CrossExperimentSource(
+            path=path.resolve().as_posix(),
+            sha256=hashlib.sha256(raw).hexdigest(),
+            summary=summary,
+        ))
+    analysis = analyze_cross_experiments(tuple(sources))
+    payload = analysis.model_dump(mode="json")
+    json_path = output_directory / "cross-experiment.json"
+    markdown_path = output_directory / "cross-experiment.md"
+    rendered_json = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    rendered_markdown = render_cross_experiment_markdown(
+        analysis,
+        top_deltas=top_deltas,
+    )
+    for path, content in (
+        (json_path, rendered_json),
+        (markdown_path, rendered_markdown),
+    ):
+        if path.is_file() and path.read_text(encoding="utf-8") != content:
+            raise ValueError(
+                f"analysis output already exists with different content: {path}"
+            )
+    _freeze_text(json_path, rendered_json)
+    _freeze_text(markdown_path, rendered_markdown)
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1083,6 +1151,18 @@ def main(argv: list[str] | None = None) -> int:
                 resume=args.resume,
                 timeout_seconds=args.timeout_seconds,
             )
+        if args.command == "analyze":
+            payload = analyze_experiments(
+                args.output_directory,
+                args.comparison_summaries,
+                top_deltas=args.top_deltas,
+            )
+            print(json.dumps({
+                "output_directory": args.output_directory.as_posix(),
+                "model_observation_count": len(payload["model_observations"]),
+                "pair_count": len(payload["pairwise_comparisons"]),
+            }, ensure_ascii=False), flush=True)
+            return 0
         payload = summarize_experiment(args.experiment_directory)
         print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
         return 0
@@ -1105,6 +1185,7 @@ __all__ = [
     "OPTIONAL_MODELS",
     "REQUIRED_MODELS",
     "build_experiment_manifest",
+    "analyze_experiments",
     "judge_experiment",
     "main",
     "probe_experiment",
