@@ -1,8 +1,24 @@
 # Current project status
 
-Updated: 2026-11-04
+Updated: 2026-11-05
 
 ## Current state
+
+The supported local deployment now has a Docker Compose topology. One
+multi-target `Dockerfile` builds a reusable Python backend image and an
+Nginx-hosted React image; Compose runs separate `api`, `mcp`, and `web`
+services plus an on-demand `cli` initializer. API and Web publish only to host
+loopback, while MCP remains private to the Compose network. The existing MCP
+loopback-only default is preserved: non-loopback binding requires an explicit
+`--allow-non-loopback` opt-in, used only by the private container service.
+SQLite/index state and model caches use named volumes, runtime corpus mounts
+are read-only, and model/LangSmith/delegation secrets remain in the untracked
+`.env`. Static deployment-contract tests and the normal application gates are
+available. The implementation workstation has no Docker CLI or daemon, so an
+actual image build and live Compose health check remain required on the first
+Docker-enabled machine before calling this path production-validated. The
+design and acceptance contract are recorded in
+`docs/plans/048-docker-compose-deployment.md`.
 
 The one-trial multi-model comparison layer is implemented over the existing
 frozen Benchmark, complete Research Workflow, and final-answer Rubric Judge.
@@ -53,7 +69,7 @@ projected into the backend Research Workflow; evaluator-only reference,
 Rubric, and Gold data are structurally excluded. Source hashes, document
 hashes, index fingerprint, case counts, weights, mappings, and evidence scope
 fail closed in the standalone and canonical checks. The canonical gate passes
-the structure check, both dataset checks, and all 354 tests.
+the structure check, both dataset checks, and all 418 tests.
 For human review, the complete normalized Benchmark is also materialized in
 one checked-in `data/QA/end_to_end_benchmark_review.json` file. A deterministic
 exporter owns that projection, and the canonical Benchmark check rejects it if

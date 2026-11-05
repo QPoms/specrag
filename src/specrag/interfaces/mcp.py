@@ -246,14 +246,39 @@ def _secret_from_environment() -> bytes:
     return value.encode("utf-8")
 
 
+def validate_mcp_bind_host(
+    host: str,
+    *,
+    allow_non_loopback: bool = False,
+) -> None:
+    """Keep the public default loopback-only unless deployment opts in."""
+
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return
+    if not allow_non_loopback:
+        raise ValueError(
+            "non-loopback MCP binding requires --allow-non-loopback"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="specrag-mcp")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help=(
+            "explicitly allow a non-loopback bind; intended for a private "
+            "container network whose MCP port is not published"
+        ),
+    )
     arguments = parser.parse_args()
-    if arguments.host not in {"127.0.0.1", "localhost", "::1"}:
-        raise ValueError("the first MCP release is restricted to a loopback host")
+    validate_mcp_bind_host(
+        arguments.host,
+        allow_non_loopback=arguments.allow_non_loopback,
+    )
     services = WorkspaceServices.create(arguments.database)
     runtime_state = MCPRuntimeState(17)
     run_worker = RunWorker(services.harness, services.run_queue)
@@ -323,7 +348,12 @@ def main() -> None:
         services.close()
 
 
-__all__ = ["SpecRAGMCPClient", "create_mcp_server", "main"]
+__all__ = [
+    "SpecRAGMCPClient",
+    "create_mcp_server",
+    "main",
+    "validate_mcp_bind_host",
+]
 
 
 if __name__ == "__main__":

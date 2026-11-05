@@ -1,0 +1,103 @@
+name: specrag
+
+x-backend: &backend
+  image: specrag-backend:local
+  build:
+    context: .
+    target: backend
+  env_file:
+    - .env
+  restart: unless-stopped
+  volumes:
+    - specrag_local:/app/.local
+    - specrag_model_cache:/home/specrag/.cache
+    - ./data/3gpp:/app/data/3gpp:ro
+
+services:
+  mcp:
+    <<: *backend
+    command:
+      - specrag-mcp
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8766"
+      - --allow-non-loopback
+    expose:
+      - "8766"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8766/readyz', timeout=5)
+      interval: 10s
+      timeout: 6s
+      retries: 60
+      start_period: 30s
+
+  api:
+    <<: *backend
+    command:
+      - specrag-api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --worker-mode
+      - conversation
+    environment:
+      SPECRAG_MCP_URL: http://mcp:8766/mcp
+    depends_on:
+      mcp:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 30s
+
+  web:
+    image: specrag-web:local
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+
+  cli:
+    <<: *backend
+    profiles: ["tools"]
+    restart: "no"
+    entrypoint: ["specrag"]
+    command: ["--help"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - specrag_local:/app/.local
+      - specrag_model_cache:/home/specrag/.cache
+      - ./data/3gpp:/app/data/3gpp
+
+volumes:
+  specrag_local:
+  specrag_model_cache:
