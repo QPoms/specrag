@@ -22,9 +22,8 @@ README 只展示业务节点；并行汇合、预算门禁和终止处理由 Lan
 
 ```mermaid
 flowchart TD
-    QUESTION([研究问题]) -->|判断复杂度| ROUTER[Router]
-    ROUTER -->|研究范围与路线| PLANNER[Planner]
-    PLANNER -->|可并行的 ResearchTask| RESEARCHER[Researcher]
+    QUESTION([研究问题]) -->|复杂度判断| PLANNER[Planner]
+    PLANNER -->|任务分配| RESEARCHER[Researcher]
     RESEARCHER -->|候选规范段落| VALIDATOR[Source Validator]
     VALIDATOR -->|来源有效证据| JUDGE{Sufficiency Judge}
     JUDGE -->|仍有缺口且预算可用| RESEARCHER
